@@ -1,164 +1,146 @@
-// navescript/cmd/nvs/main.go (Refined Self-Hosting Bridge)
 package main
 
 import (
-	"encoding/json" // Added for JSON serialization
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
+	"strings"
 
-	"github.com/navescript/nvs/internal/compiler"
+	"github.com/navescript/nvs/internal/eval"
 	"github.com/navescript/nvs/internal/lexer"
+	"github.com/navescript/nvs/internal/object"
 	"github.com/navescript/nvs/internal/parser"
-	"github.com/navescript/nvs/internal/vm"
 )
 
-// This function acts as the bridge for self-hosting.
-// It runs a Navescript file within the Go-based Navescript VM
-// and returns its output (e.g., generated NAS code).
-func runNavescriptFileInVM(path string, inputAST *parser.Program) (string, error) {
-	code, err := ioutil.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("error reading Navescript file: %v", err)
-	}
-
-	l := lexer.New(string(code))
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if len(p.Errors()) != 0 {
-		return "", fmt.Errorf("Navescript parsing errors in %s: %v", path, p.Errors())
-	}
-
-	comp := compiler.New()
-	err = comp.Compile(program) // Compile nas_backend.ns itself
-	if err != nil {
-		return "", fmt.Errorf("Navescript compilation error for %s: %v", path, err)
-	}
-
-	machine := vm.New(comp.Bytecode())
-	
-	// Serialize the input AST to JSON and pass it to the Navescript VM
-	astJSON, err := json.Marshal(inputAST)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize AST to JSON: %v", err)
-	}
-	machine.SetInput(string(astJSON)) // Pass the JSON string of the AST
-	
-	err = machine.Run() // Run nas_backend.ns within the VM
-	if err != nil {
-		return "", fmt.Errorf("Navescript VM execution error for %s: %v", path, err)
-	}
-	
-	// Assuming nas_backend.ns `return`s a string of NAS code
-	returnValue := machine.GetReturnValue()
-	if nasOutput, ok := returnValue.(string); ok {
-		return nasOutput, nil
-	}
-	return "", fmt.Errorf("nas_backend.ns did not return a string of NAS code, got: %v", returnValue)
-}
+const VERSION = "1.3.0-working"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: nvs <command> [args]")
+		printUsage()
 		os.Exit(1)
 	}
 
-	command := os.Args[1]
-	switch command {
+	cmd := os.Args[1]
+	// Remaining args after subcommand/file available via args()
+	eval.CLIArgs = os.Args[1:]
+	switch cmd {
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Println("Error: No file specified.")
+			fmt.Fprintln(os.Stderr, "usage: nvs run <file.ns>")
 			os.Exit(1)
 		}
+		eval.CLIArgs = os.Args[3:]
 		runFile(os.Args[2])
-	case "build":
+	case "eval", "e":
 		if len(os.Args) < 3 {
-			fmt.Println("Error: No file specified.")
+			fmt.Fprintln(os.Stderr, "usage: nvs eval '<code>'")
 			os.Exit(1)
 		}
-		buildFile(os.Args[2])
-	case "fmt":
-		fmt.Println("Code formatted.")
+		code := strings.Join(os.Args[2:], " ")
+		runCode(code)
+	case "repl", "i":
+		startREPL()
+	case "version", "-v", "--version":
+		fmt.Printf("Navescript (NvS) %s\n", VERSION)
+	case "help", "-h", "--help":
+		printUsage()
 	default:
-		fmt.Printf("Unknown command: %s
-", command)
+		// Treat as filename for convenience
+		if strings.HasSuffix(cmd, ".ns") || strings.HasSuffix(cmd, ".nave") {
+			runFile(cmd)
+		} else {
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+			printUsage()
+			os.Exit(1)
+		}
 	}
+}
+
+func printUsage() {
+	fmt.Print(`Navescript (NvS) - Minimal Working Runtime
+
+Usage:
+  nvs run <file.ns>     Run a Navescript file
+  nvs eval '<code>'     Evaluate code string
+  nvs repl              Start interactive REPL
+  nvs version           Show version
+  nvs help              Show this help
+
+Examples:
+  nvs run hello.ns
+  nvs eval 'print 1 + 2 * 3'
+  nvs eval 'let x = 10; print x * 2'
+`)
 }
 
 func runFile(path string) {
-	code, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Printf("Error reading file: %v
-", err)
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path, err)
 		os.Exit(1)
 	}
-
-	l := lexer.New(string(code))
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if len(p.Errors()) != 0 {
-		for _, err := range p.Errors() {
-			fmt.Println(err)
-		}
-		os.Exit(1)
-	}
-
-	comp := compiler.New()
-	err = comp.Compile(program)
-	if err != nil {
-		fmt.Printf("Compilation error: %v
-", err)
-		os.Exit(1)
-	}
-
-	machine := vm.New(comp.Bytecode())
-	err = machine.Run()
-	if err != nil {
-		fmt.Printf("VM execution error: %v
-", err)
-		os.Exit(1)
-	}
-	fmt.Printf("VM returned: %v
-", machine.GetReturnValue()) // Show what the user's script returned
+	runCode(string(data))
 }
 
-func buildFile(path string) {
-	code, err := ioutil.ReadFile(path)
-	if err != nil {
-		fmt.Printf("Error reading file: %v
-", err)
-		os.Exit(1)
-	}
-
-	// Lexing and parsing user's Navescript file
-	l := lexer.New(string(code))
+func runCode(code string) {
+	env := object.NewEnvironment()
+	// CLIArgs set in main for args()
+	l := lexer.New(code)
 	p := parser.New(l)
-	userProgramAST := p.ParseProgram() // This is the AST we'd pass to nas_backend.ns
-	if len(p.Errors()) != 0 {
-		for _, err := range p.Errors() {
-			fmt.Println(err)
+	program := p.ParseProgram()
+
+	if len(p.Errors()) > 0 {
+		printParserErrors(os.Stderr, p.Errors())
+		os.Exit(1)
+	}
+
+	result := eval.Eval(program, env)
+	if result != nil && result.Type() == object.ERROR_OBJ {
+		fmt.Fprintln(os.Stderr, result.Inspect())
+		os.Exit(1)
+	}
+}
+
+func printParserErrors(out io.Writer, errors []string) {
+	fmt.Fprintln(out, "Parser errors:")
+	for _, msg := range errors {
+		fmt.Fprintf(out, "  %s\n", msg)
+	}
+}
+
+func startREPL() {
+	fmt.Printf("Navescript (NvS) %s REPL\n", VERSION)
+	fmt.Println("Type expressions or statements. Ctrl+D to exit.")
+	env := object.NewEnvironment()
+
+	// Simple line-based REPL (no external deps)
+	buf := make([]byte, 4096)
+	for {
+		fmt.Print("nvs> ")
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			fmt.Println()
+			return
 		}
-		os.Exit(1)
-	}
+		line := strings.TrimSpace(string(buf[:n]))
+		if line == "" {
+			continue
+		}
+		if line == "exit" || line == "quit" {
+			return
+		}
 
-	// Execute the native Navescript compiler backend (nas_backend.ns)
-	// within the Go-based Navescript VM to generate NAS code.
-	fmt.Printf("Invoking native Navescript compiler backend to generate NAS assembly for %s...
-", path)
-	generatedNAS, err := runNavescriptFileInVM("navescript/src/compiler/backend/nas_backend.ns", userProgramAST) // userProgramAST is conceptually passed
-	if err != nil {
-		fmt.Printf("Error running native Navescript backend: %v
-", err)
-		os.Exit(1)
-	}
+		l := lexer.New(line)
+		p := parser.New(l)
+		program := p.ParseProgram()
+		if len(p.Errors()) > 0 {
+			printParserErrors(os.Stdout, p.Errors())
+			continue
+		}
 
-	outputFileName := path + ".nas"
-	err = ioutil.WriteFile(outputFileName, []byte(generatedNAS), 0644)
-	if err != nil {
-		fmt.Printf("Error writing NAS file: %v
-", err)
-		os.Exit(1)
+		result := eval.Eval(program, env)
+		if result != nil && result.Type() != object.NULL_OBJ {
+			fmt.Println(result.Inspect())
+		}
 	}
-	fmt.Printf("Successfully compiled %s to %s
-", path, outputFileName)
 }

@@ -1,0 +1,30 @@
+print random()
+print rand_int(1, 10)
+print uuid()
+print date()
+print clamp(150, 0, 100)
+
+let a = [1, 2, 2, 3, 1]
+print unique(a)
+print flatten([[1, 2], [3, [4]]])
+
+print base64_encode("navescript")
+print base64_decode(base64_encode("navescript"))
+print substr(md5("hi"), 0, 8)
+print substr(sha256("hi"), 0, 8)
+
+print basename("/tmp/foo/bar.ns")
+print dirname("/tmp/foo/bar.ns")
+print join_path("tmp", "foo", "bar.ns")
+
+let orig = [1, [2, 3]]
+let c = copy(orig)
+print c
+
+// quick HTTP server smoke test
+print http_serve(8765, "hello from nvs")
+sleep(100)
+let body = http_get("http://127.0.0.1:8765/")
+print body
+
+print "EXTRAS OK"

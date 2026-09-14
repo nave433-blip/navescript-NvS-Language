@@ -1,0 +1,40 @@
+// Compound assignment
+let x = 10
+x += 5
+x *= 2
+print x
+
+// Ternary
+let score = 85
+print score >= 60 ? "pass" : "fail"
+
+// else if
+let n = 2
+if (n == 1) {
+  print "one"
+} else if (n == 2) {
+  print "two"
+} else {
+  print "other"
+}
+
+// String helpers
+print upper("hello")
+print lower("WORLD")
+print contains("navescript", "script")
+print join(split("a,b,c", ","), "-")
+
+// slice
+let a = [10, 20, 30, 40, 50]
+print slice(a, 1, 4)
+
+// assert + conversions
+assert(1 == 1, "math works")
+print int("42")
+print abs(-7)
+
+// time / env
+print now()
+print env("PATH") != ""
+
+print "MORE OK"

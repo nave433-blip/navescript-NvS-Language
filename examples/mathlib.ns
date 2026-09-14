@@ -1,0 +1,7 @@
+fn double(n) {
+  return n * 2
+}
+fn square(n) {
+  return n * n
+}
+let PI = 3

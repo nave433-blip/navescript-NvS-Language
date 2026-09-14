@@ -1,0 +1,30 @@
+let nums = [1, 2, 3, 4, 5]
+let doubled = map_fn(nums, fn(x) { return x * 2 })
+print doubled
+
+let evens = filter(nums, fn(x) { return x % 2 == 0 })
+print evens
+
+let sum = reduce(nums, fn(a, b) { return a + b }, 0)
+print sum
+
+print zip([1, 2, 3], ["a", "b", "c"])
+print repeat("na", 3)
+print enumerate(["x", "y"])
+
+print regex_match("\\d+", "abc123")
+print regex_find("\\w+", "hello world")
+print regex_replace("\\s+", "a  b   c", " ")
+
+print csv_parse("a,b\nc,d")
+print url_encode("hello world")
+print url_decode("hello+world")
+
+print any(nums, fn(x) { return x > 4 })
+print all(nums, fn(x) { return x > 0 })
+
+let ms = timeit(fn() { let s = 0; for (let i = 0; i < 1000; i = i + 1) { s = s + i } }, 10)
+print ms
+
+eprint("to stderr")
+print "HOF OK"

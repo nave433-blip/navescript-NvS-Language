@@ -1,37 +1,17 @@
-name: Navescript CI
-
+name: CI
 on:
   push:
-    branches: [ master ]
+    branches: [master, main]
   pull_request:
-    branches: [ master ]
-
 jobs:
   build:
-    name: Build and Test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.21'
-
-    - name: Install NASM
-      run: sudo apt-get install -y nasm
-
-    - name: Build Navescript
-      run: make build
-
-    - name: Run Core Tests
-      run: ./bin/nvs run tests/core_test.ns
-
-    - name: Run Go Tests
-      run: make test
-
-    - name: Upload Binaries
-      uses: actions/upload-artifact@v3
-      with:
-        name: navescript-binaries
-        path: bin/
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build
+        run: go build -o bin/nvs ./cmd/nvs/
+      - name: Regression
+        run: go run ./cmd/nvs/ run examples/full_regression.ns

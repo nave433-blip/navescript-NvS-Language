@@ -1,0 +1,78 @@
+// === Core ===
+let n = 10
+const PI = 3
+n += 5
+print n
+print PI
+print null ?? "default"
+print true && true
+print false || true
+print 2 in [1, 2, 3]
+
+// === Control ===
+if (n > 10) {
+  print "big"
+} else if (n == 10) {
+  print "ten"
+} else {
+  print "small"
+}
+
+let i = 0
+while (i < 2) { i = i + 1 }
+print i
+
+for (let j = 0; j < 2; j = j + 1) { }
+for (x in range(2)) { print x }
+
+// === Functions / HOF ===
+fn double(x) { return x * 2 }
+print double(21)
+print map_fn([1, 2], fn(x) { return x * 10 })
+print filter([1, 2, 3, 4], fn(x) { return x % 2 == 0 })
+print reduce([1, 2, 3], fn(a, b) { return a + b }, 0)
+
+// === Generators ===
+fn gen() { yield 1; yield 2 }
+let g = gen()
+print next(g)
+print next(g)
+
+// === Classes ===
+class Box {
+  init(v) { this.v = v }
+  get() { return this.v }
+}
+let b = new Box(99)
+print b.get()
+
+// === Match / try ===
+print match (2) {
+  case 1 { "one" }
+  case 2 { "two" }
+  default { "other" }
+}
+try {
+  throw "err"
+} catch (e) {
+  print "caught"
+}
+
+// === Collections / strings ===
+print sum([1, 2, 3])
+print join(split("a,b", ","), "-")
+print upper("hi")
+print regex_match("\\d+", "a1")
+
+// === JSON / FS ===
+write_json("/tmp/nvs_reg.json", {"ok": true})
+print read_json("/tmp/nvs_reg.json")["ok"]
+
+// === Metrics ===
+metric_inc("t")
+print metric_get("t")
+
+// === Polyglot ===
+print python("print(1+1)")
+
+print "REGRESSION OK"

@@ -1,0 +1,28 @@
+// Arrays
+let nums = [1, 2, 3, 4, 5]
+print nums
+print nums[0]
+print nums[4]
+print len(nums)
+
+// Assignment
+let x = 10
+x = x * 2
+print x
+
+// For loop
+print "counting:"
+for (let i = 0; i < 5; i = i + 1) {
+  print i
+}
+
+// Sum with for
+let sum = 0
+for (let i = 1; i <= 5; i = i + 1) {
+  sum = sum + i
+}
+print sum
+
+// Nested
+let arr = ["Nave", "script"]
+print arr[0] + arr[1]

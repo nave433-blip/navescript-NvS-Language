@@ -1,0 +1,42 @@
+// Bitwise
+print 5 & 3
+print 5 | 2
+print 1 << 4
+
+// Strings
+print replace("hello world", "world", "nvs")
+print trim("  hi  ")
+print starts_with("navescript", "nave")
+print ends_with("navescript", "script")
+print substr("abcdef", 2, 3)
+
+// Arrays
+let a = [3, 1, 4, 1, 5]
+sort(a)
+print a
+print pop(a)
+reverse(a)
+print a
+
+// Maps
+let m = {"x": 1, "y": 2}
+print has(m, "x")
+delete(m, "y")
+print has(m, "y")
+
+// Math
+print min(3, 1, 4)
+print max([1, 9, 2])
+print floor(pow(2, 10))
+print sqrt(16)
+
+// FS
+print exists(".")
+print len(listdir("."))
+
+// Format
+print format("hello {0}, id={1}", "Nave", 42)
+
+// sleep briefly
+sleep(10)
+print "STDLIB OK"

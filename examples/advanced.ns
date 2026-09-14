@@ -1,0 +1,52 @@
+// const
+const MAX = 100
+print MAX
+
+// try/catch
+try {
+  throw "something broke"
+} catch (err) {
+  print "caught: " + err
+}
+
+try {
+  print "all good"
+} catch (err) {
+  print "should not see this"
+}
+
+// match
+let code = 2
+let msg = match (code) {
+  case 1 {
+    "one"
+  }
+  case 2 {
+    "two"
+  }
+  default {
+    "other"
+  }
+}
+print msg
+
+// range + for-in
+print "range:"
+for (n in range(3)) {
+  print n
+}
+
+// keys/values
+let m = {"a": 1, "b": 2}
+print keys(m)
+print values(m)
+
+// polyglot python
+let py = python("print(2+2)")
+print "python says: " + py
+
+// system
+let who = system("echo hello-from-shell")
+print who
+
+print "ADVANCED OK"

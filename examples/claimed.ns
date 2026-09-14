@@ -1,0 +1,53 @@
+// Typed let
+let n: int = 42
+print n
+
+// Generator
+fn count() {
+  yield 1
+  yield 2
+  yield 3
+}
+let g = count()
+print next(g)
+print next(g)
+print next(g)
+
+// Decorator
+fn loud(f) {
+  return fn(x) {
+    print "calling"
+    return f(x)
+  }
+}
+@loud
+fn double(x) {
+  return x * 2
+}
+print double(21)
+
+// Polyglot
+print python("print('py-ok')")
+print js("console.log('js-ok')")
+print ruby("puts 'ruby-ok'")
+
+// Metrics + trace
+metric_inc("requests")
+metric_inc("requests")
+print metric_get("requests")
+metric_gauge("temp", 36)
+trace("handler", "done")
+
+// Hardware / WASI stubs (honest)
+print hardware_info()
+print wasi_info()
+
+// Mini DB
+let db = sqlite_open(":memory:")
+sqlite_exec(db, "CREATE TABLE users (id, name)")
+sqlite_exec(db, "INSERT INTO users VALUES (1, 'Nave')")
+let rows = sqlite_query(db, "SELECT * FROM users")
+print rows
+sqlite_close(db)
+
+print "CLAIMED FEATURES OK"

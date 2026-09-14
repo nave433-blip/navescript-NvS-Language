@@ -1,1 +1,51 @@
-log("Hello World!");
+// === Arrays + index assignment ===
+let a = [10, 20, 30]
+a[1] = 99
+print a
+
+// === Maps (hashes) ===
+let person = {"name": "Nave", "age": 25}
+print person
+print person["name"]
+person["age"] = 26
+print person["age"]
+
+// === for-in ===
+print "for-in array:"
+for (n in a) {
+  print n
+}
+
+print "for-in string:"
+for (ch in "hi") {
+  print ch
+}
+
+// === break / continue ===
+print "break test:"
+for (let i = 0; i < 10; i = i + 1) {
+  if (i == 3) {
+    break
+  }
+  print i
+}
+
+print "continue test:"
+for (let i = 0; i < 5; i = i + 1) {
+  if (i == 2) {
+    continue
+  }
+  print i
+}
+
+// === while + break ===
+let x = 0
+while (true) {
+  if (x >= 3) {
+    break
+  }
+  print x
+  x = x + 1
+}
+
+print "ALL OK"
