@@ -1,0 +1,32 @@
+class Person {
+  init(name, age) {
+    this.name = name
+    this.age = age
+  }
+  greet() {
+    return "Hi, I'm " + this.name + " and I'm " + str(this.age)
+  }
+  birthday() {
+    this.age = this.age + 1
+  }
+}
+
+let p = new Person("Nave", 25)
+print p.greet()
+p.birthday()
+print p.greet()
+print type(p)
+
+class Worker extends Person {
+  init(name, age, job) {
+    this.name = name
+    this.age = age
+    this.job = job
+  }
+  greet() {
+    return "Hi, I'm " + this.name + ", a " + this.job
+  }
+}
+
+let w = new Worker("Alex", 30, "engineer")
+print w.greet()
