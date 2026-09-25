@@ -153,3 +153,39 @@ nvs run examples/wave8_rotations.ns
 nvs run examples/wave8_circuit.ns
 nvs run examples/wave8_measure.ns
 ```
+
+### Wave 9 — tooling robbery (in progress)
+- [x] `nvs fmt`: LEXICAL formatter (AST `String()` is lossy — try/match/defer
+      don't round-trip — so no AST pretty-printer). Normalizes: 4-space indent
+      by brace/paren/bracket depth, tabs→spaces outside strings, trailing
+      whitespace removed, blank lines collapsed (max 1, none leading), exactly
+      one trailing newline. Leaves alone: string contents (incl. `${}`
+      interpolation — braces there never indent), comment contents, in-line
+      spacing. Tested idempotent + behavior-preserving (every `examples/*.ns`
+      runs byte-identical before/after fmt, modulo pre-existing nondeterminism:
+      map/set order, random/uuid/now/timeit, quantum measurement).
+      `nvs fmt --check` for CI (exit 1 + lists files that would change).
+- [x] `nvs lint`: four SOUND rules, no false positives on normal code —
+      `unused-binding` (warning; fn params excluded, named fns exempt, any
+      mention incl. assignment counts as a use), `shadow-builtin` (warning;
+      Go builtins only, not prelude.ns), `unreachable-code` (warning; only
+      direct statements after return/break/continue/throw in a block),
+      `null-comparison` (style; suggests `is_null()`). `file:line: severity
+      rule: message`; exit 0 clean / 1 findings; `--json` supported.
+      NOT claimed: dataflow, cross-file analysis, type inference.
+- [x] `nvs doc`: MINIMAL stub (labeled as such in help + docs). Extracts `//`
+      doc comments immediately preceding top-level fn/class/record/interface
+      decls (+ trivial fn params/defaults/return annotation) → Markdown
+      (`## name`, signature line, doc text). No nested docs, no cross-links.
+- [x] 24 new Go tests (formatter idempotency + behavior preservation incl.
+      real examples, per-rule lint positive/negative cases, doc extraction);
+      `eval.BuiltinNames()` exported for the shadow-builtin rule.
+- [x] Examples: `wave9_fmt_bad.ns` (deliberately badly formatted),
+      `wave9_lint.ns` (four findings, still `nvs run`-clean),
+      `wave9_doc.ns` (documented decls, `nvs run`-clean).
+
+```bash
+nvs fmt --check examples/wave9_fmt_bad.ns   # exits 1, lists the file
+nvs lint examples/wave9_lint.ns             # exits 1, names the four rules
+nvs doc examples/wave9_doc.ns
+```

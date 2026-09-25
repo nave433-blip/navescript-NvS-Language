@@ -1,0 +1,19 @@
+// wave9_lint.ns — exercises `nvs lint` rules.
+// Runs clean under `nvs run` (exit 0); `nvs lint` must exit 1 naming the rules.
+
+let unused_var = 42
+
+let len = "shadowed builtin"
+
+fn early() {
+    return 1
+    print("this is unreachable")
+}
+
+let maybe = null
+if (maybe == null) {
+    print("is null")
+}
+
+print(len)
+print(early())

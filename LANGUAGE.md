@@ -10,6 +10,9 @@ nvs                  # REPL
 nvs run file.ns
 nvs init
 nvs info
+nvs fmt [--check] [files...]
+nvs lint [--json] [files...]
+nvs doc [files...]
 ```
 
 ## Feature map (established-language inspired)
@@ -365,6 +368,73 @@ nvs run examples/wave8_superposition.ns
 nvs run examples/wave8_rotations.ns
 nvs run examples/wave8_circuit.ns
 nvs run examples/wave8_measure.ns
+```
+
+## Wave 9 — tooling robbery (2.2.0-dev)
+
+Developer tooling, gofmt/rustfmt/clippy/cargo-doc inspired — small and
+honest about scope.
+
+### `nvs fmt` — canonical formatter (lexical, not AST-based)
+
+The AST `String()` methods are lossy (`try` prints as `try { ... }`,
+`match` as `match (...) { ... }`), so an AST pretty-printer could not
+round-trip. `nvs fmt` is therefore **lexical**: it never parses, it only
+re-indents and tidies whitespace.
+
+```bash
+nvs fmt [files...]          # format in place (stdin → stdout if no files)
+nvs fmt --check [files...]  # exit 1 + list files that would change (CI use)
+```
+
+Normalizes: 4-space indentation by `{ }`/`( )`/`[ ]` depth; tabs → 4 spaces
+(outside strings); trailing-whitespace removal; blank lines collapsed to at
+most one (leading blanks dropped); exactly one trailing newline.
+Deliberately leaves alone: string contents (including `${...}`
+interpolation — braces there never affect indentation), `//` and `/* */`
+comment contents (lines inside a multi-line string/comment are not
+re-indented), and all in-line spacing (`f (x)` stays `f (x)`).
+Guarantees, tested: idempotent (`fmt(fmt(x)) == fmt(x)`) and
+behavior-preserving (verified: every `examples/*.ns` runs byte-identical
+before/after formatting, modulo pre-existing nondeterminism).
+
+### `nvs lint` — a small set of sound static checks
+
+```bash
+nvs lint [files...]         # 0 = clean, 1 = findings; findings print as
+                            # file:line: severity rule: message
+nvs lint --json [files...]  # machine-readable output
+```
+
+| Rule | Severity | Meaning |
+|------|----------|---------|
+| `unused-binding` | warning | `let`/`const` bound but never referenced anywhere in the file. Excludes function params (too noisy) and named `fn` declarations (entry points / library APIs). Any mention — including a plain assignment — counts as a use, so no false positives on normal code (shadowing can hide a case: false negatives, never false positives). |
+| `shadow-builtin` | warning | `let`/`const`/plain assignment to a Go-builtin name (`len`, `print`, …). Covers Go-registered builtins only, not `prelude.ns` functions. |
+| `unreachable-code` | warning | Statements in a block directly after `return`/`break`/`continue`/`throw`. Only direct block statements — no analysis through conditions (code after `while (true) {}` is not flagged). |
+| `null-comparison` | style | `x == null` / `x != null` → suggests `is_null(x)`. |
+| `parse-error` | error | File doesn't parse; no further checks ran. |
+
+What is NOT claimed: no dataflow analysis, no type inference, no
+cross-file/module analysis, no dead-code detection beyond the direct
+unreachable rule.
+
+### `nvs doc` — minimal doc-comment extractor (stub, labeled as such)
+
+```bash
+nvs doc [files...]          # Markdown to stdout
+```
+
+Extracts `//` doc comments immediately preceding **top-level**
+`fn`/`class`/`record`/`interface` declarations (a blank line stops the
+comment block) and emits `## name`, a reconstructed signature
+(`fn add(a, b)`, defaults and return annotation included when trivial),
+and the doc text. Nested declarations, cross-references, and index pages
+are out of scope — this is a stub, not rustdoc.
+
+```bash
+nvs run examples/wave9_fmt_bad.ns    # deliberately badly formatted
+nvs lint examples/wave9_lint.ns      # exits 1, names the four rules
+nvs doc examples/wave9_doc.ns
 ```
 
 ## Not full ports (by design)

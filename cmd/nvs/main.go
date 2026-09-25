@@ -11,6 +11,7 @@ import (
 	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
 	"github.com/navescript/nvs/internal/parser"
+	"github.com/navescript/nvs/internal/tools"
 )
 
 // NvS — Navescript custom language
@@ -51,6 +52,12 @@ func main() {
 		fmt.Printf("%s (%s) %s\n", LANGUAGE, LANGUAGEFull, VERSION)
 	case "info":
 		printLanguageInfo()
+	case "fmt":
+		runFmt(os.Args[2:])
+	case "lint":
+		runLint(os.Args[2:])
+	case "doc":
+		runDoc(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -73,6 +80,9 @@ Usage:
   nvs eval '<code>'       Evaluate a snippet
   nvs init                Scaffold a new NvS project
   nvs info                Language identity & capabilities
+  nvs fmt [files...]      Format files (reads stdin if no files)
+  nvs lint [files...]     Lint files (0 = clean, 1 = findings)
+  nvs doc [files...]      Extract doc comments as Markdown (minimal stub)
   nvs version             Show version
   nvs help                Show this help
 
@@ -140,6 +150,195 @@ main()
 		fmt.Printf("created %s\n", path)
 	}
 	fmt.Println("NvS project initialized. Run: nvs run main.ns")
+}
+
+// --- Wave 9: developer tooling ---
+
+func fmtHelp() {
+	fmt.Print(`nvs fmt — canonical code formatter (lexical, gofmt/rustfmt idea)
+
+Usage:
+  nvs fmt [--check] [files...]
+  nvs fmt --help
+
+With no files, reads stdin and writes formatted output to stdout.
+Otherwise formats each file in place.
+
+Normalizes: 4-space indentation by brace/paren/bracket depth, tabs to
+spaces (outside strings), trailing-whitespace removal, blank-line
+collapsing (max 1 consecutive), exactly one trailing newline.
+Leaves alone: string contents (incl. ${} interpolation), comments,
+in-line spacing.
+
+  --check   exit 1 and list files that would change; exit 0 if all clean
+`)
+}
+
+func runFmt(args []string) {
+	check := false
+	var files []string
+	for _, a := range args {
+		switch a {
+		case "--check":
+			check = true
+		case "-h", "--help":
+			fmtHelp()
+			return
+		default:
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		if check {
+			fmt.Fprintln(os.Stderr, "nvs fmt --check needs at least one file")
+			os.Exit(1)
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fmt: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(tools.Format(string(data)))
+		return
+	}
+	changedAny := false
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fmt: %v\n", err)
+			os.Exit(1)
+		}
+		formatted := tools.Format(string(data))
+		if formatted == string(data) {
+			continue
+		}
+		changedAny = true
+		if check {
+			fmt.Println(f)
+			continue
+		}
+		changed, err := tools.FormatFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fmt: %v\n", err)
+			os.Exit(1)
+		}
+		if changed {
+			fmt.Printf("formatted %s\n", f)
+		}
+	}
+	if check && changedAny {
+		os.Exit(1)
+	}
+}
+
+func lintHelp() {
+	fmt.Print(`nvs lint — small set of sound static checks (clippy idea)
+
+Usage:
+  nvs lint [--json] <files...>
+  nvs lint --help
+
+Rules:
+  unused-binding  let/const bound but never referenced (warning)
+                  (function params excluded; named fns exempt)
+  shadow-builtin  let/const/assignment shadows a builtin like len (warning)
+  unreachable-code  code after return/break/continue/throw in a block (warning)
+  null-comparison   x == null / x != null; suggests is_null() (style)
+
+Findings print as: file:line: severity rule: message
+Exit code: 0 = clean, 1 = findings (or a file that fails to parse).
+
+  --json   emit findings as JSON instead of text
+`)
+}
+
+func runLint(args []string) {
+	asJSON := false
+	var files []string
+	for _, a := range args {
+		switch a {
+		case "--json":
+			asJSON = true
+		case "-h", "--help":
+			lintHelp()
+			return
+		default:
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nvs lint [--json] <files...>")
+		os.Exit(1)
+	}
+	var all []tools.Finding
+	for _, f := range files {
+		findings, perr, err := tools.LintFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "lint: %v\n", err)
+			os.Exit(1)
+		}
+		for _, e := range perr {
+			fmt.Fprintf(os.Stderr, "%s: parser error: %s\n", f, e)
+		}
+		all = append(all, findings...)
+	}
+	if asJSON {
+		fmt.Print(tools.FindingsJSON(all))
+	} else {
+		for _, fd := range all {
+			fmt.Println(fd.String())
+		}
+	}
+	if len(all) > 0 {
+		os.Exit(1)
+	}
+}
+
+func docHelp() {
+	fmt.Print(`nvs doc — MINIMAL doc-comment extractor (stub, not rustdoc)
+
+Usage:
+  nvs doc <files...>
+  nvs doc --help
+
+Extracts // doc comments immediately preceding top-level fn/class/record/
+interface declarations (and fn params, trivially) and emits Markdown:
+
+  ## name
+  ` + "`fn name(a, b)`" + `
+  doc text...
+
+Only top-level declarations are covered; no nested docs, no cross-links.
+`)
+}
+
+func runDoc(args []string) {
+	var files []string
+	for _, a := range args {
+		switch a {
+		case "-h", "--help":
+			docHelp()
+			return
+		default:
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nvs doc <files...>")
+		os.Exit(1)
+	}
+	multi := len(files) > 1
+	for _, f := range files {
+		entries, perr, err := tools.ExtractDocsFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "doc: %v\n", err)
+			os.Exit(1)
+		}
+		for _, e := range perr {
+			fmt.Fprintf(os.Stderr, "%s: parser error: %s\n", f, e)
+		}
+		fmt.Print(tools.RenderMarkdown(f, entries, multi))
+	}
 }
 
 func runFile(path string, withPrelude bool) {
