@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/navescript/nvs/internal/bytecode"
+	"github.com/navescript/nvs/internal/nave"
 	"github.com/navescript/nvs/internal/eval"
 	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
@@ -16,7 +17,7 @@ import (
 
 // NvS — Navescript custom language
 const (
-	VERSION      = "2.8.0"
+	VERSION      = "2.9.0"
 	LANGUAGE     = "NvS"
 	LANGUAGEFull = "Navescript"
 )
@@ -67,6 +68,15 @@ func main() {
 		// Load mini_eval and call it
 		wrap := "import \"stdlib/selfhost/mini_eval.ns\"\nprint mini_eval(" + fmt.Sprintf("%q", code) + ")\n"
 		runCode(wrap, true)
+	case "nave", "jarvis":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: nvs nave <file.nave>")
+			os.Exit(1)
+		}
+		if err := nave.RunFile(os.Args[2], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "bytecode", "bc":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs bytecode <file.ns|'code'> [--disasm]")
@@ -125,6 +135,7 @@ Usage:
   nvs selfhost <src>       Run pure-NvS mini interpreter
   nvs bootstrap            Build host + run selfhost/baseline
   nvs bytecode <src> [-d]  Compile & run on stack VM (--disasm)
+  nvs nave|jarvis <file>   Run NJSON/.nave workflow (Jarvis/NASI style)
   nvs info                Language identity & capabilities
   nvs version             Show version
   nvs help                Show this help
