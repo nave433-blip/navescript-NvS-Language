@@ -437,6 +437,135 @@ nvs lint examples/wave9_lint.ns      # exits 1, names the four rules
 nvs doc examples/wave9_doc.ns
 ```
 
+## Wave 10 — polyglot interop: write NvS once, use it from any language
+
+Four mechanisms, one contract: NvS values cross language boundaries as
+JSON (`internal/polyglot`), and anything that cannot convert fails loudly
+— never silently mis-converted.
+
+### C ABI (`cbridge/`)
+
+```bash
+go build -buildmode=c-shared -o libnvs.so ./cbridge   # → libnvs.so + libnvs.h
+```
+
+Exports:
+
+```c
+char* nvs_eval(const char* src);                 // eval NvS source
+char* nvs_call(const char* func_name, const char* args_json);  // call fn by name
+void  nvs_free(char* s);                         // free a returned string
+```
+
+Contract (also documented in `cbridge/cbridge.go`):
+
+- **One persistent interpreter** for the process lifetime: functions and
+  bindings defined by one `nvs_eval` are visible to later calls.
+- **Serialized**: concurrent calls from multiple threads are safe (one
+  global mutex); they never run in parallel.
+- **Ownership**: every non-null return from `nvs_eval`/`nvs_call` is a
+  freshly `malloc`'d C string you own — **you must call `nvs_free`** on
+  it. Never `free()` it yourself, never leak it.
+- Responses are the shared JSON envelope (below): `{"ok":true,"result":…}`
+  or `{"ok":false,"error":"…"}`.
+
+Convertible NvS values: int, float, string, bool, null, array, hash (keys:
+string/int/bool, rendered `"1"`/`"true"`; a key collision after rendering
+is an error). A function value, builtin, or anything else as a result is
+`ok:false` naming the NvS type — e.g. `cannot convert NvS FUNCTION to
+JSON`. Integer-syntax JSON numbers stay NvS integers across the boundary
+(`UseNumber`, so `9007199254740993` never becomes a float).
+
+Tested for real: `examples/wave10_ctypes.py` (Python `ctypes`, all
+assertions pass — signatures use `c_void_p` so `nvs_free` gets the real
+pointer, and every return is freed).
+
+Other languages, same ABI — **sketches, not tested** (the ABI is plain C,
+so these are the standard FFI spellings; verify against your toolchain):
+
+| Language | FFI route | Sketch |
+|----------|-----------|--------|
+| Python | ctypes (tested) / cffi | `examples/wave10_ctypes.py` |
+| Node.js | ffi-napi | `const lib = ffi.Library('./libnvs', {nvs_eval: ['string', ['string']], nvs_call: ['string', ['string', 'string']], nvs_free: ['void', ['string']]}); const p = lib.nvs_eval('1+2'); …` — note: route the raw pointer through `nvs_free`; do not let ffi-napi free it |
+| Ruby | fiddle / ffi gem | `Fiddle::Function.new(handle['nvs_eval'], [Fiddle::TYPE_VOIDP], Fiddle::TYPE_VOIDP)` — same ownership rule |
+| Rust | `extern "C"` | `extern "C" { fn nvs_eval(src: *const c_char) -> *mut c_char; fn nvs_free(s: *mut c_char); }` + `CStr::from_ptr` + `nvs_free` |
+| C# | P/Invoke | `[DllImport("libnvs")] static extern IntPtr nvs_eval(string src);` — marshal as `IntPtr`, call `nvs_free`, never `Marshal.FreeHGlobal` |
+| Java | JNA | `Pointer nvs_eval(String src); void nvs_free(Pointer p);` — read with `getString(0)`, then `nvs_free` |
+
+### JSON stdio bridge (`nvs bridge`)
+
+For languages without (or above) FFI: a persistent interpreter behind a
+JSON-line protocol.
+
+```bash
+nvs bridge            # reads requests on stdin, writes responses on stdout
+```
+
+Protocol — one JSON object per line in, one JSON envelope per line out:
+
+```
+{"eval": "<nvs source>"}            → {"ok":true,"result":<json>}
+{"call": "<name>", "args": [...]}   → {"ok":true,"result":<json>}   (user fns + builtins)
+anything malformed                  → {"ok":false,"error":"invalid request: …"}
+```
+
+One session = one interpreter: definitions persist across lines, all
+requests serialized. `examples/wave10_bridge_client.py` drives it from
+Python for real (persistence, builtins, nested values, honest parse/call
+errors — see `wave10_bridge_client.expected`).
+
+### Transpiler (`nvs transpile --to=js|python`)
+
+An **honest-subset** source-to-source transpiler (`internal/transpile`):
+it covers only the subset whose semantics are identical in NvS, JS, and
+Python, emits a small runtime prelude (`__div`, `__str`, `__truthy`, …)
+where the targets would otherwise differ, and **rejects everything else
+with an error naming the construct** — it never emits silently-wrong code.
+
+```bash
+nvs transpile --to=js examples/wave10_transpile_demo.ns > demo.js
+nvs transpile --to=python examples/wave10_transpile_demo.ns > demo.py
+```
+
+**In the subset:** `let`/`const` (typed bindings: annotations erased),
+arithmetic with NvS integer division/modulo, string interpolation,
+`if`/`else` statements, ternaries, `while`, C-style `for`, `for`-`in`
+over arrays/strings/hash-keys, `break`/`continue` (incl. continue-with-post
+in desugared Python `for`), named `fn` with implicit trailing-expression
+returns and default literal params, recursion, closures assigning outer
+bindings (Python gets correct `nonlocal`/`global`), arrays, string-keyed
+hashes, indexing/slicing with NvS clamping, `??`, `and`/`or`/`!` with NvS
+truthiness, `==` with NvS identity semantics for arrays/hashes. Builtin
+mapping is explicit and small: `len`, `str`, `push`, `split`, `upper`,
+`lower`, `abs`, `range`, `keys`.
+
+**Out of the subset (each a named error):** classes, pattern matching,
+exceptions, defer, generators, decorators, destructuring, spread, optional
+chaining, ranges `a..b`, tuples, member access/calls, imports, named args,
+anonymous functions (Python target), if/while/for as a function value,
+loop labels, for/while-`else`.
+
+**Preconditions / non-goals:** the input must run without errors in NvS —
+error behavior (const violations, type errors, arity errors) is *not*
+replicated; comments are dropped; type annotations are erased without
+runtime enforcement; numeric range is the target's (JS bitwise ops are
+32-bit); hash iteration order stays unspecified everywhere.
+
+Verified: `internal/transpile` tests transpile a semantics-heavy program
+and run the emitted JS under node and Python under python3, comparing
+against NvS output — equal.
+
+### WASM
+
+The full interpreter cross-compiles to WebAssembly (pure Go, no cgo):
+
+```bash
+GOOS=js GOARCH=wasm go build -o nvs.wasm ./cmd/nvs/
+```
+
+Build-only: the binary builds (verified 2026-09-25); executing it in a
+browser/Node WASM runtime has not been tested and is not claimed.
+
 ## Not full ports (by design)
 - Static Hindley–Milner type inference
 - Preemptive threading / shared-memory parallelism (the wave-6 model is

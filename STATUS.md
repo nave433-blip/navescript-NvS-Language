@@ -189,3 +189,51 @@ nvs fmt --check examples/wave9_fmt_bad.ns   # exits 1, lists the file
 nvs lint examples/wave9_lint.ns             # exits 1, names the four rules
 nvs doc examples/wave9_doc.ns
 ```
+
+### Wave 10 — polyglot interop (in progress)
+- [x] **C ABI** (`cbridge/`, cgo): `nvs_eval`, `nvs_call`, `nvs_free` —
+      one persistent interpreter, serialized calls, caller-owned return
+      strings (must `nvs_free`). Shared JSON envelope
+      `{"ok":true,"result":…}` / `{"ok":false,"error":"…"}`. Convertible:
+      int/float/string/bool/null/array/hash (keys string/int/bool;
+      collisions are errors); anything else is `ok:false` naming the NvS
+      type. Verified: `go build -buildmode=c-shared` → `nm -D` shows all
+      three symbols; `examples/wave10_ctypes.py` passes (ctypes,
+      `c_void_p` signatures, every return freed).
+- [x] **JSON stdio bridge** (`nvs bridge`): `{"eval":…}` /
+      `{"call": name, "args": […]}` per line → one envelope per line;
+      persistent session, malformed lines → honest `invalid request`
+      envelopes, trailing data rejected. `examples/wave10_bridge_client.py`
+      drives it for real (see `wave10_bridge_client.expected`).
+- [x] **Transpiler** (`nvs transpile --to=js|python`, `internal/transpile`):
+      HONEST SUBSET — runtime prelude (`__div`/`__str`/`__truthy`/…)
+      preserves NvS integer division, NvS truthiness, Inspect coercion,
+      Go %g floats, slice clamping; implicit trailing returns, closures
+      with correct Python `nonlocal`/`global`, continue-with-post in
+      desugared C-for. Anything outside the subset is an `UnsupportedError`
+      naming the construct. Verified: emitted JS run under node and
+      emitted Python under python3 match `nvs run` output
+      (`examples/wave10_transpile_demo.ns` + `.expected`, plus Go tests
+      comparing live).
+- [x] **WASM**: `GOOS=js GOARCH=wasm go build -o nvs.wasm ./cmd/nvs/`
+      succeeds (pure Go, no cgo). Build-only — browser/Node execution not
+      tested, not claimed.
+- [x] New Go tests: `internal/polyglot` (JSON round-trips, key collisions,
+      honest type errors, trailing-data rejection), `internal/bridge`
+      (persistence, builtins, malformed lines, integer preservation),
+      `internal/transpile` (subset accept/reject, live-output comparison).
+      `go build ./...`, `go vet ./...` clean; `go test ./...`: 248 pass,
+      0 fail.
+- [x] Backward compat: 64/69 pre-Wave-10 `examples/*.ns` byte-identical
+      (stdout+stderr+exit) vs `b23b1fb` baseline binary; the 5 diffs are
+      all excluded nondeterminism (random/uuid, timeit, quantum shots, Go
+      map order, corrections-DB state). `claimed.ns`/`plugins.ns` still
+      exit 1 (missing Ruby), `security_research.ns` still exits 1 —
+      identical.
+
+```bash
+go build -buildmode=c-shared -o libnvs.so ./cbridge
+python3 examples/wave10_ctypes.py ./libnvs.so
+nvs transpile --to=js examples/wave10_transpile_demo.ns | node
+GOOS=js GOARCH=wasm go build -o nvs.wasm ./cmd/nvs/
+```

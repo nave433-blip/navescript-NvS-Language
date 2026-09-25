@@ -1,0 +1,49 @@
+// wave10_transpile_demo.ns — Wave 10 polyglot interop.
+//
+// A program inside the transpilable subset (see LANGUAGE.md, "Transpiler
+// subset"). It exercises the semantics the transpiler's runtime prelude
+// exists to preserve: integer division/modulo, NvS truthiness (only
+// null/false are falsy), Inspect-style string coercion, implicit function
+// returns, C-style for with continue, and for-in over strings.
+//
+//   nvs transpile --to=js wave10_transpile_demo.ns > demo.js && node demo.js
+//   nvs transpile --to=python wave10_transpile_demo.ns > demo.py && python3 demo.py
+//
+// Both must print exactly what `nvs run wave10_transpile_demo.ns` prints
+// (see wave10_transpile_demo.expected).
+fn fact(n) {
+  if (n <= 1) { return 1 }
+  return n * fact(n - 1)
+}
+print fact(10)
+
+let total = 0
+for (let i = 1; i <= 20; i = i + 1) {
+  if (i % 2 == 0) { continue }
+  total = total + i
+}
+print total
+
+print 7 / 2
+print 0 - 7 % 3
+
+fn label(x) {
+  if (x) { return "truthy" }
+  "falsy"
+}
+print label(0)
+print label("")
+print label(null)
+
+let words = ["alpha", "beta", "gamma"]
+print len(words)
+print push(words, "delta")
+print str(words)
+
+for (c in "NvS") {
+  print c
+}
+
+let mixed = {"name": "nvs", "n": 10}
+print mixed["name"]
+print mixed["n"] * 2

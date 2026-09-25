@@ -58,6 +58,10 @@ func main() {
 		runLint(os.Args[2:])
 	case "doc":
 		runDoc(os.Args[2:])
+	case "transpile":
+		runTranspile(os.Args[2:])
+	case "bridge":
+		runBridge(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -83,6 +87,10 @@ Usage:
   nvs fmt [files...]      Format files (reads stdin if no files)
   nvs lint [files...]     Lint files (0 = clean, 1 = findings)
   nvs doc [files...]      Extract doc comments as Markdown (minimal stub)
+  nvs transpile --to=js|python <file.ns>
+                          Transpile the NvS subset to JavaScript or Python
+  nvs bridge              JSON stdio bridge: read requests on stdin,
+                          write {"ok":...} responses on stdout
   nvs version             Show version
   nvs help                Show this help
 
