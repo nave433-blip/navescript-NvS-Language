@@ -1,0 +1,4 @@
+// math helpers for mini_eval import tests
+fn mini_square(n) { return n * n }
+fn mini_sum3(a, b, c) { return a + b + c }
+let MINI_MATH_VERSION = 1
