@@ -1,0 +1,34 @@
+// Wave 6 — ping-pong over channels.
+// Two tasks bounce a counter back and forth N times. The channel protocol
+// forces strict alternation, so the result is fully deterministic.
+
+let N = 50
+let a2b = chan()
+let b2a = chan()
+
+fn pinger(outbox, inbox, rounds) {
+  for (i in 0...rounds) {
+    send(outbox, i)
+    let got = recv(inbox)
+    assert(got == i + 1, "ping-pong mismatch at round ${i}")
+  }
+  return "pinger done"
+}
+
+fn ponger(inbox, outbox, rounds) {
+  for (i in 0...rounds) {
+    let v = recv(inbox)
+    send(outbox, v + 1)
+  }
+  return "ponger done"
+}
+
+let t1 = spawn(pinger, a2b, b2a, N)
+let t2 = spawn(ponger, a2b, b2a, N)
+
+assert(join(t1) == "pinger done", "pinger result")
+assert(join(t2) == "ponger done", "ponger result")
+assert(task_status(t1) == "done", "pinger status")
+assert(task_status(t2) == "done", "ponger status")
+
+print "ping-pong ok"

@@ -208,9 +208,78 @@ nvs run examples/wave5_interfaces.ns
 nvs run examples/wave5_guards.ns
 ```
 
+## Wave 6 — concurrency robbery (2.2.0-dev)
+
+**The model is cooperative message-passing** (Lua coroutines / Erlang
+processes / JS workers lineage). Under the hood the execution mechanism is
+Go goroutines, but the documented contract — the only thing programs may
+rely on — is cooperative:
+
+- Tasks switch at **explicit yield points only**: `sleep()`,
+  `task_yield()`, a blocking `send()`/`recv()`, or `join()`. User code can
+  never observe a switch anywhere else.
+- **NO SHARED MUTABLE STATE.** Values crossing a channel (`send`) or passed
+  as `spawn` arguments are **deep-copied** — arrays, hashes, tuples, and
+  records (frozen-ness preserved), so the sender can never observe or
+  disturb what the receiver got. Channel and task handles pass by reference
+  — they are the communication mechanism, never copied. Functions,
+  builtins, class instances, and generators also pass by reference (they
+  cannot be copied). **Mutating a value that is visible from two tasks is a
+  data race and a bug in your program; communicate via channels.**
+- The interpreter's variable store is mutex-guarded, so concurrent
+  top-level `let`/assignment cannot corrupt the map itself. Racy programs
+  get last-writer-wins semantics — and this paragraph telling them not to
+  do that.
+- `nvs run` waits for every spawned task to finish before exiting, so no
+  task output is lost to an early exit.
+
+| Builtin | Meaning |
+|---------|---------|
+| `spawn(fn, args...)` | Run `fn` concurrently; returns a task handle. Args are deep-copied (handles pass by reference). |
+| `chan()` / `chan(n)` | Unbuffered channel / buffered with capacity `n`. |
+| `send(ch, v)` | Blocking send (rendezvous if unbuffered). Errors on a closed channel. |
+| `recv(ch)` | Blocking receive. Returns `null` once the channel is closed **and** drained. |
+| `try_recv(ch)` | Non-blocking: `[true, v]` or `[false, null]` (empty and closed+drained both read `[false, null]`). |
+| `try_send(ch, v)` | Non-blocking: `true` if accepted, `false` if the buffer is full. Errors on a closed channel. |
+| `close(ch)` | Seal the channel: buffered values still drain, then `recv` gives `null`. Double-close is an error. |
+| `sleep(x)` | Integer `x` = milliseconds (**unchanged** historical unit); float `x` = seconds. A yield point. |
+| `task_yield()` | Explicit cooperative yield (named `task_yield` because `yield` is the generator keyword). |
+| `join(task)` | Block until the task finishes; returns its return value. If the task raised, `join` re-raises the same error (catchable with `try`/`catch`). (The 2-argument `join(array, sep)` string form is unchanged.) |
+| `task_status(task)` | `"running"` or `"done"`. |
+| `pmap(fn, array)` | Parallel map: one task per element, results collected in order. A task error aborts the map and re-raises. |
+
+```ns
+let ch = chan()
+fn worker(c) {
+  let v = recv(c)
+  return v * 2
+}
+let t = spawn(worker, ch)
+send(ch, 21)
+print join(t)   // 42
+```
+
+```bash
+nvs run examples/wave6_pingpong.ns
+nvs run examples/wave6_pmap.ns
+nvs run examples/wave6_tryrecv.ns
+nvs run examples/wave6_sleep_yield.ns
+nvs run examples/wave6_join_values.ns
+nvs run examples/wave6_closed_channel.ns
+```
+
+Honest edges, documented:
+- A blocking `send` on an unbuffered channel with no receiver parks forever;
+  pair every send with a receiver, or use `try_send` for deadlock-avoidance.
+- Spawning a generator function (one containing `yield` statements) runs it
+  to completion; `join` returns the generator.
+- `pmap` over an empty array returns `[]` without spawning anything.
+
 ## Not full ports (by design)
 - Static Hindley–Milner type inference
-- True OS threads / async runtime
+- Preemptive threading / shared-memory parallelism (the wave-6 model is
+  cooperative message-passing; shared mutable state across tasks is a user
+  bug, not a feature)
 - Native GPU / USB drivers
 - Full macro system / compiler backend
 

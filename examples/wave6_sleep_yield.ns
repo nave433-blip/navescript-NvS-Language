@@ -1,0 +1,31 @@
+// Wave 6 — sleep and yield are scheduling points.
+// The worker sends three messages with sleeps between them; the main task
+// receives them in order. Blocking recv makes the protocol deterministic —
+// no wall-clock assertions anywhere. Also exercises both sleep units:
+// float = seconds, integer = milliseconds (historical).
+
+let ch = chan()
+
+fn worker(outbox) {
+  task_yield()
+  send(outbox, "first")
+  sleep(0.02)
+  send(outbox, "second")
+  sleep(10)
+  send(outbox, "third")
+  return "worker done"
+}
+
+let t = spawn(worker, ch)
+
+assert(recv(ch) == "first", "message 1")
+assert(recv(ch) == "second", "message 2")
+assert(recv(ch) == "third", "message 3")
+assert(join(t) == "worker done", "worker result")
+assert(task_status(t) == "done", "status after join")
+
+// sleep returns null either way
+assert(sleep(1) == null, "int sleep returns null")
+assert(sleep(0.001) == null, "float sleep returns null")
+
+print "sleep/yield ok"

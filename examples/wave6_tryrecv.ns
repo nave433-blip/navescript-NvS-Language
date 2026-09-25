@@ -1,0 +1,35 @@
+// Wave 6 — try_recv loop: non-blocking receive for deadlock-avoidance.
+// The producer sends exactly 5 values then closes; the consumer polls with
+// try_recv and yields when the channel is momentarily empty.
+
+let ch = chan()
+
+fn producer(outbox) {
+  for (i in 1..5) {
+    send(outbox, i * 10)
+  }
+  close(outbox)
+  return "sent"
+}
+
+let t = spawn(producer, ch)
+
+let got = []
+while (len(got) < 5) {
+  let r = try_recv(ch)
+  if (r[0]) {
+    got = push(got, r[1])
+  } else {
+    task_yield()
+  }
+}
+
+assert(deep_equal(got, [10, 20, 30, 40, 50]), "try_recv values in order")
+
+// Now the channel is closed and drained:
+let r = try_recv(ch)
+assert((r[0] == false) and (r[1] == null), "try_recv on closed+drained")
+assert(recv(ch) == null, "recv on closed+drained is null")
+
+assert(join(t) == "sent", "producer result")
+print "try_recv ok"

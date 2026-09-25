@@ -4690,14 +4690,20 @@ func initBuiltins() {
 		"sleep": {
 			Fn: func(args ...object.Object) object.Object {
 				if len(args) != 1 {
-					return newError("sleep: want milliseconds")
+					return newError("sleep: want 1 argument (integer milliseconds, or float seconds)")
 				}
-				ms, ok := args[0].(*object.Integer)
-				if !ok {
-					return newError("sleep: want integer ms")
+				// Wave 6: float seconds added; integer milliseconds keeps
+				// its historical meaning. Sleeping is a task yield point.
+				switch v := args[0].(type) {
+				case *object.Integer:
+					time.Sleep(time.Duration(v.Value) * time.Millisecond)
+					return NULL
+				case *object.Float:
+					time.Sleep(time.Duration(v.Value * float64(time.Second)))
+					return NULL
+				default:
+					return newError("sleep: want integer ms or float seconds, got %s", args[0].Type())
 				}
-				time.Sleep(time.Duration(ms.Value) * time.Millisecond)
-				return NULL
 			},
 		},
 		"exit": {
@@ -4746,26 +4752,6 @@ func initBuiltins() {
 					el[i] = &object.String{Value: p}
 				}
 				return &object.Array{Elements: el}
-			},
-		},
-		"join": {
-			Fn: func(args ...object.Object) object.Object {
-				if len(args) != 2 {
-					return newError("join: want array, sep")
-				}
-				arr, ok := args[0].(*object.Array)
-				if !ok {
-					return newError("join: first arg must be array")
-				}
-				sep := ","
-				if s, ok := args[1].(*object.String); ok {
-					sep = s.Value
-				}
-				parts := make([]string, len(arr.Elements))
-				for i, e := range arr.Elements {
-					parts[i] = e.Inspect()
-				}
-				return &object.String{Value: strings.Join(parts, sep)}
 			},
 		},
 		"upper": {
@@ -6242,6 +6228,8 @@ func initBuiltins() {
 	}
 	// Wave 5: runtime type contracts — annotations, interfaces, type guards.
 	registerWave5Builtins()
+	// Wave 6: cooperative tasks and channels.
+	registerWave6Builtins()
 }
 
 func ensureBuiltins() {

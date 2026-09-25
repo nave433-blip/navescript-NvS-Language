@@ -95,3 +95,22 @@ nvs run examples/wave5_unions.ns
 nvs run examples/wave5_interfaces.ns
 nvs run examples/wave5_guards.ns
 ```
+
+### Wave 6 — concurrency robbery (in progress)
+- [x] **Cooperative message-passing model** (Lua/Erlang/JS-workers lineage; Go goroutines underneath): tasks switch only at yield points (`sleep`, `task_yield`, blocking `send`/`recv`, `join`) — never preemptively in any way user code can observe
+- [x] **No shared mutable state**: channel sends and `spawn` args are deep-copied (arrays/hashes/tuples/records, frozen-ness preserved); channel/task handles pass by reference, never copied; functions/builtins/instances/generators pass by reference (documented in LANGUAGE.md, in bold terms)
+- [x] `Environment` store mutex-guarded (`sync.RWMutex`): concurrent top-level `let`/assignment can't corrupt the map (last-writer-wins, documented as "don't do that"); `go test -race` clean
+- [x] `spawn(fn, args...)` → task handle; `join(task)` returns the value or re-raises the task's error (catchable); `task_status(task)` → `"running"`/`"done"`; `task_yield()` (named so because `yield` is the generator keyword)
+- [x] `chan()` / `chan(n)`; blocking `send`/`recv` (rendezvous if unbuffered); non-blocking `try_send`→bool / `try_recv`→`[true,v]`/`[false,null]`; `close(ch)`; `recv`→`null` once closed+drained; `send` on closed / double-close are loud errors
+- [x] `sleep` extended honestly: integer = milliseconds (**unchanged**), float = seconds (new); `join(array, sep)` string form preserved exactly (1-arg task form dispatches on type)
+- [x] `pmap(fn, array)` — one task per element, order-preserving, errors re-raise
+- [x] `nvs run` drains all spawned tasks before exiting (no orphaned output); a program that raises still exits 1 immediately
+
+```bash
+nvs run examples/wave6_pingpong.ns
+nvs run examples/wave6_pmap.ns
+nvs run examples/wave6_tryrecv.ns
+nvs run examples/wave6_sleep_yield.ns
+nvs run examples/wave6_join_values.ns
+nvs run examples/wave6_closed_channel.ns
+```

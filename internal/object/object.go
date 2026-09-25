@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/navescript/nvs/internal/ast"
 )
@@ -34,6 +35,9 @@ const (
 	GENERATOR_OBJ = "GENERATOR"
 	YIELD_OBJ     = "YIELD"
 	NAMED_ARG_OBJ = "NAMED_ARG"
+	// Wave 6: cooperative concurrency — tasks and channels.
+	TASK_OBJ    = "TASK"
+	CHANNEL_OBJ = "CHANNEL"
 )
 
 type Object interface {
@@ -418,7 +422,14 @@ func (g *Generator) Next() Object {
 
 // Environment
 
+// Environment maps names to values. Wave 6: the store is guarded by an
+// RWMutex so that concurrent tasks cannot corrupt the map itself when they
+// touch top-level bindings. This gives last-writer-wins semantics for racy
+// programs — it does NOT make sharing mutable state between tasks safe.
+// That is a data race and a bug in the user program; tasks must communicate
+// via channels, whose values are deep-copied at send time.
 type Environment struct {
+	mu        sync.RWMutex
 	store     map[string]Object
 	constants map[string]bool
 	// Wave 5: declared variable types from `let x: type = ...`. Checked on
@@ -444,52 +455,69 @@ func NewEnclosedEnvironment(outer *Environment) *Environment {
 }
 
 func (e *Environment) SetConst(name string, val Object) Object {
+	e.mu.Lock()
 	e.store[name] = val
 	e.constants[name] = true
+	e.mu.Unlock()
 	return val
 }
 
 func (e *Environment) IsConst(name string) bool {
+	e.mu.RLock()
 	if e.constants[name] {
+		e.mu.RUnlock()
 		return true
 	}
-	if e.outer != nil {
-		return e.outer.IsConst(name)
+	outer := e.outer
+	e.mu.RUnlock()
+	if outer != nil {
+		return outer.IsConst(name)
 	}
 	return false
 }
 
 func (e *Environment) Get(name string) (Object, bool) {
+	e.mu.RLock()
 	obj, ok := e.store[name]
-	if !ok && e.outer != nil {
-		obj, ok = e.outer.Get(name)
+	outer := e.outer
+	e.mu.RUnlock()
+	if !ok && outer != nil {
+		return outer.Get(name)
 	}
 	return obj, ok
 }
 
 func (e *Environment) Set(name string, val Object) Object {
+	e.mu.Lock()
 	e.store[name] = val
+	e.mu.Unlock()
 	return val
 }
 
 // DeclareType remembers the annotated type of a `let name: type = ...`
 // binding in this environment. Re-declaring a name replaces the type.
 func (e *Environment) DeclareType(name string, ann *ast.TypeAnnotation) {
+	e.mu.Lock()
 	if e.declaredTypes == nil {
 		e.declaredTypes = make(map[string]*ast.TypeAnnotation)
 	}
 	e.declaredTypes[name] = ann
+	e.mu.Unlock()
 }
 
 // LookupDeclaredType finds the annotated type declared for name, walking
 // outward through enclosing environments. The second return value reports
 // whether any declaration was found.
 func (e *Environment) LookupDeclaredType(name string) (*ast.TypeAnnotation, bool) {
-	if ann, ok := e.declaredTypes[name]; ok {
+	e.mu.RLock()
+	ann, ok := e.declaredTypes[name]
+	outer := e.outer
+	e.mu.RUnlock()
+	if ok {
 		return ann, true
 	}
-	if e.outer != nil {
-		return e.outer.LookupDeclaredType(name)
+	if outer != nil {
+		return outer.LookupDeclaredType(name)
 	}
 	return nil, false
 }
@@ -497,29 +525,181 @@ func (e *Environment) LookupDeclaredType(name string) (*ast.TypeAnnotation, bool
 // Assign updates name in the environment where it was defined.
 // Returns false if name is not found in the chain.
 func (e *Environment) Assign(name string, val Object) bool {
+	e.mu.Lock()
 	if _, ok := e.store[name]; ok {
 		if e.constants[name] {
+			e.mu.Unlock()
 			return false // signal const violation via caller
 		}
 		e.store[name] = val
+		e.mu.Unlock()
 		return true
 	}
-	if e.outer != nil {
-		return e.outer.Assign(name, val)
+	outer := e.outer
+	e.mu.Unlock()
+	if outer != nil {
+		return outer.Assign(name, val)
 	}
 	return false
 }
 
 func (e *Environment) AssignStrict(name string, val Object) (bool, string) {
+	e.mu.Lock()
 	if _, ok := e.store[name]; ok {
 		if e.constants[name] {
+			e.mu.Unlock()
 			return false, "cannot assign to const: " + name
 		}
 		e.store[name] = val
+		e.mu.Unlock()
 		return true, ""
 	}
-	if e.outer != nil {
-		return e.outer.AssignStrict(name, val)
+	outer := e.outer
+	e.mu.Unlock()
+	if outer != nil {
+		return outer.AssignStrict(name, val)
 	}
 	return false, ""
+}
+
+// ---- Wave 6: cooperative concurrency — tasks and channels ----
+
+// Task is a handle to a concurrently running function invocation. It is a
+// communication handle, never a value: it passes by reference and is never
+// deep-copied.
+type Task struct {
+	ID   int64
+	done chan struct{} // closed exactly once, when the task finishes
+	mu   sync.Mutex
+	res  Object // set before done is closed
+}
+
+func NewTask(id int64) *Task {
+	return &Task{ID: id, done: make(chan struct{})}
+}
+
+func (t *Task) Type() ObjectType { return TASK_OBJ }
+func (t *Task) Inspect() string {
+	if t.IsDone() {
+		return fmt.Sprintf("task #%d (done)", t.ID)
+	}
+	return fmt.Sprintf("task #%d (running)", t.ID)
+}
+
+// Finish records the task result (a return value, or an *Error if the task
+// raised) and wakes all joiners. It must be called exactly once.
+func (t *Task) Finish(res Object) {
+	t.mu.Lock()
+	t.res = res
+	t.mu.Unlock()
+	close(t.done)
+}
+
+// Wait blocks until the task finishes and returns its result.
+func (t *Task) Wait() Object {
+	<-t.done
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.res
+}
+
+// IsDone reports whether the task has finished, without blocking.
+func (t *Task) IsDone() bool {
+	select {
+	case <-t.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Channel is a typed message queue between tasks. Values sent through it
+// are deep-copied by the sender (see eval.deepCopyMessage); the Channel
+// handle itself passes by reference and is never copied.
+type Channel struct {
+	ch     chan Object
+	cap    int
+	mu     sync.Mutex
+	closed bool
+}
+
+func NewChannel(capacity int) *Channel {
+	if capacity < 0 {
+		capacity = 0
+	}
+	return &Channel{ch: make(chan Object, capacity), cap: capacity}
+}
+
+func (c *Channel) Type() ObjectType { return CHANNEL_OBJ }
+func (c *Channel) Inspect() string {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return "channel (closed)"
+	}
+	if c.cap == 0 {
+		return "channel (unbuffered)"
+	}
+	return fmt.Sprintf("channel (buffered, cap %d)", c.cap)
+}
+
+// Capacity returns the buffer capacity (0 = unbuffered rendezvous channel).
+func (c *Channel) Capacity() int { return c.cap }
+
+func (c *Channel) IsClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// Close marks the channel closed. Receivers drain remaining values, then
+// see null. Reports false if the channel was already closed.
+func (c *Channel) Close() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return false
+	}
+	c.closed = true
+	close(c.ch)
+	return true
+}
+
+// Send blocks until a receiver takes the value (rendezvous when
+// unbuffered). It panics if the channel is closed — callers recover and
+// report an NvS error instead.
+func (c *Channel) Send(v Object) { c.ch <- v }
+
+// Recv blocks until a value arrives. ok is false once the channel is
+// closed AND drained.
+func (c *Channel) Recv() (v Object, ok bool) {
+	v, ok = <-c.ch
+	return v, ok
+}
+
+// TrySend never blocks: it reports whether the value was accepted. It
+// panics if the channel is closed — callers check IsClosed first and
+// recover as a backstop.
+func (c *Channel) TrySend(v Object) bool {
+	select {
+	case c.ch <- v:
+		return true
+	default:
+		return false
+	}
+}
+
+// TryRecv never blocks. received is false when the channel is momentarily
+// empty OR closed-and-drained; both surface as [false, null] in NvS.
+func (c *Channel) TryRecv() (v Object, received bool) {
+	select {
+	case v, ok := <-c.ch:
+		if !ok {
+			return nil, false
+		}
+		return v, true
+	default:
+		return nil, false
+	}
 }

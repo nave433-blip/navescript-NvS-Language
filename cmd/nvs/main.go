@@ -172,6 +172,10 @@ func runCode(code string, withPrelude bool) {
 		fmt.Fprintln(os.Stderr, result.Inspect())
 		os.Exit(1)
 	}
+	// Wave 6: wait for all spawned tasks to finish before exiting, so no
+	// task output is lost to an early exit. A program that raised an error
+	// exits immediately above instead of risking a deadlock here.
+	eval.DrainSpawnedTasks()
 }
 
 func printParserErrors(out io.Writer, errors []string) {
