@@ -6245,6 +6245,8 @@ func initBuiltins() {
 	// Wave 7: standard library robbery — datetime, http, crypto, base64,
 	// subprocess, path, toml, compression.
 	registerWave7Builtins()
+	// Wave 8: quantum robbery — LOCAL state-vector simulator (not hardware).
+	registerWave8Builtins()
 }
 
 func ensureBuiltins() {

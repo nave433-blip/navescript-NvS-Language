@@ -1,0 +1,47 @@
+// wave8_superposition.ns — deterministic probability checks on the LOCAL
+// simulator (not quantum hardware). q_probs is exact math, not sampling,
+// so these assertions never flake.
+
+fn close(a, b) { return abs(a - b) < 0.000000001 }
+
+// H|0> = (|0> + |1>) / sqrt(2)
+let q = qalloc(1)
+q_h(q, 0)
+let p = q_probs(q)
+print "H|0> probs: ${p}"
+if (!close(p[0], 0.5)) { throw "H|0>: p0 should be 0.5" }
+if (!close(p[1], 0.5)) { throw "H|0>: p1 should be 0.5" }
+
+// X|0> = |1>
+let q2 = qalloc(1)
+q_x(q2, 0)
+let p2 = q_probs(q2)
+print "X|0> probs: ${p2}"
+if (p2[0] != 0) { throw "X|0>: p0 should be 0" }
+if (p2[1] != 1) { throw "X|0>: p1 should be 1" }
+
+// H is its own inverse: H(H|0>) = |0> (up to float dust).
+let q3 = qalloc(1)
+q_h(q3, 0)
+q_h(q3, 0)
+let p3 = q_probs(q3)
+print "H(H|0>) probs: ${p3}"
+if (!close(p3[0], 1)) { throw "H(H|0>): p0 should be 1" }
+if (!close(p3[1], 0)) { throw "H(H|0>): p1 should be 0" }
+
+// q_state exposes amplitudes as [re, im] pairs (NvS has no complex type).
+// X|0> = |1>: amplitude of |1> is exactly 1+0i.
+let s = q_state(q2)
+print "X|0> state: ${s}"
+if (s[1][0] != 1) { throw "X|0>: re should be 1" }
+if (s[1][1] != 0) { throw "X|0>: im should be 0" }
+
+// Y|0> = i|1>: the amplitude lives entirely in the imaginary part.
+let q4 = qalloc(1)
+q_y(q4, 0)
+let s4 = q_state(q4)
+print "Y|0> state: ${s4}"
+if (s4[1][0] != 0) { throw "Y|0>: re should be 0" }
+if (s4[1][1] != 1) { throw "Y|0>: im should be 1" }
+
+print "superposition ok: gate matrices verified against known states"

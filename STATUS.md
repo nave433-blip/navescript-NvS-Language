@@ -135,3 +135,21 @@ nvs run examples/wave7_env_path.ns
 nvs run examples/wave7_toml.ns
 nvs run examples/wave7_gzip.ns
 ```
+
+### Wave 8 — quantum robbery (in progress)
+- [x] **LOCAL state-vector simulator, NOT quantum hardware** — the disclaimer is in LANGUAGE.md, the code comments, `QRegister.Inspect()`, and the circuit diagram header. Ideal/noise-free; gates are real matrix math on 2^n complex128 amplitudes (Qiskit-Aer-style); measurement collapse uses `crypto/rand`
+- [x] `qalloc(n)` → register in |0…0⟩; **cap 24 qubits** (2^24 = 256MB state, O(2^n) gates) with a loud `simulator limit` error beyond it; `q_nqubits`
+- [x] Gates (all return the register, chainable): `q_h`/`q_x`/`q_y`/`q_z`/`q_s`/`q_t`, `q_rx`/`q_ry`/`q_rz` (radians), `q_cnot`/`q_cz`/`q_swap`; out-of-range qubit index and same-qubit two-qubit gates are honest errors
+- [x] **Little-endian convention** (qubit 0 = LSB), documented in LANGUAGE.md and wave8.go; `q_measure` → 0/1, `q_measure_all` → bit array in qubit order
+- [x] Inspection: `q_probs` (deterministic 2^n probabilities), `q_state` (`[re, im]` pairs — NvS has no complex type), `q_circuit` (ASCII diagram + op legend), `q_reset` (state and diagram cleared)
+- [x] `QuantumBackend` Go interface (ApplyGate/Measure/MeasureAll/Probabilities/Amplitudes/Reset/CircuitDiagram) with the local simulator as its implementation; `q_backend("local")` → `"local-simulator"`, anything else (e.g. `"azure"`) is a loud "not connected in this build" error — hardware is never faked
+- [x] 24 new Go tests (gate matrices vs known states via `q_probs`/`q_state`, Bell state, error paths, circuit string, backend registry); measurement tests only assert forced outcomes / post-collapse shape — no flaky statistics
+- [x] 5 examples, each run 5× with no flakes: Bell-pair correlation (asserts 01/10 never occur, not exact ratios), superposition probs, rotations, circuit display, measure collapse
+
+```bash
+nvs run examples/wave8_bell.ns
+nvs run examples/wave8_superposition.ns
+nvs run examples/wave8_rotations.ns
+nvs run examples/wave8_circuit.ns
+nvs run examples/wave8_measure.ns
+```

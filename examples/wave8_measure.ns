@@ -1,0 +1,48 @@
+// wave8_measure.ns — measurement collapse on the LOCAL simulator
+// (not quantum hardware). q_measure uses crypto/rand — honest classical
+// randomness — but every assertion below is on a FORCED outcome or on the
+// post-collapse state shape, so this never flakes.
+
+// Measuring a basis state is deterministic.
+let q = qalloc(1)
+q_x(q, 0)
+let b = q_measure(q, 0)
+print "measure|1> = ${b}"
+if (b != 1) { throw "measuring |1> must give 1" }
+// After collapse the register is still |1>: probabilities prove it.
+let p = q_probs(q)
+if (p[1] != 1) { throw "post-measure state should be |1>" }
+
+let q0 = qalloc(1)
+let b0 = q_measure(q0, 0)
+if (b0 != 0) { throw "measuring |0> must give 0" }
+
+// Measuring one qubit of a Bell pair collapses the pair to a basis state:
+// afterwards exactly one probability is 1 and the rest are 0 — whichever
+// outcome the randomness chose.
+let q2 = qalloc(2)
+q_h(q2, 0)
+q_cnot(q2, 0, 1)
+let m = q_measure(q2, 0)
+print "bell qubit0 measured: ${m}"
+let p2 = q_probs(q2)
+print "post-collapse probs: ${p2}"
+let ones = 0
+for (x in p2) {
+  if (abs(x - 1) < 0.000000001) { ones = ones + 1 } else { if (abs(x) > 0.000000001) { throw "collapsed state is not a basis state" } }
+}
+if (ones != 1) { throw "collapsed state should have exactly one probability of 1" }
+// And the two qubits agree (entanglement survived as classical correlation).
+let rest = q_measure(q2, 1)
+if (rest != m) { throw "Bell pair qubits must agree after collapse" }
+print "measure ok: collapse is real and consistent"
+
+// q_measure_all returns bits in qubit order: element i is qubit i.
+let q3 = qalloc(3)
+q_x(q3, 2)
+let bits = q_measure_all(q3)
+print "measure_all of |100>: ${bits}"
+if (bits[0] != 0) { throw "qubit 0 should be 0" }
+if (bits[1] != 0) { throw "qubit 1 should be 0" }
+if (bits[2] != 1) { throw "qubit 2 should be 1" }
+print "measure_all ok: little-endian bit order confirmed"

@@ -43,6 +43,7 @@ nvs info
 | Interop | detect_lang, to_nvs, from_nvs, translate, corrections DB | — |
 | DX | highlight, fuzzy_*, nvs_info | editors / shells |
 | Meta | nvs_version, nvs_language, plugins, applets | — |
+| Quantum | qalloc, q_h/x/y/z/s/t, q_rx/ry/rz, q_cnot/cz/swap, q_measure(_all), q_probs/state, q_circuit, q_reset, q_backend — **local state-vector simulator, not hardware** | Qiskit, Cirq |
 
 ## Wave 1 — ergonomics robbery (2.2.0-dev)
 
@@ -319,6 +320,51 @@ nvs run examples/wave7_subprocess.ns
 nvs run examples/wave7_env_path.ns
 nvs run examples/wave7_toml.ns
 nvs run examples/wave7_gzip.ns
+```
+
+## Wave 8 — quantum robbery (2.2.0-dev)
+
+> **THIS IS A LOCAL SIMULATOR, NOT QUANTUM HARDWARE.** Every builtin below
+> runs on your own CPU. NvS tracks the full state vector (2^n complex
+> amplitudes for n qubits) and applies real gate matrices to it — the same
+> approach as Qiskit Aer / Cirq's simulator. Nothing here talks to a quantum
+> processor or to Azure Quantum / IBM Quantum / any cloud backend. Gate
+> results are computed, not measured from nature; the only genuine
+> randomness is classical (`crypto/rand`) collapsing the simulated state on
+> measurement. Ideal and noise-free: no decoherence, no gate errors.
+
+| Builtin | Meaning |
+|---------|---------|
+| `qalloc(n)` | Allocate an n-qubit register in \|0…0⟩. **Simulator limit: at most 24 qubits** (2^24 complex128 = 256MB of state; every gate is O(2^n)) — more is a loud error, not a hang. |
+| `q_h`/`q_x`/`q_y`/`q_z`/`q_s`/`q_t(q, i)` | Single-qubit gates on qubit `i`. Real matrix application, not faked. |
+| `q_rx`/`q_ry`/`q_rz(q, i, theta)` | Rotations, **theta in radians** (int or float). |
+| `q_cnot(q, ctrl, tgt)` | Controlled-NOT. `q_cz(q, a, b)` phase flip, `q_swap(q, a, b)` exchange. |
+| `q_measure(q, i)` → `0`/`1` | Real probabilistic collapse via `crypto/rand` (honest randomness, no fixed seed). |
+| `q_measure_all(q)` | Array of bits **in qubit order** (element 0 = qubit 0). |
+| `q_probs(q)` | Array of 2^n outcome probabilities — deterministic, the test-friendly surface. |
+| `q_state(q)` | Array of `[re, im]` pairs (NvS has no complex type — documented representation). |
+| `q_nqubits(q)` | Register width. |
+| `q_circuit(q)` | ASCII circuit diagram of gates applied so far (●/⊕ = CNOT, ◉ = CZ, × = SWAP, M = measurement), plus an op legend. |
+| `q_reset(q)` | Back to \|0…0⟩, recorded circuit cleared. |
+| `q_backend(name)` | `"local"` → `"local-simulator"`. Anything else (e.g. `"azure"`) is an **honest error**: `hardware backend "azure" is not connected in this build — local simulator only`. A future hardware backend implements the Go `QuantumBackend` interface (`ApplyGate`, `Measure`, …); the local simulator is its first implementation. NvS will never fake a hardware connection. |
+
+Gates return the register, so calls chain: `q_h(q_h(qalloc(1), 0), 0)`.
+Out-of-range qubit indices are loud errors. Registers are mutable handles
+(like wave-6 channels/tasks): they pass by reference and are not safe to
+share across tasks.
+
+**Conventions (one choice, documented): little-endian** — qubit 0 is the
+least significant bit. State index `i` is \|q_{n-1}…q_1 q_0⟩ with bit `j` of
+`i` = qubit `j`: `q_probs(q)[2]` on 2 qubits is P(\|10⟩) = P(qubit1=1,
+qubit0=0), and the Bell state from `q_h(q,0); q_cnot(q,0,1)` has
+probabilities `[0.5, 0, 0, 0.5]`.
+
+```bash
+nvs run examples/wave8_bell.ns
+nvs run examples/wave8_superposition.ns
+nvs run examples/wave8_rotations.ns
+nvs run examples/wave8_circuit.ns
+nvs run examples/wave8_measure.ns
 ```
 
 ## Not full ports (by design)
