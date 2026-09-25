@@ -1,0 +1,29 @@
+// Use isolated corrections DB
+print correction_path("/tmp/nvs_corr_test.json")
+
+// Check a translation
+let r = translation_check("python", "nvs", "print(99)")
+print r["ok"]
+print r["output"]
+print r["errors"]
+
+// Learn a custom correction
+let id = translation_learn("python", "nvs", "print(hello)", "print \"hello\"", "fix print(hello) bare word")
+print id
+
+// Real-time pull
+print correction_pull("python", "nvs", "print(hello)")
+
+// translate should hit DB
+print translate("python", "nvs", "print(hello)")
+
+// List
+print correction_list("python", "nvs")
+
+// translation_check shows corrected=true
+let r2 = translation_check("python", "nvs", "print(hello)")
+print r2["ok"]
+print r2["corrected"]
+print r2["output"]
+
+print "CORRECTIONS OK"

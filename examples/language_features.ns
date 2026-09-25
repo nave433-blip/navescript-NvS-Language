@@ -1,0 +1,43 @@
+// Comprehensive language features demo
+
+print 0xFF
+print 0b1010
+
+let arr = [10, 20, 30, 40, 50]
+print arr[1:4]
+print arr[2:]
+print "hello"[1:4]
+
+enum Color { Red, Green, Blue }
+print Color["Green"]
+
+let flag = 0
+try {
+  throw "boom"
+} catch (e) {
+  print "caught: " + e
+} finally {
+  flag = 1
+}
+print flag
+
+fn with_defer() {
+  defer print "cleanup"
+  print "work"
+  return 42
+}
+print with_defer()
+
+print typeof(42)
+print isinstance(true, "BOOLEAN")
+print deep_equal([1, 2], [1, 2])
+
+print round(3.6)
+print sin(0)
+
+let s = set(1, 2, 3)
+print set_has(s, 2)
+set_add(s, 4)
+print set_has(s, 4)
+
+print "LANG_FEATURES OK"

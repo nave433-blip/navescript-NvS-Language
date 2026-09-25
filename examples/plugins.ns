@@ -1,0 +1,15 @@
+print "plugins: " + plugins()
+
+print python("print(2+2)")
+print js("console.log(2+2)")
+print ruby("puts 2+2")
+
+print rust("println!(\"rust-ok\");")
+print golang("fmt.Println(\"go-ok\")")
+print c("printf(\"c-ok\\n\");")
+print cpp("std::cout << \"cpp-ok\" << std::endl;")
+print java("System.out.println(\"java-ok\");")
+
+print css("body { color: red; } .x { margin: 0; }")
+
+print "PLUGINS OK"

@@ -1,0 +1,10 @@
+bin/
+*.exe
+*.test
+*.out
+.DS_Store
+/tmp/
+*.pyc
+__pycache__/
+target/
+node_modules/

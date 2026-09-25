@@ -1,0 +1,10 @@
+let db = sqlite_open(":memory:")
+sqlite_exec(db, "CREATE TABLE users (id INTEGER, name TEXT)")
+sqlite_exec(db, "INSERT INTO users VALUES (1, 'Nave')")
+sqlite_exec(db, "INSERT INTO users VALUES (2, 'Alex')")
+let rows = sqlite_query(db, "SELECT name FROM users ORDER BY id")
+for (row in rows) {
+  print row["name"]
+}
+sqlite_close(db)
+print "SQLITE OK"

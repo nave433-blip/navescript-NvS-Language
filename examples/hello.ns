@@ -1,0 +1,25 @@
+// Hello Navescript
+print "Hello, Navescript!"
+
+let x = 10
+let y = 32
+print x + y
+
+fn greet(name) {
+  return "Hello, " + name + "!"
+}
+print greet("World")
+
+let i = 0
+while (i < 3) {
+  print i
+  let i = i + 1
+}
+
+if (x > 5) {
+  print "x is greater than 5"
+} else {
+  print "x is small"
+}
+
+print len("navescript")

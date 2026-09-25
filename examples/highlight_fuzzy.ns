@@ -1,0 +1,24 @@
+// Syntax highlighting (ANSI)
+let code = "let x = 10\nfn add(a, b) { return a + b }\nprint add(1, 2)"
+print "--- NvS highlight ---"
+print highlight(code)
+print "--- Python highlight ---"
+print highlight("def f(x):\n  print(x)\n  return True", "python")
+print "stripped: " + highlight_strip(highlight("let y = 1"))
+
+// Fuzzy matching
+print fuzzy_score("nvs", "navescript")
+print fuzzy_score("print", "printf")
+print fuzzy_match("fn", "function", 0.3)
+print fuzzy_match("xyz", "hello", 0.5)
+
+let langs = ["python", "javascript", "ruby", "rust", "golang", "navescript", "java"]
+print fuzzy_best("pythn", langs)
+print fuzzy_best("nvs", langs)
+
+let found = fuzzy_find("go", langs, 0.2, 5)
+for (item in found) {
+  print item["value"] + " => " + str(item["score"])
+}
+
+print "HIGHLIGHT_FUZZY OK"

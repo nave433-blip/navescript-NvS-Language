@@ -1,0 +1,36 @@
+// Membership in
+print 2 in [1, 2, 3]
+print "x" in {"x": 1, "y": 2}
+print "scr" in "navescript"
+
+// Short-circuit
+fn boom() { throw "should not run"; return 1 }
+print false && boom()
+print true || boom()
+print "ok" ?? boom()
+
+// group_by / sort_by
+let people = [
+  {"name": "Ann", "dept": "eng"},
+  {"name": "Bob", "dept": "sales"},
+  {"name": "Cat", "dept": "eng"}
+]
+let byDept = group_by(people, fn(p) { return p["dept"] })
+print keys(byDept)
+let sorted = sort_by(people, fn(p) { return p["name"] })
+print sorted[0]["name"]
+
+// glob / env
+print len(glob("examples/*.ns")) > 0
+set_env("NVS_TEST", "1")
+print env("NVS_TEST")
+
+// helpers
+print is_null(null)
+print is_empty([])
+print pad_left("7", 3, "0")
+print pad_right("x", 4, ".")
+print count([1, 2, 1, 1], 1)
+print count("mississippi", "ss")
+
+print "MORE3 OK"

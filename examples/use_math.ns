@@ -1,0 +1,4 @@
+import "examples/mathlib.ns"
+print double(21)
+print square(5)
+print PI

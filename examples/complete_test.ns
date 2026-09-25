@@ -1,0 +1,15 @@
+let x = 0
+while (x < 5) {
+  print "Loop iteration: " + str(x)
+  x = x + 1
+}
+
+fn greet(name) {
+  print "Hello from Nave, " + name
+}
+greet("Developer")
+
+let py_res = python("x=10\nprint(f'Python saw x as {x}')")
+print py_res
+
+print "COMPLETE OK"

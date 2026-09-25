@@ -1,0 +1,23 @@
+// NvS standard prelude (auto-loaded)
+// Core helpers expressed in NvS itself.
+
+fn assert(cond, msg) {
+  if (!cond) {
+    throw msg ?? "assertion failed"
+  }
+  return true
+}
+
+fn identity(x) { return x }
+
+fn compose(f, g) {
+  return fn(x) { return f(g(x)) }
+}
+
+fn range_list(n) {
+  let out = []
+  for (let i = 0; i < n; i = i + 1) {
+    out = push(out, i)
+  }
+  return out
+}

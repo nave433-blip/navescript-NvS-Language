@@ -1,0 +1,34 @@
+// Null coalescing
+let a = null
+print a ?? "default"
+print "kept" ?? "nope"
+
+// Array helpers
+let nums = [1, 2, 3, 4, 5, 6]
+print sum(nums)
+print avg(nums)
+print take(nums, 3)
+print drop(nums, 3)
+print chunk(nums, 2)
+
+// find / index_of
+print find(nums, fn(x) { return x > 3 })
+print index_of(nums, 4)
+print index_of("hello", "ll")
+
+// lines
+print lines("a\nb\nc")
+
+// JSON files
+write_json("/tmp/nvs.json", {"ok": true, "n": 7})
+let data = read_json("/tmp/nvs.json")
+print data["n"]
+
+// FS
+mkdir("/tmp/nvs_dir")
+print exists("/tmp/nvs_dir")
+print cwd()
+remove("/tmp/nvs_dir")
+print exists("/tmp/nvs_dir")
+
+print "MORE2 OK"

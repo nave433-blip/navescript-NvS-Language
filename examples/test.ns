@@ -1,0 +1,12 @@
+let x = 10;
+let y = 32;
+let z = x + y;
+if (z == 42) {
+  log("Success! 10 + 32 = 42");
+} else {
+  log("Failure!");
+}
+fn test(a, b) {
+  return a + b;
+}
+test(x, y);
