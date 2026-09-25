@@ -65,6 +65,10 @@ func main() {
 		runTranspile(os.Args[2:])
 	case "bridge":
 		runBridge(os.Args[2:])
+	case "exports":
+		runExports(os.Args[2:])
+	case "bindgen":
+		runBindgen(os.Args[2:])
 	case "bc":
 		// Experimental bytecode compile+run, ported from the 2.8 track.
 		// Honest subset: arithmetic, comparisons, let/const, if/else,
@@ -116,6 +120,11 @@ Usage:
                           Transpile the NvS subset to JavaScript or Python
   nvs bridge              JSON stdio bridge: read requests on stdin,
                           write {"ok":...} responses on stdout
+  nvs exports <file.ns>   Describe the file's public surface (functions,
+                          classes, enums, constants) as JSON — no execution
+  nvs bindgen --to=python <file.ns> -o <module>.py
+                          Generate a Python client module wired through the
+                          JSON bridge
   nvs nave <file.nave>    Run a JSON workflow document (also: nvs file.nave)
   nvs bc <file.ns|--code> Compile the bytecode subset and run it on the
                           stack VM (--disasm to print bytecode). Only
