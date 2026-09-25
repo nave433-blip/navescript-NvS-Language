@@ -44,6 +44,8 @@ var PreludePaths = []string{
 func LoadPrelude(env *object.Environment) {
 	// Always inject language identity builtins first via ensureBuiltins
 	ensureBuiltins()
+	// Ported from the 2.2–2.9 track: π/ℏ/c/φ/... physics constants.
+	injectPort29PhysicsSymbols(env)
 	for _, path := range PreludePaths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -6247,6 +6249,10 @@ func initBuiltins() {
 	registerWave7Builtins()
 	// Wave 8: quantum robbery — LOCAL state-vector simulator (not hardware).
 	registerWave8Builtins()
+	// Ported from the 2.2–2.9 track: low-level quantum state-vector
+	// primitives (qubit/qzero/qgate/qtensor/qmeasure/qprob/qnormalize/
+	// qinner), physics_const(), and self_eval().
+	registerPort29Builtins()
 }
 
 func ensureBuiltins() {
