@@ -151,3 +151,38 @@ func TestResultTypes(t *testing.T) {
 		t.Errorf("nested = %v", res)
 	}
 }
+
+func TestRequestIDEchoed(t *testing.T) {
+	s := NewSession()
+	m := decode(t, s.HandleLine(`{"eval": "1+2", "id": 42}`))
+	if m["ok"] != true || m["result"] != float64(3) {
+		t.Fatalf("bad eval response: %v", m)
+	}
+	if m["id"] != float64(42) {
+		t.Fatalf("id not echoed: %v", m)
+	}
+	// string ids work too, and errors echo the id as well
+	m = decode(t, s.HandleLine(`{"call": "nope", "id": "req-7"}`))
+	if m["ok"] != false || m["id"] != "req-7" {
+		t.Fatalf("id not echoed on error: %v", m)
+	}
+	// no id -> no id key
+	m = decode(t, s.HandleLine(`{"eval": "1"}`))
+	if _, ok := m["id"]; ok {
+		t.Fatalf("id key present without request id: %v", m)
+	}
+}
+
+func TestSessionPersistenceAcrossCalls(t *testing.T) {
+	s := NewSession()
+	mustOK(t, s.HandleLine(`{"eval": "fn double(x) { return x * 2 }"}`))
+	if got := mustOK(t, s.HandleLine(`{"call": "double", "args": [21]}`)); got != float64(42) {
+		t.Fatalf("want 42, got %v", got)
+	}
+}
+
+func TestNoSilentNulls(t *testing.T) {
+	s := NewSession()
+	// A function VALUE is not JSON-convertible: honest error, not null.
+	mustErr(t, s.HandleLine(`{"eval": "fn f() { } f"}`), "cannot convert NvS FUNCTION to JSON")
+}

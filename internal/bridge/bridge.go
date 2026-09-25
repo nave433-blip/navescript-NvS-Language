@@ -113,10 +113,34 @@ func (s *Session) Envelope(obj object.Object, err error) string {
 // HandleLine implements one step of the `nvs bridge` stdio protocol.
 // It never panics: any malformed input yields an error envelope.
 //
-//	{"eval": "<nvs source>"}            -> {"ok":true,"result":<json>} | {"ok":false,"error":"..."}
-//	{"call": "<name>", "args": [...]}   -> same envelope (shares Eval's env)
-//	anything else                       -> {"ok":false,"error":"invalid request: ..."}
+//	{"eval": "<nvs source>", "id": <any>}          -> {"ok":true,"result":<json>,"id":<id>}
+//	{"call": "<name>", "args": [...], "id": <any>} -> same envelope (shares Eval's env)
+//	anything else                                  -> {"ok":false,"error":"..."}
+//
+// The "id" field is optional; when present it is echoed verbatim in the
+// response so clients can match replies to requests. The response always
+// ends with a single \n; request lines must be complete JSON on one line.
 func (s *Session) HandleLine(line string) string {
+	resp := s.handleLineInner(line)
+	// Echo the request id, if any, so clients can correlate responses.
+	var raw map[string]any
+	dec := json.NewDecoder(bytes.NewReader([]byte(line)))
+	dec.UseNumber()
+	if err := dec.Decode(&raw); err == nil {
+		if id, ok := raw["id"]; ok {
+			var env map[string]any
+			if err := json.Unmarshal([]byte(resp), &env); err == nil {
+				env["id"] = id
+				if data, err := json.Marshal(env); err == nil {
+					return string(data)
+				}
+			}
+		}
+	}
+	return resp
+}
+
+func (s *Session) handleLineInner(line string) string {
 	dec := json.NewDecoder(bytes.NewReader([]byte(line)))
 	dec.UseNumber()
 	var req map[string]any

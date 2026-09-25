@@ -77,32 +77,46 @@ func bridgeHelp() {
 	fmt.Print(`nvs bridge — JSON stdio bridge: drive NvS from any language
 
 Usage:
-  nvs bridge
+  nvs bridge [--once]
   nvs bridge --help
 
 Reads JSON requests (one per line) on stdin, writes JSON responses (one
 per line) on stdout. One persistent interpreter for the whole session:
 functions defined by one {"eval":...} are visible to later requests.
+With --once, exactly one request line is processed and the bridge exits.
 
 Protocol:
-  {"eval": "<nvs source>"}            -> {"ok":true,"result":<json>}
-  {"call": "<name>", "args": [...]}   -> {"ok":true,"result":<json>}
-  on any failure                      -> {"ok":false,"error":"..."}
-  malformed input line                -> {"ok":false,"error":"invalid request: ..."}
+  {"eval": "<nvs source>", "id": <any>}          -> {"ok":true,"result":<json>,"id":<id>}
+  {"call": "<name>", "args": [...], "id": <any>} -> {"ok":true,"result":<json>,"id":<id>}
+  on any failure                                 -> {"ok":false,"error":"..."}
+  malformed input line                           -> {"ok":false,"error":"invalid request: ..."}
+
+"id" is optional and echoed verbatim when present so clients can match
+replies to requests. Responses never contain silent nulls: a result value
+outside the convertible set is an ok:false error naming the NvS type.
 
 <json> covers NvS int, float, string, bool, null, array, hash. Any other
 NvS value yields ok:false naming the type — never a silent mis-conversion.
+
+Request limits: one JSON object per line, max 4 MiB per line. A line that
+is not a JSON object, has trailing data, or names no known op is an
+"invalid request" error — the session stays alive for the next line.
 `)
 }
 
 func runBridge(args []string) {
+	once := false
 	for _, a := range args {
-		if a == "-h" || a == "--help" {
+		switch a {
+		case "-h", "--help":
 			bridgeHelp()
 			return
+		case "--once":
+			once = true
+		default:
+			fmt.Fprintf(os.Stderr, "bridge: unknown argument %s\n", a)
+			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "bridge: unknown argument %s\n", a)
-		os.Exit(1)
 	}
 	sess := bridge.NewSession()
 	scanner := bufio.NewScanner(os.Stdin)
@@ -113,6 +127,9 @@ func runBridge(args []string) {
 		// Flush every response: the client is a persistent process
 		// waiting on this line (flushing only at EOF would hang it).
 		out.Flush()
+		if once {
+			break
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "bridge: reading stdin: %v\n", err)
