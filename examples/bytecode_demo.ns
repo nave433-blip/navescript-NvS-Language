@@ -1,0 +1,9 @@
+// Run with: nvs bytecode examples/bytecode_demo.ns --disasm
+let a = 6
+let b = 7
+print a * b
+if (a < b) {
+  print 1
+} else {
+  print 0
+}

@@ -16,3 +16,9 @@ nvs run examples/selfhost5.ns
 | 1–4 | mini_eval core + import |
 | **5** | **richer Go emit (while/fn)** |
 | Next | for-in emit; maps in Go emit; bytecode VM sketch |
+
+## 2.8.0 Bytecode
+- [x] Investigated legacy compiler/vm (stubs / non-building)
+- [x] New `internal/bytecode` compiler + stack VM
+- [x] CLI `nvs bytecode` / `nvs bc` with `--disasm`
+- [x] docs/BYTECODE.md

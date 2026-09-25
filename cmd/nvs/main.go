@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/navescript/nvs/internal/bytecode"
 	"github.com/navescript/nvs/internal/eval"
 	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
@@ -15,7 +16,7 @@ import (
 
 // NvS — Navescript custom language
 const (
-	VERSION      = "2.7.0"
+	VERSION      = "2.8.0"
 	LANGUAGE     = "NvS"
 	LANGUAGEFull = "Navescript"
 )
@@ -66,6 +67,28 @@ func main() {
 		// Load mini_eval and call it
 		wrap := "import \"stdlib/selfhost/mini_eval.ns\"\nprint mini_eval(" + fmt.Sprintf("%q", code) + ")\n"
 		runCode(wrap, true)
+	case "bytecode", "bc":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: nvs bytecode <file.ns|'code'> [--disasm]")
+			os.Exit(1)
+		}
+		arg := os.Args[2]
+		disasm := false
+		for _, a := range os.Args[3:] {
+			if a == "--disasm" || a == "-d" {
+				disasm = true
+			}
+		}
+		code := arg
+		if strings.HasSuffix(arg, ".ns") || strings.HasSuffix(arg, ".nave") {
+			data, err := os.ReadFile(arg)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			code = string(data)
+		}
+		runBytecode(code, disasm)
 	case "bootstrap":
 		// go build + baseline + selfhost
 		fmt.Println("NvS bootstrap: building host...")
@@ -101,6 +124,7 @@ Usage:
   nvs init                Scaffold a new NvS project
   nvs selfhost <src>       Run pure-NvS mini interpreter
   nvs bootstrap            Build host + run selfhost/baseline
+  nvs bytecode <src> [-d]  Compile & run on stack VM (--disasm)
   nvs info                Language identity & capabilities
   nvs version             Show version
   nvs help                Show this help
@@ -244,5 +268,35 @@ func startREPL() {
 		if result != nil && result.Type() != object.NULL_OBJ {
 			fmt.Println(result.Inspect())
 		}
+	}
+}
+
+
+func runBytecode(code string, disasm bool) {
+	l := lexer.New(code)
+	p := parser.New(l)
+	program := p.ParseProgram()
+	if len(p.Errors()) > 0 {
+		printParserErrors(os.Stderr, p.Errors())
+		os.Exit(1)
+	}
+	comp := bytecode.NewCompiler()
+	if err := comp.Compile(program); err != nil {
+		fmt.Fprintln(os.Stderr, "compile error:", err)
+		os.Exit(1)
+	}
+	bc := comp.Bytecode()
+	if disasm {
+		fmt.Print(bytecode.Disassemble(bc))
+	}
+	vm := bytecode.NewVM(bc)
+	result, err := vm.Run()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vm error:", err)
+		os.Exit(1)
+	}
+	if result != nil && !disasm {
+		// result already printed via OpPrint mostly
+		_ = result
 	}
 }
