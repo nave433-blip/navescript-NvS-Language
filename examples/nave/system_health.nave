@@ -1,0 +1,58 @@
+{
+  "version": "0.3.0",
+  "module": "system_health_monitor",
+  "world": "cli",
+  "capabilities": ["filesystem/read", "random"],
+  "steps": [
+    {
+      "op": "log",
+      "message": "🚀 Starting Nλvescript Polyglot System Health Monitor..."
+    },
+    {
+      "op": "log",
+      "message": "[Phase 1] Gathering hardware metrics via Python Transmutation..."
+    },
+    {
+      "op": "polyglot_eval",
+      "lang": "python",
+      "return_var": "raw_metrics",
+      "code": "import platform, psutil\ntry:\n    cpu = psutil.cpu_percent(interval=1)\n    ram = psutil.virtual_memory().percent\n    disk = psutil.disk_usage('/').percent\n    result = {'cpu': cpu, 'ram': ram, 'disk': disk, 'os': platform.system()}\nexcept Exception as e:\n    result = {'error': str(e)}"
+    },
+    {
+      "op": "answer",
+      "var": "raw_metrics"
+    },
+    {
+      "op": "log",
+      "message": "[Phase 2] Analyzing metrics and generating report via JavaScript..."
+    },
+    {
+      "op": "polyglot_eval",
+      "lang": "javascript",
+      "input_var": "raw_metrics",
+      "return_var": "health_report",
+      "code": "const m = input_data;\nif (m.error) {\n    result = { status: 'FAILED', report: `Telemetry Error: ${m.error}` };\n} else {\n    const is_critical = m.cpu > 90 || m.ram > 90;\n    const status = is_critical ? '🚨 CRITICAL' : '✅ HEALTHY';\n    result = {\n        status,\n        summary: `OS: ${m.os} | CPU: ${m.cpu}% | RAM: ${m.ram}% | Disk: ${m.disk}%`,\n        needs_action: is_critical\n    };\n}"
+    },
+    {
+      "op": "answer",
+      "var": "health_report"
+    },
+    {
+      "op": "log",
+      "message": "[Phase 3] Executing NASM high-performance integrity verification..."
+    },
+    {
+      "op": "nasm_exec",
+      "code": "LI R0, 100\nSTORE R0, 0\nLI R1, 200\nSTORE R1, 4\nLOAD R2, 0\nLOAD R3, 4\nADD R2, R3\nSYSCALL 1 [NASM] Integrity Check: Vector Sum Verified.\nRET R2",
+      "return_var": "integrity_check"
+    },
+    {
+      "op": "answer",
+      "var": "integrity_check"
+    },
+    {
+      "op": "log",
+      "message": "✨ System Health Monitor Task Completed."
+    }
+  ]
+}

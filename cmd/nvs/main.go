@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/navescript/nvs/internal/nave"
+
 	"github.com/navescript/nvs/internal/eval"
 	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
@@ -62,10 +64,27 @@ func main() {
 		runTranspile(os.Args[2:])
 	case "bridge":
 		runBridge(os.Args[2:])
+	case "nave":
+		// Workflow runner ported from the 2.9 track: executes JSON
+		// .nave workflow documents (log/set/http_get/file ops,
+		// polyglot python/js steps, assertions).
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: nvs nave <file.nave>")
+			os.Exit(1)
+		}
+		if err := nave.RunFile(os.Args[2], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		if strings.HasSuffix(cmd, ".ns") || strings.HasSuffix(cmd, ".nave") {
+		if strings.HasSuffix(cmd, ".nave") {
+			if err := nave.RunFile(cmd, os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		} else if strings.HasSuffix(cmd, ".ns") {
 			runFile(cmd, true)
 		} else {
 			fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
@@ -91,6 +110,7 @@ Usage:
                           Transpile the NvS subset to JavaScript or Python
   nvs bridge              JSON stdio bridge: read requests on stdin,
                           write {"ok":...} responses on stdout
+  nvs nave <file.nave>    Run a JSON workflow document (also: nvs file.nave)
   nvs version             Show version
   nvs help                Show this help
 
