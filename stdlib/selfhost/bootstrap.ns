@@ -1,0 +1,13 @@
+// bootstrap.ns — orchestration helpers for self-hosting NvS
+import "stdlib/selfhost/mini_eval.ns"
+
+fn self_eval(code) {
+  return mini_eval(code)
+}
+
+fn self_eval_file(path) {
+  let src = read_file(path)
+  return mini_eval(src)
+}
+
+print "selfhost bootstrap loaded"

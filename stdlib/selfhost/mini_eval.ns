@@ -1,0 +1,450 @@
+// mini_eval.ns — NvS-in-NvS interpreter (subset, stage 4)
+// Supports: ints/strings, arithmetic, compares, let, print, if/else,
+// while, arrays [...], index [], fn name(args) { ... }, return, calls
+
+fn is_digit(c) { if (c == null or len(c) == 0) { return false } return c >= "0" and c <= "9" }
+fn is_alpha(c) {
+  if (c == null or len(c) == 0) { return false }
+  return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_"
+}
+
+fn tokenize(src) {
+  let tokens = []
+  let i = 0
+  let n = len(src)
+  while (i < n) {
+    let c = src[i]
+    if (c == null or c == "") {
+      i = i + 1
+    } else if (c == " " or c == "\t" or c == "\n" or c == "\r") {
+      i = i + 1
+    } else if (c == "/" and i + 1 < n and src[i + 1] == "/") {
+      // line comment
+      while (i < n and src[i] != "\n") { i = i + 1 }
+    } else if (is_digit(c)) {
+      let j = i
+      while (j < n and is_digit(src[j])) { j = j + 1 }
+      tokens = push(tokens, {"t": "INT", "v": src[i:j]})
+      i = j
+    } else if (is_alpha(c)) {
+      let j = i
+      while (j < n and (is_alpha(src[j]) or is_digit(src[j]))) { j = j + 1 }
+      let word = src[i:j]
+      let tt = "IDENT"
+      if (word == "let" or word == "print" or word == "if" or word == "else" or word == "while" or word == "for" or word == "in" or word == "fn" or word == "return" or word == "true" or word == "false" or word == "null" or word == "import") {
+        tt = "KW"
+      }
+      tokens = push(tokens, {"t": tt, "v": word})
+      i = j
+    } else if (c == "\"" or c == "'") {
+      let q = c
+      let j = i + 1
+      while (j < n and src[j] != q) { j = j + 1 }
+      tokens = push(tokens, {"t": "STR", "v": src[(i + 1):j]})
+      i = j + 1
+    } else {
+      let two = ""
+      if (i + 1 < n) { two = src[i:(i + 2)] }
+      if (two == "==" or two == "!=" or two == "<=" or two == ">=" or two == "&&" or two == "||") {
+        tokens = push(tokens, {"t": "OP", "v": two})
+        i = i + 2
+      } else if (c == "+" or c == "-" or c == "*" or c == "/" or c == "%" or c == "(" or c == ")" or c == "{" or c == "}" or c == "[" or c == "]" or c == "," or c == ":" or c == "=" or c == "!" or c == "<" or c == ">" or c == ".") {
+        tokens = push(tokens, {"t": "OP", "v": c})
+        i = i + 1
+      } else {
+        // skip unknown/unicode noise (e.g. em-dash in comments if comment parse missed)
+        i = i + 1
+      }
+    }
+  }
+  tokens = push(tokens, {"t": "EOF", "v": ""})
+  return tokens
+}
+
+fn mini_eval(src) {
+  let tokens = tokenize(src)
+  let env = {}
+  let funcs = {}
+  let pos = 0
+
+  fn peek() { return tokens[pos] }
+  fn advance() { pos = pos + 1; return tokens[pos - 1] }
+  fn match_op(v) {
+    let t = peek()
+    if (t["t"] == "OP" and t["v"] == v) { advance(); return true }
+    return false
+  }
+  fn match_kw(v) {
+    let t = peek()
+    if (t["t"] == "KW" and t["v"] == v) { advance(); return true }
+    return false
+  }
+  fn skip_block() {
+    // assume current token is { or just consumed {
+    let depth = 1
+    while (depth > 0 and peek()["t"] != "EOF") {
+      let t = advance()
+      if (t["t"] == "OP" and t["v"] == "{") { depth = depth + 1 }
+      if (t["t"] == "OP" and t["v"] == "}") { depth = depth - 1 }
+    }
+  }
+
+  fn parse_primary() {
+    let t = peek()
+    if (t["t"] == "INT") {
+      advance()
+      return int(t["v"])
+    }
+    if (t["t"] == "STR") {
+      advance()
+      return t["v"]
+    }
+    if (t["t"] == "KW" and t["v"] == "true") { advance(); return true }
+    if (t["t"] == "KW" and t["v"] == "false") { advance(); return false }
+    if (t["t"] == "KW" and t["v"] == "null") { advance(); return null }
+    if (match_op("[")) {
+      let arr = []
+      if (!(peek()["t"] == "OP" and peek()["v"] == "]")) {
+        arr = push(arr, parse_expr())
+        while (match_op(",")) {
+          arr = push(arr, parse_expr())
+        }
+      }
+      match_op("]")
+      return arr
+    }
+    if (match_op("{")) {
+      let m = {}
+      if (!(peek()["t"] == "OP" and peek()["v"] == "}")) {
+        // key: value — key may be IDENT or STR
+        let kt = peek()
+        let key = ""
+        if (kt["t"] == "STR" or kt["t"] == "IDENT" or kt["t"] == "KW") {
+          advance()
+          key = kt["v"]
+        } else {
+          key = str(parse_expr())
+        }
+        match_op(":")
+        let val = parse_expr()
+        m[key] = val
+        while (match_op(",")) {
+          kt = peek()
+          if (kt["t"] == "STR" or kt["t"] == "IDENT" or kt["t"] == "KW") {
+            advance()
+            key = kt["v"]
+          } else {
+            key = str(parse_expr())
+          }
+          match_op(":")
+          val = parse_expr()
+          m[key] = val
+        }
+      }
+      match_op("}")
+      return m
+    }
+    if (t["t"] == "IDENT") {
+      advance()
+      let name = t["v"]
+      // function call?
+      if (match_op("(")) {
+        let args = []
+        if (!(peek()["t"] == "OP" and peek()["v"] == ")")) {
+          args = push(args, parse_expr())
+          while (match_op(",")) {
+            args = push(args, parse_expr())
+          }
+        }
+        match_op(")")
+        return call_fn(name, args)
+      }
+      // index?
+      if (match_op("[")) {
+        let idx = parse_expr()
+        match_op("]")
+        let base = null
+        if (has(env, name)) { base = env[name] }
+        return base[idx]
+      }
+      if (has(env, name)) { return env[name] }
+      return null
+    }
+    if (match_op("(")) {
+      let v = parse_expr()
+      match_op(")")
+      return v
+    }
+    return null
+  }
+
+  fn parse_unary() {
+    if (match_op("-")) { return 0 - parse_unary() }
+    if (match_op("!")) { return !parse_unary() }
+    return parse_primary()
+  }
+
+  fn parse_mul() {
+    let left = parse_unary()
+    while (true) {
+      if (match_op("*")) { left = left * parse_unary() }
+      else if (match_op("/")) { left = left / parse_unary() }
+      else if (match_op("%")) { left = left % parse_unary() }
+      else { break }
+    }
+    return left
+  }
+
+  fn parse_add() {
+    let left = parse_mul()
+    while (true) {
+      if (match_op("+")) { left = left + parse_mul() }
+      else if (match_op("-")) { left = left - parse_mul() }
+      else { break }
+    }
+    return left
+  }
+
+  fn parse_cmp() {
+    let left = parse_add()
+    if (match_op("==")) { return left == parse_add() }
+    if (match_op("!=")) { return left != parse_add() }
+    if (match_op("<")) { return left < parse_add() }
+    if (match_op(">")) { return left > parse_add() }
+    if (match_op("<=")) { return left <= parse_add() }
+    if (match_op(">=")) { return left >= parse_add() }
+    return left
+  }
+
+  fn parse_and() {
+    let left = parse_cmp()
+    while (match_op("&&")) {
+      let right = parse_cmp()
+      left = left and right
+    }
+    return left
+  }
+
+  fn parse_or() {
+    let left = parse_and()
+    while (match_op("||")) {
+      let right = parse_and()
+      left = left or right
+    }
+    return left
+  }
+
+  fn parse_expr() { return parse_or() }
+
+  fn call_fn(name, args) {
+    if (!has(funcs, name)) { return null }
+    let f = funcs[name]
+    let saved = env
+    let frame = {}
+    let params = f["params"]
+    let i = 0
+    while (i < len(params)) {
+      let p = params[i]
+      if (i < len(args)) { frame[p] = args[i] } else { frame[p] = null }
+      i = i + 1
+    }
+    env = frame
+    let saved_tokens = tokens
+    let saved_pos = pos
+    tokens = f["body_toks"]
+    pos = 0
+    let ret = null
+    match_op("{")
+    while (!(peek()["t"] == "OP" and peek()["v"] == "}") and peek()["t"] != "EOF") {
+      if (match_kw("return")) {
+        ret = parse_expr()
+        break
+      }
+      ret = parse_stmt()
+    }
+    tokens = saved_tokens
+    pos = saved_pos
+    env = saved
+    return ret
+  }
+
+  fn parse_block_exec() {
+    match_op("{")
+    let last = null
+    while (!(peek()["t"] == "OP" and peek()["v"] == "}") and peek()["t"] != "EOF") {
+      if (match_kw("return")) {
+        return {"__return": parse_expr()}
+      }
+      last = parse_stmt()
+    }
+    match_op("}")
+    return last
+  }
+
+  fn parse_stmt() {
+    if (match_kw("import")) {
+      let t = peek()
+      let path = ""
+      if (t["t"] == "STR") {
+        advance()
+        path = t["v"]
+      } else {
+        // allow import path without quotes as IDENT chain — require STR
+        return null
+      }
+      let src = read_file(path)
+      let saved_tokens = tokens
+      let saved_pos = pos
+      tokens = tokenize(src)
+      pos = 0
+      let last = null
+      while (peek()["t"] != "EOF") {
+        last = parse_stmt()
+      }
+      tokens = saved_tokens
+      pos = saved_pos
+      return last
+    }
+    if (match_kw("let")) {
+      let t = advance()
+      let name = t["v"]
+      match_op("=")
+      let val = parse_expr()
+      env[name] = val
+      return val
+    }
+    if (match_kw("print")) {
+      let val = parse_expr()
+      print val
+      return val
+    }
+    if (match_kw("for")) {
+      match_op("(")
+      // for (ident in expr)
+      let it = advance()
+      let iname = it["v"]
+      match_kw("in")
+      let iterable = parse_expr()
+      match_op(")")
+      let body_start = pos
+      let items = iterable
+      if (items == null) { items = [] }
+      let idx = 0
+      while (idx < len(items)) {
+        env[iname] = items[idx]
+        pos = body_start
+        parse_block_exec()
+        idx = idx + 1
+      }
+      pos = body_start
+      if (peek()["t"] == "OP" and peek()["v"] == "{") {
+        advance()
+        skip_block()
+      }
+      return null
+    }
+    if (match_kw("while")) {
+      match_op("(")
+      let cond_pos = pos
+      let cond = parse_expr()
+      match_op(")")
+      let body_start = pos
+      // need to re-eval condition each loop — save positions
+      // first pass: capture body token range by scanning
+      if (!(peek()["t"] == "OP" and peek()["v"] == "{")) { return null }
+      let loop_guard = 0
+      while (cond and loop_guard < 10000) {
+        pos = body_start
+        parse_block_exec()
+        pos = cond_pos
+        cond = parse_expr()
+        match_op(")")
+        loop_guard = loop_guard + 1
+      }
+      // skip body once more to leave pos after block
+      pos = body_start
+      if (peek()["t"] == "OP" and peek()["v"] == "{") {
+        advance()
+        skip_block()
+      }
+      return null
+    }
+    if (match_kw("if")) {
+      match_op("(")
+      let cond = parse_expr()
+      match_op(")")
+      if (cond) {
+        parse_block_exec()
+        if (match_kw("else")) {
+          if (peek()["t"] == "OP" and peek()["v"] == "{") {
+            advance()
+            skip_block()
+          }
+        }
+      } else {
+        if (peek()["t"] == "OP" and peek()["v"] == "{") {
+          advance()
+          skip_block()
+        }
+        if (match_kw("else")) {
+          parse_block_exec()
+        }
+      }
+      return null
+    }
+    if (match_kw("fn")) {
+      let t = advance()
+      let name = t["v"]
+      match_op("(")
+      let params = []
+      if (!(peek()["t"] == "OP" and peek()["v"] == ")")) {
+        let p = advance()
+        params = push(params, p["v"])
+        while (match_op(",")) {
+          p = advance()
+          params = push(params, p["v"])
+        }
+      }
+      match_op(")")
+      // capture body tokens including braces for later call_fn
+      let body_toks = []
+      if (peek()["t"] == "OP" and peek()["v"] == "{") {
+        let depth = 0
+        while (peek()["t"] != "EOF") {
+          let bt = peek()
+          body_toks = push(body_toks, bt)
+          advance()
+          if (bt["t"] == "OP" and bt["v"] == "{") { depth = depth + 1 }
+          if (bt["t"] == "OP" and bt["v"] == "}") {
+            depth = depth - 1
+            if (depth == 0) { break }
+          }
+        }
+      }
+      body_toks = push(body_toks, {"t": "EOF", "v": ""})
+      funcs[name] = {"params": params, "body_toks": body_toks}
+      return null
+    }
+    // assignment: IDENT =
+    if (peek()["t"] == "IDENT") {
+      let name = peek()["v"]
+      let save = pos
+      advance()
+      if (match_op("=")) {
+        let val = parse_expr()
+        env[name] = val
+        return val
+      }
+      pos = save
+    }
+    return parse_expr()
+  }
+
+  let last = null
+  while (peek()["t"] != "EOF") {
+    last = parse_stmt()
+  }
+  return last
+}
+
+print "mini_eval stage4 loaded"

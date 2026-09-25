@@ -13,6 +13,7 @@ const (
 	_ int = iota
 	LOWEST
 	ASSIGN_PREC // =
+	ANDOR       // and/or — looser than == so a == 1 or b == 2 works
 	PIPELINE    // |>
 	EQUALS      // ==
 	RANGE       // .. ...
@@ -55,8 +56,8 @@ var precedences = map[lexer.TokenType]int{
 	lexer.LBRACKET:       INDEX,
 	lexer.DOT:            INDEX,
 	lexer.OPTIONAL_CHAIN: INDEX,
-	lexer.AND:            EQUALS,
-	lexer.OR:             EQUALS,
+	lexer.AND:            ANDOR,
+	lexer.OR:             ANDOR,
 }
 
 type (

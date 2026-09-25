@@ -373,6 +373,9 @@ loop:
 			broke = true
 			break loop
 		case sigContinueMatched:
+			// The iteration produced no value; keep the previous result
+			// so a trailing continue cannot leak the signal object.
+			result = NULL
 			continue
 		}
 	}
@@ -551,6 +554,10 @@ func evalIntegerInfixExpression(operator string, left, right object.Object) obje
 		return &object.Integer{Value: leftVal << rightVal}
 	case ">>":
 		return &object.Integer{Value: leftVal >> rightVal}
+	case "==":
+		return nativeBoolToBooleanObject(leftVal == rightVal)
+	case "!=":
+		return nativeBoolToBooleanObject(leftVal != rightVal)
 	case "<":
 		return nativeBoolToBooleanObject(leftVal < rightVal)
 	case ">":
@@ -559,10 +566,6 @@ func evalIntegerInfixExpression(operator string, left, right object.Object) obje
 		return nativeBoolToBooleanObject(leftVal <= rightVal)
 	case ">=":
 		return nativeBoolToBooleanObject(leftVal >= rightVal)
-	case "==":
-		return nativeBoolToBooleanObject(leftVal == rightVal)
-	case "!=":
-		return nativeBoolToBooleanObject(leftVal != rightVal)
 	default:
 		return newError("unknown operator: %s %s %s", left.Type(), operator, right.Type())
 	}
@@ -625,6 +628,14 @@ func evalStringInfixExpression(operator string, left, right object.Object) objec
 		return nativeBoolToBooleanObject(leftVal == rightVal)
 	case "!=":
 		return nativeBoolToBooleanObject(leftVal != rightVal)
+	case "<":
+		return nativeBoolToBooleanObject(leftVal < rightVal)
+	case ">":
+		return nativeBoolToBooleanObject(leftVal > rightVal)
+	case "<=":
+		return nativeBoolToBooleanObject(leftVal <= rightVal)
+	case ">=":
+		return nativeBoolToBooleanObject(leftVal >= rightVal)
 	default:
 		return newError("unknown operator: %s %s %s", left.Type(), operator, right.Type())
 	}
@@ -1373,6 +1384,9 @@ loop:
 					return post
 				}
 			}
+			// The iteration produced no value; keep the previous result
+			// so a trailing continue cannot leak the signal object.
+			result = NULL
 			continue
 		}
 

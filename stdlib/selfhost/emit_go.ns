@@ -1,0 +1,257 @@
+// emit_go.ns — NvS subset → runnable Go (let/print/arith/while/fn)
+// Stage 5 emitter
+
+fn trim_spaces(s) {
+  let i = 0
+  let n = len(s)
+  while (i < n and s[i] == " ") { i = i + 1 }
+  let j = n
+  while (j > i and s[j - 1] == " ") { j = j - 1 }
+  return s[i:j]
+}
+
+fn emit_go_arith(expr) {
+  let out = ""
+  let i = 0
+  let n = len(expr)
+  while (i < n) {
+    let c = expr[i]
+    if (c == " ") { i = i + 1 }
+    else if (c >= "0" and c <= "9") {
+      let j = i
+      while (j < n and expr[j] >= "0" and expr[j] <= "9") { j = j + 1 }
+      out = out + expr[i:j]
+      i = j
+    } else if ((c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_") {
+      let j = i
+      while (j < n and ((expr[j] >= "a" and expr[j] <= "z") or (expr[j] >= "A" and expr[j] <= "Z") or (expr[j] >= "0" and expr[j] <= "9") or expr[j] == "_")) { j = j + 1 }
+      let id = expr[i:j]
+      // function call: id(
+      let k = j
+      while (k < n and expr[k] == " ") { k = k + 1 }
+      if (k < n and expr[k] == "(") {
+        out = out + id
+        i = j
+      } else {
+        out = out + "env[\"" + id + "\"]"
+        i = j
+      }
+    } else if (c == "+" or c == "-" or c == "*" or c == "/" or c == "%" or c == "(" or c == ")" or c == ",") {
+      out = out + c
+      i = i + 1
+    } else if (c == "<" or c == ">" or c == "!" or c == "=") {
+      if (i + 1 < n and (expr[i + 1] == "=")) {
+        out = out + c + "="
+        i = i + 2
+      } else {
+        out = out + c
+        i = i + 1
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  if (out == "") { return "0" }
+  return out
+}
+
+fn emit_go_block_lines(lines, start, indent) {
+  // emit consecutive lines until unbalanced } or end; returns {code, next}
+  let code = ""
+  let i = start
+  let depth = 0
+  let started = false
+  while (i < len(lines)) {
+    let line = trim_spaces(lines[i])
+    if (len(line) == 0) { i = i + 1; continue }
+    // count braces on line
+    let bi = 0
+    while (bi < len(line)) {
+      if (line[bi] == "{") { depth = depth + 1; started = true }
+      if (line[bi] == "}") { depth = depth - 1 }
+      bi = bi + 1
+    }
+    let ind = indent
+    if (len(line) > 0 and line[0] == "}") {
+      // less indent for closing
+      if (len(indent) >= 1) { ind = indent[0:(len(indent) - 1)] }
+    }
+    let chunk = emit_go_line(line, ind)
+    code = code + chunk
+    i = i + 1
+    if (started and depth <= 0) { break }
+  }
+  return {"code": code, "next": i}
+}
+
+fn emit_go_line(line, indent) {
+  line = trim_spaces(line)
+  if (len(line) == 0) { return "" }
+
+  // while (cond) {
+  if (len(line) >= 5 and line[0:5] == "while") {
+    let lp = index_of(line, "(")
+    let rp = index_of(line, ")")
+    let cond = ""
+    if (lp >= 0 and rp > lp) { cond = line[(lp + 1):rp] }
+    return indent + "for " + emit_go_arith(cond) + " {\n"
+  }
+
+  // fn name(args) {
+  if (len(line) >= 2 and line[0:2] == "fn") {
+    let rest = trim_spaces(line[2:len(line)])
+    let lp = index_of(rest, "(")
+    let rp = index_of(rest, ")")
+    let name = trim_spaces(rest[0:lp])
+    let args = ""
+    if (lp >= 0 and rp > lp) { args = rest[(lp + 1):rp] }
+    // Go: func name() with env mutation; params assigned from args via env
+    let goargs = ""
+    if (len(args) > 0) {
+      let parts = split(args, ",")
+      let pi = 0
+      let glist = []
+      while (pi < len(parts)) {
+        let p = replace(parts[pi], " ", "")
+        glist = push(glist, p + " int")
+        pi = pi + 1
+      }
+      // join manually
+      goargs = ""
+      pi = 0
+      while (pi < len(glist)) {
+        if (pi > 0) { goargs = goargs + ", " }
+        goargs = goargs + glist[pi]
+        pi = pi + 1
+      }
+    }
+    let header = indent + "var " + name + " = func(" + goargs + ") int {\n"
+    // inject params into env
+    let inject = ""
+    if (len(args) > 0) {
+      let parts = split(args, ",")
+      let pi = 0
+      while (pi < len(parts)) {
+        let p = replace(parts[pi], " ", "")
+        inject = inject + indent + "\tenv[\"" + p + "\"] = " + p + "\n"
+        pi = pi + 1
+      }
+    }
+    return header + inject
+  }
+
+  // return expr
+  if (len(line) >= 6 and line[0:6] == "return") {
+    let expr = trim_spaces(line[6:len(line)])
+    // strip trailing {
+    return indent + "return " + emit_go_arith(expr) + "\n"
+  }
+
+  // print expr
+  if (len(line) >= 5 and line[0:5] == "print") {
+    let expr = trim_spaces(line[5:len(line)])
+    return indent + "fmt.Println(" + emit_go_arith(expr) + ")\n"
+  }
+
+  // let name = expr
+  if (len(line) >= 3 and line[0:3] == "let") {
+    let rest = line[3:len(line)]
+    let eq = index_of(rest, "=")
+    if (eq >= 0) {
+      let name = replace(rest[0:eq], " ", "")
+      let expr = rest[(eq + 1):len(rest)]
+      return indent + "env[\"" + name + "\"] = " + emit_go_arith(expr) + "\n"
+    }
+  }
+
+  // assignment name = expr
+  let eq = index_of(line, "=")
+  if (eq > 0 and index_of(line, "==") < 0) {
+    let name = replace(line[0:eq], " ", "")
+    let expr = line[(eq + 1):len(line)]
+    // skip if looks like ==
+    if (len(name) > 0 and name[0] >= "a" and name[0] <= "z") {
+      return indent + "env[\"" + name + "\"] = " + emit_go_arith(expr) + "\n"
+    }
+  }
+
+  // bare }
+  if (line == "}") {
+    return indent + "}\n"
+  }
+
+  return indent + "// " + line + "\n"
+}
+
+fn emit_go_program(src) {
+  let go = "package main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n"
+  go = go + "\tenv := map[string]int{}\n"
+  let lines = split(src, "\n")
+  let li = 0
+  while (li < len(lines)) {
+    let line = trim_spaces(lines[li])
+    if (len(line) == 0) { li = li + 1; continue }
+
+    // while multi-line block
+    if (len(line) >= 5 and line[0:5] == "while") {
+      go = go + emit_go_line(line, "\t")
+      li = li + 1
+      // body lines until closing }
+      let depth = 1
+      if (index_of(line, "{") < 0) {
+        // body on following lines
+      } else {
+        // opening brace on same line — already depth 1 from {
+        // if also has }, depth handled below
+      }
+      while (li < len(lines) and depth > 0) {
+        let bl = trim_spaces(lines[li])
+        let bi = 0
+        while (bi < len(bl)) {
+          if (bl[bi] == "{") { depth = depth + 1 }
+          if (bl[bi] == "}") { depth = depth - 1 }
+          bi = bi + 1
+        }
+        if (depth > 0) {
+          go = go + emit_go_line(bl, "\t\t")
+        } else {
+          go = go + "\t}\n"
+        }
+        li = li + 1
+      }
+      continue
+    }
+
+    // fn multi-line
+    if (len(line) >= 2 and line[0:2] == "fn") {
+      go = go + emit_go_line(line, "\t")
+      li = li + 1
+      let depth = 1
+      while (li < len(lines) and depth > 0) {
+        let bl = trim_spaces(lines[li])
+        let bi = 0
+        while (bi < len(bl)) {
+          if (bl[bi] == "{") { depth = depth + 1 }
+          if (bl[bi] == "}") { depth = depth - 1 }
+          bi = bi + 1
+        }
+        if (depth > 0) {
+          if (len(bl) >= 6 and bl[0:6] == "return") {
+            go = go + emit_go_line(bl, "\t\t")
+          } else {
+            go = go + emit_go_line(bl, "\t\t")
+          }
+        } else {
+          go = go + "\t\treturn 0\n\t}\n"
+        }
+        li = li + 1
+      }
+      continue
+    }
+
+    go = go + emit_go_line(line, "\t")
+    li = li + 1
+  }
+  go = go + "}\n"
+  return go
+}

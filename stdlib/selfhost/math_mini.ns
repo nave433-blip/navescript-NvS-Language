@@ -1,0 +1,3 @@
+// pure-NvS module loaded by mini_eval import
+fn square(n) { return n * n }
+fn cube(n) { return n * n * n }
