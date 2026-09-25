@@ -103,6 +103,10 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(val) {
 			return val
 		}
+		// Wave 5: remember the function's own name for annotation errors.
+		if fn, ok := val.(*object.Function); ok && fn.Name == "" {
+			fn.Name = node.Name.Value
+		}
 		env.Set(node.Name.Value, val)
 		return NULL
 	case *ast.PrintStatement:
@@ -189,6 +193,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return &object.Function{
 			Parameters: node.Parameters,
 			Defaults:   node.Defaults,
+			// Wave 5: runtime type contracts (nil = unannotated).
+			ParamTypes: node.ParamTypes,
+			ReturnType: node.ReturnType,
 			Body:       node.Body,
 			Env:        env,
 		}
@@ -256,6 +263,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalImportStatement(node, env)
 	case *ast.ClassStatement:
 		return evalClassStatement(node, env)
+	case *ast.InterfaceDecl:
+		// Wave 5: `interface Name { ... }` — structural contract, bound in env.
+		return evalInterfaceStatement(node, env)
 	case *ast.NewExpression:
 		return evalNewExpression(node, env)
 	case *ast.ThisExpression:
@@ -907,14 +917,27 @@ func evalExpressions(exps []ast.Expression, env *object.Environment) []object.Ob
 func applyFunction(fn object.Object, args []object.Object) object.Object {
 	switch fn := fn.(type) {
 	case *object.Function:
-		extendedEnv := extendFunctionEnv(fn, args)
+		extendedEnv, errObj := extendFunctionEnv(fn, args)
+		if errObj != nil {
+			// Parameter annotation violation (or a bad default): the body
+			// never ran, so there is nothing to defer or unwrap.
+			return errObj
+		}
 		// Collect yields for generator functions
 		values, isGen, result := evalCollectingYields(fn.Body, extendedEnv)
 		runDefers(extendedEnv)
 		if isGen {
+			// Wave 5: return annotations are not checked on generators —
+			// their results flow through yield, not return.
 			return &object.Generator{Values: values}
 		}
-		return unwrapReturnValue(result)
+		val := unwrapReturnValue(result)
+		// Wave 5: enforce the return annotation (thrown errors propagate
+		// untouched — an error is not a return value).
+		if errObj := checkReturnType(fn, val); errObj != nil {
+			return errObj
+		}
+		return val
 	case *object.Builtin:
 		return fn.Fn(args...)
 	case *object.RecordDef:
@@ -990,7 +1013,12 @@ func applyFunctionNamed(fn *object.Function, positional []object.Object, named [
 	if isGen {
 		return &object.Generator{Values: values}
 	}
-	return unwrapReturnValue(result)
+	val := unwrapReturnValue(result)
+	// Wave 5: enforce the return annotation.
+	if errObj := checkReturnType(fn, val); errObj != nil {
+		return errObj
+	}
+	return val
 }
 
 // bindNamedParams binds positional + named arguments to fn's parameters in
@@ -1000,8 +1028,18 @@ func applyFunctionNamed(fn *object.Function, positional []object.Object, named [
 // matching extendFunctionEnv. Returns nil on success.
 func bindNamedParams(fn *object.Function, env *object.Environment, positional []object.Object, named []*object.NamedArg) object.Object {
 	filled := make([]bool, len(fn.Parameters))
+	checkParam := func(idx int, val object.Object) object.Object {
+		if idx < len(fn.ParamTypes) && fn.ParamTypes[idx] != nil {
+			// Annotations resolve lexically where the function was defined.
+			return checkValueAnnotation(fn.ParamTypes[idx], val, fn.Env, paramWhat(fn, fn.Parameters[idx].Value))
+		}
+		return nil
+	}
 	for i, param := range fn.Parameters {
 		if i < len(positional) {
+			if errObj := checkParam(i, positional[i]); errObj != nil {
+				return errObj
+			}
 			env.Set(param.Value, positional[i])
 			filled[i] = true
 		}
@@ -1020,6 +1058,9 @@ func bindNamedParams(fn *object.Function, env *object.Environment, positional []
 		if filled[idx] {
 			return newError("duplicate value for parameter '%s'", na.Name)
 		}
+		if errObj := checkParam(idx, na.Value); errObj != nil {
+			return errObj
+		}
 		env.Set(fn.Parameters[idx].Value, na.Value)
 		filled[idx] = true
 	}
@@ -1031,6 +1072,10 @@ func bindNamedParams(fn *object.Function, env *object.Environment, positional []
 			val := Eval(fn.Defaults[i], env)
 			if isError(val) {
 				return val
+			}
+			// Wave 5: defaults are checked against the annotation too.
+			if errObj := checkParam(i, val); errObj != nil {
+				return errObj
 			}
 			env.Set(param.Value, val)
 			continue
@@ -1091,21 +1136,37 @@ func evalCollectingYields(body *ast.BlockStatement, env *object.Environment) ([]
 	return yields, hasYield, last
 }
 
-func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Environment {
+// extendFunctionEnv binds args to params. Missing arguments without defaults
+// keep the historical NULL binding (arity behavior is unchanged by wave 5).
+// Every value actually BOUND to an annotated parameter — provided arguments
+// and evaluated defaults alike — is checked against the annotation; a
+// violation returns a runtime error as the second value.
+func extendFunctionEnv(fn *object.Function, args []object.Object) (*object.Environment, object.Object) {
 	env := object.NewEnclosedEnvironment(fn.Env)
 	for paramIdx, param := range fn.Parameters {
+		var val object.Object
+		bound := false
 		if paramIdx < len(args) {
-			env.Set(param.Value, args[paramIdx])
-			continue
+			val = args[paramIdx]
+			bound = true
+		} else if paramIdx < len(fn.Defaults) && fn.Defaults[paramIdx] != nil {
+			val = Eval(fn.Defaults[paramIdx], env)
+			if isError(val) {
+				return nil, val
+			}
+			bound = true
+		} else {
+			val = NULL
 		}
-		if paramIdx < len(fn.Defaults) && fn.Defaults[paramIdx] != nil {
-			val := Eval(fn.Defaults[paramIdx], env)
-			env.Set(param.Value, val)
-			continue
+		if bound && paramIdx < len(fn.ParamTypes) && fn.ParamTypes[paramIdx] != nil {
+			// Annotations resolve lexically where the function was defined.
+			if errObj := checkValueAnnotation(fn.ParamTypes[paramIdx], val, fn.Env, paramWhat(fn, param.Value)); errObj != nil {
+				return nil, errObj
+			}
 		}
-		env.Set(param.Value, NULL)
+		env.Set(param.Value, val)
 	}
-	return env
+	return env, nil
 }
 
 func unwrapReturnValue(obj object.Object) object.Object {
@@ -1250,6 +1311,17 @@ func evalAssignExpression(node *ast.AssignExpression, env *object.Environment) o
 	val := Eval(node.Value, env)
 	if isError(val) {
 		return val
+	}
+	// Wave 5: honor `let x: type` declarations — reassignments are checked.
+	if ann, found := env.LookupDeclaredType(node.Name.Value); found {
+		ok, _, unknown := checkAnnotation(ann, val, env)
+		if unknown != "" {
+			return newError("%s in annotation for variable '%s'", unknown, node.Name.Value)
+		}
+		if !ok {
+			return newError("type error: cannot assign %s to variable '%s' declared as %s",
+				friendlyTypeName(val), node.Name.Value, ann.String())
+		}
 	}
 	if ok, errMsg := env.AssignStrict(node.Name.Value, val); ok {
 		return val
@@ -1751,7 +1823,11 @@ func evalClassStatement(node *ast.ClassStatement, env *object.Environment) objec
 	methods := map[string]*object.Function{}
 	for _, m := range node.Methods {
 		methods[m.Name.Value] = &object.Function{
+			Name:       m.Name.Value,
 			Parameters: m.Parameters,
+			// Wave 5: method annotations are enforced like function ones.
+			ParamTypes: m.ParamTypes,
+			ReturnType: m.ReturnType,
 			Body:       m.Body,
 			Env:        env,
 		}
@@ -1873,12 +1949,23 @@ func applyMethod(fn *object.Function, inst *object.Instance, args []object.Objec
 	} else {
 		for i, param := range fn.Parameters {
 			if i < len(args) {
+				// Wave 5: method parameter annotations are enforced.
+				if i < len(fn.ParamTypes) && fn.ParamTypes[i] != nil {
+					if errObj := checkValueAnnotation(fn.ParamTypes[i], args[i], fn.Env, paramWhat(fn, param.Value)); errObj != nil {
+						return errObj
+					}
+				}
 				extended.Set(param.Value, args[i])
 			}
 		}
 	}
 	result := Eval(fn.Body, extended)
-	return unwrapReturnValue(result)
+	val := unwrapReturnValue(result)
+	// Wave 5: enforce the method's return annotation.
+	if errObj := checkReturnType(fn, val); errObj != nil {
+		return errObj
+	}
+	return val
 }
 
 func jsonToObject(data []byte) object.Object {
@@ -2291,7 +2378,7 @@ func matchRecordCallPattern(call *ast.CallExpression, val object.Object, env *ob
 	}
 	type fieldBind struct {
 		field string
-		bind  string // "" means `_` (no binding)
+		bind  string         // "" means `_` (no binding)
 		lit   ast.Expression // non-nil: literal value test instead of binding
 	}
 	var fbs []fieldBind
@@ -2453,20 +2540,15 @@ func evalTypedLetStatement(node *ast.TypedLetStatement, env *object.Environment)
 	if isError(val) {
 		return val
 	}
-	// Light runtime type check
-	expected := node.TypeName.Value
-	actual := string(val.Type())
-	typeMap := map[string]string{
-		"int": "INTEGER", "integer": "INTEGER", "float": "FLOAT",
-		"string": "STRING", "str": "STRING", "bool": "BOOLEAN", "boolean": "BOOLEAN",
-		"array": "ARRAY", "map": "HASH", "hash": "HASH", "fn": "FUNCTION", "any": actual,
-	}
-	if exp, ok := typeMap[expected]; ok && expected != "any" {
-		if exp != actual {
-			return newError("type error: expected %s, got %s", expected, actual)
-		}
+	// Wave 5: full runtime contract — unions, class/interface/record names,
+	// everything checkAnnotation understands.
+	what := fmt.Sprintf("variable '%s'", node.Name.Value)
+	if errObj := checkValueAnnotation(node.Type, val, env, what); errObj != nil {
+		return errObj
 	}
 	env.Set(node.Name.Value, val)
+	// Remember the declared type so later assignments are checked too.
+	env.DeclareType(node.Name.Value, node.Type)
 	return NULL
 }
 
@@ -6158,6 +6240,8 @@ func initBuiltins() {
 			},
 		},
 	}
+	// Wave 5: runtime type contracts — annotations, interfaces, type guards.
+	registerWave5Builtins()
 }
 
 func ensureBuiltins() {

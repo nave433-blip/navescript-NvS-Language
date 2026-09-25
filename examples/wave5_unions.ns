@@ -1,0 +1,86 @@
+// Wave 5: union annotations (TypeScript/Python style) — RUNTIME contracts.
+// `|` inside an annotation means "one of"; everywhere else it is still
+// bitwise-or. `T?` is sugar for `T | null`.
+
+print "== unions =="
+fn describe(x: int | string) {
+  if (is_int(x)) {
+    return "int ${x}"
+  }
+  return "string ${x}"
+}
+print describe(42)
+print describe("hello")
+try {
+  describe(4.5)
+} catch (e) {
+  print "caught: " + e
+}
+try {
+  describe(null)
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== T? sugar =="
+fn maybe_name(name: string?) {
+  if (name == null) {
+    return "anonymous"
+  }
+  return name
+}
+print maybe_name("nave")
+print maybe_name(null)
+try {
+  maybe_name(7)
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== unions in return position =="
+fn first_or_nothing(xs: array): int | null {
+  if (len(xs) == 0) {
+    return null
+  }
+  return xs[0]
+}
+print first_or_nothing([10, 20])
+print first_or_nothing([])
+
+print "== unions in let bindings =="
+let flex: int | string = "text"
+print flex
+flex = 99
+print flex
+try {
+  flex = 1.5
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== multi-way unions =="
+fn render(v: int | float | string | bool | null) {
+  return type_of(v) + ":" + "${v}"
+}
+print render(1)
+print render(2.5)
+print render("s")
+print render(true)
+print render(null)
+try {
+  render([1])
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== number covers int and float =="
+fn double(n: number): number {
+  return n * 2
+}
+print double(21)
+print double(1.5)
+try {
+  double("x")
+} catch (e) {
+  print "caught: " + e
+}

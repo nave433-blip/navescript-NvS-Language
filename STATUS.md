@@ -77,3 +77,21 @@ nvs run examples/wave4_guards.ns
 nvs run examples/wave4_patterns.ns
 nvs run examples/wave4_expr.ns
 ```
+
+### Wave 5 — types robbery (in progress)
+- [x] **Runtime contracts, not static analysis** — every annotation is enforced while the program runs (call/bind/return); there is no static type checker, by design
+- [x] Param annotations `fn add(a: int, b: int) { ... }` (positional + named args), return annotations `fn f(): int { ... }` (thrown errors bypass the check — an error is not a return value), defaults checked when used (`fn f(x: int = "bad")` errors only on `f()`)
+- [x] Unions `int | string` (union `|` *only* in annotation position; elsewhere still bitwise-or), `T?` = `T | null`, `null` accepted in unions
+- [x] `let x: int = 5` — initial binding checked, type remembered and enforced on later reassignment (incl. from closures); `let x: int | string`; `any` skips checking
+- [x] Vocabulary: `int`/`integer`, `float`, `number`, `string`/`str`, `bool`/`boolean`, `null`, `array`/`list`, `hash`/`map`/`dict`, `tuple`, `function`/`fn`/`callable`, `record`, `any`; class names (subclasses count), interface names (`implements`), record names (identity) resolve lexically at call time; unknown names are loud runtime errors
+- [x] `interface Shape { area(): number }` + `implements()`/`assert_implements()` — structural, presence + callable + knowable-arity; works on instances (incl. inherited methods), hashes of functions, record fields; NOT verified: parameter/return signature variance
+- [x] Interfaces as parameter annotations (`fn draw(s: Shape)`); class/record names as annotations
+- [x] Guards: `is_int`/`is_float`/`is_number`/`is_string`/`is_bool`/`is_array`/`is_hash`/`is_tuple`/`is_function` (`is_null` pre-existed); `type_of()` → lowercase names, `type()`/`typeof()` unchanged
+- [x] Honest gaps documented in LANGUAGE.md: no static checker, no signature-variance analysis, generator return annotations unchecked, missing-arg `null` binding unchanged, `obj.method()` still needs instances (maps use `m["name"]()`), no `const` annotations, no interface bodies/`extends`
+
+```bash
+nvs run examples/wave5_annotations.ns
+nvs run examples/wave5_unions.ns
+nvs run examples/wave5_interfaces.ns
+nvs run examples/wave5_guards.ns
+```

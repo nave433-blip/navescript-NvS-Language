@@ -90,6 +90,8 @@ const (
 	DEFER    TokenType = "defer"
 	FINALLY  TokenType = "finally"
 	ELLIPSIS TokenType = "..."
+	// Wave 5: `interface Name { method(): type }` declarations.
+	INTERFACE TokenType = "interface"
 )
 
 // Token represents a single lexical token.
@@ -101,40 +103,41 @@ type Token struct {
 }
 
 var keywords = map[string]TokenType{
-	"fn":       FUNCTION,
-	"let":      LET,
-	"const":    CONST,
-	"true":     TRUE,
-	"false":    FALSE,
-	"if":       IF,
-	"else":     ELSE,
-	"return":   RETURN,
-	"while":    WHILE,
-	"for":      FOR,
-	"import":   IMPORT,
-	"print":    PRINT,
-	"null":     NULL,
-	"break":    BREAK,
-	"continue": CONTINUE,
-	"in":       IN,
-	"class":    CLASS,
-	"new":      NEW,
-	"this":     THIS,
-	"extends":  EXTENDS,
-	"try":      TRY,
-	"catch":    CATCH,
-	"throw":    THROW,
-	"match":    MATCH,
-	"case":     CASE,
-	"default":  DEFAULT,
-	"yield":    YIELD,
-	"enum":     ENUM,
-	"record":   RECORD,
-	"defer":    DEFER,
-	"finally":  FINALLY,
-	"switch":   MATCH, // alias for match
-	"and":      AND,
-	"or":       OR,
+	"fn":        FUNCTION,
+	"let":       LET,
+	"const":     CONST,
+	"true":      TRUE,
+	"false":     FALSE,
+	"if":        IF,
+	"else":      ELSE,
+	"return":    RETURN,
+	"while":     WHILE,
+	"for":       FOR,
+	"import":    IMPORT,
+	"print":     PRINT,
+	"null":      NULL,
+	"break":     BREAK,
+	"continue":  CONTINUE,
+	"in":        IN,
+	"class":     CLASS,
+	"new":       NEW,
+	"this":      THIS,
+	"extends":   EXTENDS,
+	"try":       TRY,
+	"catch":     CATCH,
+	"throw":     THROW,
+	"match":     MATCH,
+	"case":      CASE,
+	"default":   DEFAULT,
+	"yield":     YIELD,
+	"enum":      ENUM,
+	"record":    RECORD,
+	"defer":     DEFER,
+	"finally":   FINALLY,
+	"interface": INTERFACE,
+	"switch":    MATCH, // alias for match
+	"and":       AND,
+	"or":        OR,
 }
 
 // LookupIdent returns the token type for an identifier (keyword or IDENT).

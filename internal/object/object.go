@@ -29,9 +29,11 @@ const (
 	CONTINUE_OBJ     = "CONTINUE"
 	CLASS_OBJ        = "CLASS"
 	INSTANCE_OBJ     = "INSTANCE"
-	GENERATOR_OBJ    = "GENERATOR"
-	YIELD_OBJ        = "YIELD"
-	NAMED_ARG_OBJ    = "NAMED_ARG"
+	// Wave 5: structural interface declarations.
+	INTERFACE_OBJ = "INTERFACE"
+	GENERATOR_OBJ = "GENERATOR"
+	YIELD_OBJ     = "YIELD"
+	NAMED_ARG_OBJ = "NAMED_ARG"
 )
 
 type Object interface {
@@ -87,8 +89,17 @@ func (e *Error) Inspect() string {
 }
 
 type Function struct {
+	// Name is the binding name when known (set for `let f = fn...`,
+	// `fn f...`, and class methods); "" for anonymous literals. Used only
+	// for error messages.
+	Name       string
 	Parameters []*ast.Identifier
 	Defaults   []ast.Expression // optional default expressions (parallel to Parameters)
+	// Wave 5: runtime type contracts. ParamTypes is parallel to Parameters
+	// (nil entry = unannotated); ReturnType nil = unannotated. Enforced at
+	// call time / on return — NvS has no static checker.
+	ParamTypes []*ast.TypeAnnotation
+	ReturnType *ast.TypeAnnotation
 	Body       *ast.BlockStatement
 	Env        *Environment
 }
@@ -356,6 +367,24 @@ func (i *Instance) Set(name string, val Object) {
 	i.Fields[name] = val
 }
 
+// ---- Wave 5: interfaces (structural contracts, checked at runtime) ----
+
+type Interface struct {
+	Name    string
+	Methods map[string]*InterfaceMethod // by method name
+	Order   []string                    // declaration order (deterministic errors)
+}
+
+type InterfaceMethod struct {
+	Name       string
+	Arity      int // number of declared parameters (signatures have no defaults)
+	ParamTypes []*ast.TypeAnnotation
+	ReturnType *ast.TypeAnnotation
+}
+
+func (i *Interface) Type() ObjectType { return INTERFACE_OBJ }
+func (i *Interface) Inspect() string  { return "interface " + i.Name }
+
 type YieldValue struct {
 	Value Object
 }
@@ -392,14 +421,19 @@ func (g *Generator) Next() Object {
 type Environment struct {
 	store     map[string]Object
 	constants map[string]bool
-	outer     *Environment
+	// Wave 5: declared variable types from `let x: type = ...`. Checked on
+	// the initial binding and on every later assignment (AssignStrict path
+	// is checked by the evaluator before assigning).
+	declaredTypes map[string]*ast.TypeAnnotation
+	outer         *Environment
 }
 
 func NewEnvironment() *Environment {
 	return &Environment{
-		store:     make(map[string]Object),
-		constants: make(map[string]bool),
-		outer:     nil,
+		store:         make(map[string]Object),
+		constants:     make(map[string]bool),
+		declaredTypes: make(map[string]*ast.TypeAnnotation),
+		outer:         nil,
 	}
 }
 
@@ -436,6 +470,28 @@ func (e *Environment) Get(name string) (Object, bool) {
 func (e *Environment) Set(name string, val Object) Object {
 	e.store[name] = val
 	return val
+}
+
+// DeclareType remembers the annotated type of a `let name: type = ...`
+// binding in this environment. Re-declaring a name replaces the type.
+func (e *Environment) DeclareType(name string, ann *ast.TypeAnnotation) {
+	if e.declaredTypes == nil {
+		e.declaredTypes = make(map[string]*ast.TypeAnnotation)
+	}
+	e.declaredTypes[name] = ann
+}
+
+// LookupDeclaredType finds the annotated type declared for name, walking
+// outward through enclosing environments. The second return value reports
+// whether any declaration was found.
+func (e *Environment) LookupDeclaredType(name string) (*ast.TypeAnnotation, bool) {
+	if ann, ok := e.declaredTypes[name]; ok {
+		return ann, true
+	}
+	if e.outer != nil {
+		return e.outer.LookupDeclaredType(name)
+	}
+	return nil, false
 }
 
 // Assign updates name in the environment where it was defined.

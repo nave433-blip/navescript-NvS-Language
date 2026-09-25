@@ -198,6 +198,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseEnumStatement()
 	case lexer.RECORD:
 		return p.parseRecordStatement()
+	case lexer.INTERFACE:
+		return p.parseInterfaceStatement()
 	case lexer.DEFER:
 		return p.parseDeferStatement()
 	case lexer.THROW:
@@ -250,13 +252,16 @@ func (p *Parser) parseLetStatement() ast.Statement {
 
 	name := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 
-	var typeName *ast.Identifier
+	var typeAnn *ast.TypeAnnotation
 	if p.peekTokenIs(lexer.COLON) {
 		p.nextToken() // :
-		if !p.expectPeek(lexer.IDENT) {
+		p.nextToken() // first token of the type
+		// Wave 5: full annotations — `let x: int | string = "s"`,
+		// `let x: int? = nil`. A union `|` here is annotation-only.
+		typeAnn = p.parseTypeAnnotation()
+		if typeAnn == nil {
 			return nil
 		}
-		typeName = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 	}
 
 	if !p.expectPeek(lexer.ASSIGN) {
@@ -270,8 +275,8 @@ func (p *Parser) parseLetStatement() ast.Statement {
 		p.nextToken()
 	}
 
-	if typeName != nil {
-		return &ast.TypedLetStatement{Token: tok, Name: name, TypeName: typeName, Value: value}
+	if typeAnn != nil {
+		return &ast.TypedLetStatement{Token: tok, Name: name, Type: typeAnn, Value: value}
 	}
 	return &ast.LetStatement{Token: tok, Name: name, Value: value}
 }
@@ -334,7 +339,19 @@ func (p *Parser) parseFunctionStatement() ast.Statement {
 		return nil
 	}
 
-	params, defaults := p.parseFunctionParameters()
+	params, defaults, paramTypes := p.parseFunctionParameters()
+
+	// Wave 5: optional return annotation — `fn name(params): type { body }`.
+	// A `:` here was a parse error before, so this is non-breaking.
+	var returnType *ast.TypeAnnotation
+	if p.peekTokenIs(lexer.COLON) {
+		p.nextToken() // :
+		p.nextToken() // first token of the type
+		returnType = p.parseTypeAnnotation()
+		if returnType == nil {
+			return nil
+		}
+	}
 
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -346,6 +363,8 @@ func (p *Parser) parseFunctionStatement() ast.Statement {
 		Token:      tok,
 		Parameters: params,
 		Defaults:   defaults,
+		ParamTypes: paramTypes,
+		ReturnType: returnType,
 		Body:       body,
 	}
 
@@ -557,7 +576,19 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 		return nil
 	}
 
-	lit.Parameters, lit.Defaults = p.parseFunctionParameters()
+	lit.Parameters, lit.Defaults, lit.ParamTypes = p.parseFunctionParameters()
+
+	// Wave 5: optional return annotation — `fn (params): type { body }`.
+	var returnType *ast.TypeAnnotation
+	if p.peekTokenIs(lexer.COLON) {
+		p.nextToken() // :
+		p.nextToken() // first token of the type
+		returnType = p.parseTypeAnnotation()
+		if returnType == nil {
+			return nil
+		}
+	}
+	lit.ReturnType = returnType
 
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -567,18 +598,20 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 	return lit
 }
 
-func (p *Parser) parseFunctionParameters() ([]*ast.Identifier, []ast.Expression) {
+func (p *Parser) parseFunctionParameters() ([]*ast.Identifier, []ast.Expression, []*ast.TypeAnnotation) {
 	identifiers := []*ast.Identifier{}
 	defaults := []ast.Expression{}
+	types := []*ast.TypeAnnotation{}
 
 	if p.peekTokenIs(lexer.RPAREN) {
 		p.nextToken()
-		return identifiers, defaults
+		return identifiers, defaults, types
 	}
 
 	p.nextToken()
 	ident := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 	identifiers = append(identifiers, ident)
+	types = append(types, p.parseParamAnnotation())
 	if p.peekTokenIs(lexer.ASSIGN) {
 		p.nextToken() // =
 		p.nextToken()
@@ -592,6 +625,7 @@ func (p *Parser) parseFunctionParameters() ([]*ast.Identifier, []ast.Expression)
 		p.nextToken()
 		ident := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 		identifiers = append(identifiers, ident)
+		types = append(types, p.parseParamAnnotation())
 		if p.peekTokenIs(lexer.ASSIGN) {
 			p.nextToken()
 			p.nextToken()
@@ -602,10 +636,60 @@ func (p *Parser) parseFunctionParameters() ([]*ast.Identifier, []ast.Expression)
 	}
 
 	if !p.expectPeek(lexer.RPAREN) {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	return identifiers, defaults
+	return identifiers, defaults, types
+}
+
+// parseParamAnnotation parses an optional `: type` annotation following a
+// parameter name. Called with curToken on the parameter identifier; on
+// return curToken is on the last token of the annotation (or still on the
+// identifier when there is none). Returns nil when no annotation is present.
+func (p *Parser) parseParamAnnotation() *ast.TypeAnnotation {
+	if !p.peekTokenIs(lexer.COLON) {
+		return nil
+	}
+	p.nextToken() // :
+	p.nextToken() // first token of the type
+	return p.parseTypeAnnotation()
+}
+
+// parseTypeAnnotation parses a type annotation: `int`, `int | string`,
+// `Shape`, `int?` (`?` desugars to `| null`). Called with curToken on the
+// first token of the type; the `|` spelling is only special here — everywhere
+// else it keeps its usual (bitwise-or) meaning.
+func (p *Parser) parseTypeAnnotation() *ast.TypeAnnotation {
+	// `null` is a keyword token, but it's a legitimate type name.
+	if !p.curTokenIs(lexer.IDENT) && !p.curTokenIs(lexer.NULL) {
+		p.errors = append(p.errors, "expected type name in annotation")
+		return nil
+	}
+	tok := p.curToken
+	members := []*ast.TypeAnnotation{{Token: tok, Name: tok.Literal}}
+	// `T?` sugar for `T | null`.
+	if p.peekTokenIs(lexer.QUESTION) {
+		p.nextToken()
+		members = append(members, &ast.TypeAnnotation{Token: p.curToken, Name: "null"})
+	}
+	for p.peekTokenIs(lexer.BIT_OR) {
+		p.nextToken() // |
+		if !p.peekTokenIs(lexer.IDENT) && !p.peekTokenIs(lexer.NULL) {
+			p.errors = append(p.errors, "expected type name after '|' in annotation")
+			return nil
+		}
+		p.nextToken()
+		mtok := p.curToken
+		members = append(members, &ast.TypeAnnotation{Token: mtok, Name: mtok.Literal})
+		if p.peekTokenIs(lexer.QUESTION) {
+			p.nextToken()
+			members = append(members, &ast.TypeAnnotation{Token: p.curToken, Name: "null"})
+		}
+	}
+	if len(members) == 1 {
+		return members[0]
+	}
+	return &ast.TypeAnnotation{Token: tok, Union: members}
 }
 
 func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
@@ -1049,6 +1133,80 @@ func (p *Parser) tryParseHashPattern() ast.Expression {
 	return pat
 }
 
+// ---- Wave 5: interfaces ----
+// parseInterfaceStatement parses:
+//
+//	interface Shape {
+//	  area(): float
+//	  greet(name: string): string
+//	}
+//
+// Method signatures carry parameter names with optional `: type`
+// annotations and an optional `: type` return annotation; there are no
+// bodies. Members are separated by newlines and/or semicolons.
+func (p *Parser) parseInterfaceStatement() *ast.InterfaceDecl {
+	stmt := &ast.InterfaceDecl{Token: p.curToken}
+	if !p.expectPeek(lexer.IDENT) {
+		return nil
+	}
+	stmt.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+	if !p.expectPeek(lexer.LBRACE) {
+		return nil
+	}
+	p.nextToken()
+	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		if p.curTokenIs(lexer.SEMICOLON) {
+			p.nextToken()
+			continue
+		}
+		if !p.curTokenIs(lexer.IDENT) {
+			p.errors = append(p.errors, "expected method name in interface body")
+			return nil
+		}
+		method := &ast.InterfaceMethod{Token: p.curToken}
+		method.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		if !p.expectPeek(lexer.LPAREN) {
+			return nil
+		}
+		// Parameter list: name[: type], comma-separated. No defaults —
+		// a signature declares the contract, not the implementation.
+		if !p.peekTokenIs(lexer.RPAREN) {
+			for {
+				p.nextToken()
+				if !p.curTokenIs(lexer.IDENT) {
+					p.errors = append(p.errors, "expected parameter name in interface method")
+					return nil
+				}
+				method.ParamNames = append(method.ParamNames,
+					&ast.Identifier{Token: p.curToken, Value: p.curToken.Literal})
+				method.ParamTypes = append(method.ParamTypes, p.parseParamAnnotation())
+				if p.peekTokenIs(lexer.COMMA) {
+					p.nextToken()
+					continue
+				}
+				break
+			}
+		}
+		if !p.expectPeek(lexer.RPAREN) {
+			return nil
+		}
+		if p.peekTokenIs(lexer.COLON) {
+			p.nextToken() // :
+			p.nextToken() // first token of the type
+			method.ReturnType = p.parseTypeAnnotation()
+			if method.ReturnType == nil {
+				return nil
+			}
+		}
+		stmt.Methods = append(stmt.Methods, method)
+		if p.peekTokenIs(lexer.SEMICOLON) {
+			p.nextToken()
+		}
+		p.nextToken()
+	}
+	return stmt
+}
+
 func (p *Parser) parseClassStatement() *ast.ClassStatement {
 	stmt := &ast.ClassStatement{Token: p.curToken}
 	if !p.expectPeek(lexer.IDENT) {
@@ -1084,7 +1242,16 @@ func (p *Parser) parseClassStatement() *ast.ClassStatement {
 		if !p.expectPeek(lexer.LPAREN) {
 			return nil
 		}
-		method.Parameters, _ = p.parseFunctionParameters()
+		method.Parameters, _, method.ParamTypes = p.parseFunctionParameters()
+		// Wave 5: optional return annotation on methods — `area(): float { ... }`.
+		if p.peekTokenIs(lexer.COLON) {
+			p.nextToken() // :
+			p.nextToken() // first token of the type
+			method.ReturnType = p.parseTypeAnnotation()
+			if method.ReturnType == nil {
+				return nil
+			}
+		}
 		if !p.expectPeek(lexer.LBRACE) {
 			return nil
 		}

@@ -232,11 +232,40 @@ func (ws *WhileStatement) String() string {
 	return "while " + ws.Condition.String() + " " + ws.Body.String()
 }
 
+// ---- Wave 5: runtime type contracts ----
+
+// TypeAnnotation is a parsed type annotation: `int`, `string | null`,
+// `Shape`, `int?` (parsed as `int | null`). Annotations are RUNTIME
+// contracts — NvS has no static type checker; every annotation is enforced
+// when a call happens, a value is bound, or a return executes.
+type TypeAnnotation struct {
+	Token lexer.Token
+	Name  string            // simple name: "int", "Shape", ...
+	Union []*TypeAnnotation // non-nil for `A | B | ...`; nil = simple named type
+}
+
+func (t *TypeAnnotation) String() string {
+	if t == nil {
+		return ""
+	}
+	if len(t.Union) > 0 {
+		parts := make([]string, len(t.Union))
+		for i, u := range t.Union {
+			parts[i] = u.String()
+		}
+		return strings.Join(parts, " | ")
+	}
+	return t.Name
+}
+
 // FunctionLiteral: fn(x, y) { ... }  (optional defaults: fn(x, y=1))
+// Wave 5: optional runtime-checked annotations: fn add(a: int, b: int): int { ... }
 type FunctionLiteral struct {
 	Token      lexer.Token
 	Parameters []*Identifier
-	Defaults   []Expression // parallel to Parameters; nil entry = required
+	Defaults   []Expression      // parallel to Parameters; nil entry = required
+	ParamTypes []*TypeAnnotation // parallel to Parameters; nil entry = unannotated
+	ReturnType *TypeAnnotation   // nil = unannotated
 	Body       *BlockStatement
 }
 
@@ -469,10 +498,41 @@ type ClassStatement struct {
 	Methods []*ClassMethod
 }
 
+// ---- Wave 5: interfaces (Go/Python Protocol/TS inspired) ----
+// `interface Shape { area(): float; greet(name: string): string }`
+// declares a STRUCTURAL contract: any object with callable members of
+// compatible arity satisfies it. Checked at runtime by implements() /
+// assert_implements(), and usable as a parameter/return annotation.
+type InterfaceDecl struct {
+	Token   lexer.Token
+	Name    *Identifier
+	Methods []*InterfaceMethod
+}
+
+type InterfaceMethod struct {
+	Token      lexer.Token
+	Name       *Identifier
+	ParamNames []*Identifier     // names are documentation; arity is what's checked
+	ParamTypes []*TypeAnnotation // parallel to ParamNames; nil entry = unannotated
+	ReturnType *TypeAnnotation   // informational; implements() does not check returns
+}
+
+func (id *InterfaceDecl) statementNode()       {}
+func (id *InterfaceDecl) TokenLiteral() string { return id.Token.Literal }
+func (id *InterfaceDecl) String() string {
+	var out bytes.Buffer
+	out.WriteString("interface ")
+	out.WriteString(id.Name.String())
+	out.WriteString(" { ... }")
+	return out.String()
+}
+
 type ClassMethod struct {
 	Token      lexer.Token
 	Name       *Identifier
 	Parameters []*Identifier
+	ParamTypes []*TypeAnnotation // wave 5: parallel to Parameters; nil entry = unannotated
+	ReturnType *TypeAnnotation   // wave 5: nil = unannotated
 	Body       *BlockStatement
 }
 
@@ -629,18 +689,22 @@ func (ds *DecoratorStatement) String() string {
 	return "@" + ds.Decorator.String() + " " + ds.Function.String()
 }
 
-// TypeAnnotation optional: let x: int = 1  (stored for future checker)
+// TypeAnnotation optional: let x: int = 1
+// Wave 5: full annotations — `let x: int | string = "s"`. The annotation is
+// a RUNTIME contract: the initial binding is checked, the declared type is
+// remembered in the environment, and later assignments to the variable are
+// checked too.
 type TypedLetStatement struct {
-	Token    lexer.Token
-	Name     *Identifier
-	TypeName *Identifier
-	Value    Expression
+	Token lexer.Token
+	Name  *Identifier
+	Type  *TypeAnnotation
+	Value Expression
 }
 
 func (tl *TypedLetStatement) statementNode()       {}
 func (tl *TypedLetStatement) TokenLiteral() string { return tl.Token.Literal }
 func (tl *TypedLetStatement) String() string {
-	return "let " + tl.Name.String() + ": " + tl.TypeName.String() + " = " + tl.Value.String()
+	return "let " + tl.Name.String() + ": " + tl.Type.String() + " = " + tl.Value.String()
 }
 
 // TernaryExpression: cond ? a : b

@@ -32,7 +32,7 @@ nvs info
 | OOP | class, new, this, extends | JS, Java |
 | Enums | `enum Name { A, B }` | Rust, TS, Java |
 | Modules | `import "file.ns"` | Python, Go |
-| Types | `type()`, `typeof()`, `isinstance()` | Python, JS |
+| Types | `type()`, `typeof()`, `isinstance()`, `type_of()`; `is_int`/`is_float`/`is_number`/`is_string`/`is_bool`/`is_null`/`is_array`/`is_hash`/`is_tuple`/`is_function` | Python, JS |
 | Equality | `==`, `deep_equal()` | Python |
 | Math | abs, floor, ceil, sqrt, sin, cos, tan, exp, round, pow | C, Python |
 | Random | random, rand_int | Python |
@@ -145,6 +145,68 @@ non-functions instead of guessing an arity; extra args at the final curried
 call pass through exactly like a normal call. The old two-arg NvS-level
 `compose` in `stdlib/prelude.ns` was removed — the variadic builtin
 supersedes it.
+
+## Wave 5 — types robbery (2.2.0-dev)
+
+**There is no static type checker in NvS, and wave 5 does not add one.**
+Every feature below is a *runtime* contract: annotations are parsed, stored on
+the function/binding, and enforced while the program runs — at call time, at
+binding time, or on return. A violation is a runtime error, catchable with
+`try`/`catch`. Unannotated code behaves exactly as before.
+
+| Feature | Syntax | Inspired by |
+|---------|--------|-------------|
+| Param annotations | `fn add(a: int, b: int) { ... }` — wrong argument type is a runtime error naming the parameter, the expected type, and the got type | Python, TS |
+| Return annotations | `fn add(a: int, b: int): int { ... }` — wrong return type errors on return; thrown errors propagate untouched (an error is not a return value) | Python, TS |
+| Union annotations | `fn f(x: int | string)` — `\|` is union *only* in annotation position; elsewhere it stays bitwise-or | TS, Python |
+| Nullable sugar | `fn f(x: int?)` — exactly `int \| null` | TS, C# |
+| `let` annotations | `let x: int = 5` — initial binding checked; the declared type is remembered and later assignments (`x = ...`, incl. from closures) are checked | TS, Rust |
+| Interfaces | `interface Shape { area(): number }` — structural contract | Go, TS, Python Protocol |
+| `implements` / `assert_implements` | `implements(obj, Shape)` → bool; `assert_implements(obj, Shape)` → nil or a runtime error listing what's missing | Go |
+| Interfaces as annotations | `fn draw(s: Shape)` — checks `implements` at call time | TS, Python |
+| Class/record names as annotations | `fn t(a: Animal)`, `fn g(p: Point)` — instanceof incl. subclasses; record-def identity | Python, Java |
+| Type guards | `is_int`, `is_float`, `is_number`, `is_string`, `is_bool`, `is_null` (pre-existing), `is_array`, `is_hash`, `is_tuple`, `is_function` | TS type predicates |
+| `type_of` | `type_of(1)` → `"int"` — lowercase companion to `type()`/`typeof()` (which keep returning `"INTEGER"`) | — |
+
+Annotation type vocabulary (case-insensitive): `int`/`integer`, `float`,
+`number` (int or float), `string`/`str`, `bool`/`boolean`, `null`, `array`/`list`,
+`hash`/`map`/`dict`, `tuple`, `function`/`fn`/`callable` (user functions *and*
+builtins — anything callable), `record` (any record), `any` (no check).
+Anything else resolves lexically at call time: an `interface` name checks
+`implements`, a `class` name checks instanceof (subclasses count), a
+`record` type name checks record identity. An unresolvable name is a loud
+runtime error (`unknown type 'Nope' ...`), never a silent pass. Builtin names
+win over same-named bindings.
+
+What `implements()` verifies (and nothing more): every required member is
+present on the value (class instances incl. inherited methods and fields,
+hashes by string key, record fields), every required member is callable, and —
+when the member is a user function with knowable arity — it can be invoked
+with exactly the number of arguments the interface declares. It does **not**
+verify parameter/return type compatibility (no signature-variance analysis);
+an annotated implementation enforces its own contracts when called.
+
+Deliberate semantics:
+- Defaults compose: `fn f(x: int = 3)` — the default is checked *when used*;
+  `f()` with `fn f(x: int = "bad")` errors, `f(5)` does not.
+- Missing arguments keep the historical behavior (bound to `null`, no new
+  arity error) — annotations only check values that are actually bound.
+- Generator functions skip the return-annotation check (results flow through
+  `yield`, not `return`).
+- `partial`/`curry`/`compose` wrappers delegate to the underlying function,
+  so its annotations still fire at the final call.
+- `const` does not take annotations (`let` covers it); interface methods have
+  no bodies and no `extends`; `obj.method()` call syntax still requires a
+  class instance, so a map implementing an interface is invoked as
+  `m["name"]()`.
+- `is_function` is true for user functions and builtins alike (both callable).
+
+```bash
+nvs run examples/wave5_annotations.ns
+nvs run examples/wave5_unions.ns
+nvs run examples/wave5_interfaces.ns
+nvs run examples/wave5_guards.ns
+```
 
 ## Not full ports (by design)
 - Static Hindley–Milner type inference

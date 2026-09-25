@@ -1,0 +1,136 @@
+// Wave 5: parameter + return annotations (Python/TS style) — RUNTIME contracts.
+// There is no static type checker in NvS: every annotation below is enforced
+// when the call happens, the value is bound, or the function returns.
+// Violations are runtime errors; this script catches them to show the messages.
+
+print "== basic annotations =="
+fn add(a: int, b: int): int {
+  return a + b
+}
+print add(2, 3)
+
+fn shout(s: string): string {
+  return upper(s) + "!"
+}
+print shout("hello")
+
+print "== violations are runtime errors =="
+try {
+  add("x", 2)
+} catch (e) {
+  print "caught: " + e
+}
+try {
+  add(1, 2.5)
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== return annotations =="
+fn broken(): int {
+  return "not an int"
+}
+try {
+  broken()
+} catch (e) {
+  print "caught: " + e
+}
+// A thrown error is not a return value: it propagates untouched.
+fn failer(): int {
+  throw "boom"
+}
+try {
+  failer()
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== defaults are checked when used =="
+fn greet(name: string = "stranger") {
+  return "hi " + name
+}
+print greet()
+print greet("nave")
+fn bad_default(x: int = "oops") {
+  return x
+}
+try {
+  bad_default()
+} catch (e) {
+  print "caught: " + e
+}
+print bad_default(42)
+
+print "== named-argument calls are checked too =="
+fn point(x: int, y: int) {
+  return [x, y]
+}
+print point(y: 2, x: 1)
+try {
+  point(x: "a", y: 2)
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== method annotations =="
+class Calc {
+  fn add(a: int, b: int): int {
+    return a + b
+  }
+}
+let calc = new Calc()
+print calc.add(20, 22)
+try {
+  calc.add(1, "two")
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== let annotations: bound once, checked on reassignment =="
+let count: int = 0
+count = count + 1
+print count
+try {
+  count = "zero"
+} catch (e) {
+  print "caught: " + e
+}
+try {
+  let bad: string = 42
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== the annotation type vocabulary =="
+fn demo(
+  i: int,
+  f: float,
+  n: number,
+  s: string,
+  b: bool,
+  a: array,
+  h: hash,
+  t: tuple,
+  fn_: function
+): string {
+  return "ok"
+}
+print demo(1, 1.5, 2, "s", true, [1], {"k": 1}, (1, 2), len)
+print demo(1, 1.5, 2.5, "s", false, [], {}, (), fn(x) { return x })
+
+print "== unknown type names fail loudly =="
+fn mystery(x: Nope) {
+  return x
+}
+try {
+  mystery(1)
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== unannotated code is untouched =="
+fn loose(x) {
+  return x
+}
+print loose("anything goes")
+print 5 | 3
