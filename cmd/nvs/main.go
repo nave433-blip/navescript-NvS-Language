@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/navescript/nvs/internal/bytecode"
 	"github.com/navescript/nvs/internal/nave"
 
 	"github.com/navescript/nvs/internal/eval"
@@ -64,6 +65,11 @@ func main() {
 		runTranspile(os.Args[2:])
 	case "bridge":
 		runBridge(os.Args[2:])
+	case "bc":
+		// Experimental bytecode compile+run, ported from the 2.8 track.
+		// Honest subset: arithmetic, comparisons, let/const, if/else,
+		// print. Anything else fails LOUDLY at compile time.
+		runBytecode(os.Args[2:])
 	case "nave":
 		// Workflow runner ported from the 2.9 track: executes JSON
 		// .nave workflow documents (log/set/http_get/file ops,
@@ -111,6 +117,9 @@ Usage:
   nvs bridge              JSON stdio bridge: read requests on stdin,
                           write {"ok":...} responses on stdout
   nvs nave <file.nave>    Run a JSON workflow document (also: nvs file.nave)
+  nvs bc <file.ns|--code> Compile the bytecode subset and run it on the
+                          stack VM (--disasm to print bytecode). Only
+                          arithmetic, let/const, if/else, print.
   nvs version             Show version
   nvs help                Show this help
 
@@ -446,5 +455,55 @@ func startREPL() {
 		if result != nil && result.Type() != object.NULL_OBJ {
 			fmt.Println(result.Inspect())
 		}
+	}
+}
+
+// runBytecode compiles the supported subset to bytecode and runs it on the
+// stack VM. Anything outside the subset is a loud compile error, never
+// silently wrong output.
+func runBytecode(args []string) {
+	disasm := false
+	var code string
+	for _, a := range args {
+		switch a {
+		case "--disasm", "-d":
+			disasm = true
+		default:
+			if strings.HasSuffix(a, ".ns") {
+				data, err := os.ReadFile(a)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error reading %s: %v\n", a, err)
+					os.Exit(1)
+				}
+				code = string(data)
+			} else {
+				code = a
+			}
+		}
+	}
+	if code == "" {
+		fmt.Fprintln(os.Stderr, "usage: nvs bc <file.ns|'code'> [--disasm]")
+		os.Exit(1)
+	}
+	l := lexer.New(code)
+	p := parser.New(l)
+	program := p.ParseProgram()
+	if len(p.Errors()) > 0 {
+		printParserErrors(os.Stderr, p.Errors())
+		os.Exit(1)
+	}
+	c := bytecode.NewCompiler()
+	if err := c.Compile(program); err != nil {
+		fmt.Fprintf(os.Stderr, "bytecode compile error: %v\n", err)
+		os.Exit(1)
+	}
+	bc := c.Bytecode()
+	if disasm {
+		fmt.Print(bytecode.Disassemble(bc))
+	}
+	vm := bytecode.NewVM(bc)
+	if _, err := vm.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "bytecode runtime error: %v\n", err)
+		os.Exit(1)
 	}
 }
