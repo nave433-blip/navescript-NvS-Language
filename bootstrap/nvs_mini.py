@@ -19,7 +19,7 @@ def tokenize(src):
             j = i
             while j < n and (src[j].isalnum() or src[j] == "_"): j += 1
             w = src[i:j]
-            tt = "KW" if w in ("let","print","if","else","while","fn","return","true","false","null") else "IDENT"
+            tt = "KW" if w in ("let","print","if","else","while","for","in","fn","return","true","false","null","import") else "IDENT"
             out.append(Tok(tt, w)); i = j
         elif c in "\"'":
             j = i + 1
@@ -125,10 +125,37 @@ class Mini:
         self.env, self.pos = saved_env, saved_pos
         return ret
     def stmt(self):
+        if self.mkw("import"):
+            t = self.peek()
+            if t.t == "STR":
+                self.adv()
+                path = t.v
+                src = open(path).read()
+                saved = (self.toks, self.pos)
+                self.toks = tokenize(src); self.pos = 0
+                while self.peek().t != "EOF":
+                    self.stmt()
+                self.toks, self.pos = saved
+            return None
         if self.mkw("let"):
             name = self.adv().v; self.mop("="); val = self.expr(); self.env[name] = val; return val
         if self.mkw("print"):
             val = self.expr(); print(val); return val
+        if self.mkw("for"):
+            self.mop("(")
+            iname = self.adv().v
+            self.mkw("in")
+            items = self.expr() or []
+            self.mop(")")
+            bpos = self.pos
+            for item in items:
+                self.env[iname] = item
+                self.pos = bpos
+                self.block()
+            self.pos = bpos
+            if self.peek().t == "OP" and self.peek().v == "{":
+                self.adv(); self.skip_block()
+            return None
         if self.mkw("while"):
             self.mop("("); cpos = self.pos; cond = self.expr(); self.mop(")"); bpos = self.pos
             guard = 0

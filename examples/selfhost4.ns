@@ -1,17 +1,21 @@
 import "stdlib/selfhost/mini_eval.ns"
 
-print "--- import inside mini_eval ---"
-print mini_eval("import \"stdlib/selfhost/math_mini.ns\" print mini_square(12)")
+print "--- import ---"
+// mini_eval import runs another .ns file into same env/funcs
+print mini_eval("import \"stdlib/selfhost/math_mini.ns\" print square(5) print cube(3)")
 
-print "--- import + call multi ---"
-print mini_eval("import \"stdlib/selfhost/math_mini.ns\" print mini_sum3(1, 2, 3)")
+print "--- maps + for + fn ---"
+print mini_eval("let m = {x: 10, y: 20} print m")
 
-print "--- maps + for still work ---"
-print mini_eval("let s = 0 for (x in [2, 2, 2]) { s = s + x } print s")
+print "--- while sum ---"
+print mini_eval("let i = 0 let s = 0 while (i < 4) { s = s + i i = i + 1 } print s")
 
 import "stdlib/selfhost/emit_go.ns"
-let g = emit_go_program("let a = 10\nlet b = 20\nprint a + b")
+let g = emit_go_program("let a = 10\nlet b = 32\nprint a + b")
 print "--- go emit ---"
 print g
+write_file("/tmp/nvs_emit2.go", g)
+// compile via go toolchain
+print system("go run /tmp/nvs_emit2.go")
 
 print "SELFHOST4 OK"
