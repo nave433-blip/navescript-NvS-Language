@@ -1,0 +1,56 @@
+// wave3_tuples.ns — Wave 3: tuples (Python-style immutable sequences)
+let t = (1, 2, 3)
+print t                 // (1, 2, 3)
+print (1,)              // 1-tuple keeps its trailing comma
+print ()                // empty tuple
+print (1, (2, 3))       // nesting works
+
+// (x) is still grouping, not a tuple
+print (1 + 2) * 3       // 9
+
+// indexing / slicing / membership / length / iteration
+print t[0]              // 1
+print t[9]              // null (out of bounds, like arrays)
+print t[1:3]            // (2, 3) — slicing a tuple yields a tuple
+print type(t[0:1])      // TUPLE
+print 2 in t            // true
+print 9 in t            // false
+print len(t)            // 3
+let total = 0
+for (x in t) {
+  total = total + x
+}
+print total             // 6
+
+// tuple() builtin: array -> tuple
+let u = tuple([4, 5])
+print u                 // (4, 5)
+print type(u)           // TUPLE
+
+// equality is by value
+print (1, 2) == (1, 2)  // true
+print (1, 2) == (1, 3)  // false
+print deep_equal((1, (2, 3)), (1, (2, 3)))  // true
+
+// destructuring works on tuples
+let [a, b] = (10, 20)
+print a + b             // 30
+
+// tuples are immutable: every mutation attempt is a loud runtime error
+try {
+  t[0] = 99
+} catch (e) {
+  print e               // cannot assign index of immutable tuple
+}
+try {
+  push(t, 4)
+} catch (e) {
+  print e               // push: first arg must be array
+}
+try {
+  tuple(42)
+} catch (e) {
+  print e               // tuple: argument must be array, got INTEGER
+}
+
+print "TUPLES OK"

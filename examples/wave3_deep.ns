@@ -1,0 +1,47 @@
+// wave3_deep.ns — Wave 3: deep path get/set (Lodash _.get / _.set)
+let cfg = {"server": {"host": "localhost", "ports": [80, 443]}, "debug": true}
+
+// deep_get with dot paths; numeric segments index arrays/tuples
+print deep_get(cfg, "server.host")        // localhost
+print deep_get(cfg, "server.ports.1")     // 443
+print deep_get(cfg, "server.missing")     // null
+print deep_get(cfg, "server.missing", "dflt")  // dflt
+print deep_get(cfg, "a.b.c")             // null — missing path, no error
+print deep_get(null, "a.b", 7)           // 7 — null root misses cleanly
+
+record Point(x, y)
+print deep_get({"p": Point(3, 4)}, "p.x")  // 3 — records expose fields
+print deep_get({"p": Point(3, 4)}, "p.1")  // 4 — ...and positional fields
+print deep_get((10, (20, 30)), "1.0")      // 20 — tuples index too
+
+// deep_set: creates intermediate hashes lodash-style, returns the root
+let m = {"a": {"b": 1}}
+deep_set(m, "a.b", 2)
+print deep_get(m, "a.b")                 // 2
+deep_set(m, "x.y.z", 42)
+print deep_get(m, "x.y.z")               // 42
+print deep_set({}, "a.b", 5)["a"]["b"]   // 5 — return value is the root
+
+// through arrays by index — but the index must already exist
+let arr = {"items": [1, 2, 3]}
+deep_set(arr, "items.0", 99)
+print arr["items"][0]                    // 99
+try {
+  deep_set(arr, "items.9", 1)
+} catch (e) {
+  print e  // deep_set: array index out of range (no sparse array creation): 9
+}
+// no sparse auto-vivification of arrays: missing intermediates always
+// become hashes (never arrays) — that's the honest, documented rule
+let h2 = deep_set({}, "a.0.b", 1)
+print deep_get(h2, "a.0.b")   // 1 — "0" is a hash key here, not an array index
+
+// traversing a scalar, tuple, or record is an honest error
+try { deep_set({"a": 1}, "a.b", 2) } catch (e) { print e }
+try { deep_set((1, 2), "0", 9) } catch (e) { print e }      // immutable tuple
+try { deep_set(Point(1, 2), "x", 9) } catch (e) { print e } // immutable record
+
+// empty segments are rejected, not silently skipped
+try { deep_get(cfg, "server..host") } catch (e) { print e }
+
+print "DEEP OK"

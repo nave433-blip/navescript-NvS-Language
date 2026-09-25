@@ -22,8 +22,8 @@ nvs info
 | Numbers | int, float, `0x` hex, `0b` binary | Python, C, JS |
 | Strings | index, slice `[a:b]`, split/join/… | Python, Go |
 | Arrays | literals, push/pop, slice, map/filter/reduce | JS, Python |
-| Maps | `{k:v}`, keys, membership | Python, JS |
-| Sets | `set()`, `set_add`, `set_has` | Python |
+| Maps | `{k:v}`, keys, membership, `map_merge`, `map_pick`/`map_omit`, `invert` | Python, JS |
+| Sets | `set()`, `set_add`, `set_has`, `set_remove`, `set_union`/`set_intersect`/`set_diff`, `set_len`, `set_to_array` | Python |
 | Control | if/else, while, for, for-in, break/continue | C family |
 | Pattern | `match` / `switch` / case / default | Rust, C# |
 | Errors | try / catch / **finally** / throw | Java, Python |
@@ -62,6 +62,27 @@ Limitations (honest): destructuring patterns are one level (identifiers + `...re
 (use `"$" + "{x}"`); `break <label>` needs the label on the same line; in
 `{k: 0, ...m}` an explicit key beats a later spread (spreads apply first, then
 explicit pairs).
+
+## Wave 3 — data robbery (2.2.0-dev)
+
+| Feature | Syntax | Inspired by |
+|---------|--------|-------------|
+| Tuples | `(1, 2)`, `(x,)`, `()` — immutable; `(x)` stays grouping; index/slice/`in`/`len`/for-in; `==` compares by value; `tuple(arr)` converts | Python |
+| Records | `record Point(x, y)` declares an immutable struct type; `Point(1, 2)` or `Point(x: 1, y: 2)` constructs; `.x` access; `==` is field-by-field; prints as `Point(x=1, y=2)`; destructurable via `let {x, y}` | Python namedtuple, C# records |
+| Freeze | `freeze(obj)` deep-freezes arrays/hashes in place (JS `Object.freeze` semantics); `is_frozen(x)`; `thaw(x)` deep mutable copy (tuple→array, record→hash); any mutation of a frozen value is a loud runtime error naming the offense | Python frozenset, JS Object.freeze |
+| Deep paths | `deep_get(obj, "a.b.0.c")` / `deep_get(obj, "a.b", default)`; `deep_set(obj, "a.b.c", v)` creates intermediate hashes lodash-style, returns the root | Lodash |
+| Set/map builtins | `set_union`/`set_intersect`/`set_diff` (new sets), `set_len`, `set_to_array`, `set_remove`; `len()` now handles sets/hashes, tuples, records; `map_merge` (later-wins, new map), `map_pick`/`map_omit`, `invert` | Python, Lodash |
+
+Notes: tuple/record syntax is non-breaking — `(a, b)` was a parse error before.
+Records are immutable: field assignment and index assignment are runtime errors,
+and `new Point(...)` is not a thing (records aren't classes — just call them).
+`freeze` is in-place, so aliases see the frozen value; `thaw` never mutates.
+`deep_set` never auto-creates arrays (no sparse magic): missing intermediates
+become hashes, and indexing into an array requires the index to already exist.
+Numeric path segments on hashes mean string keys first, then integer keys.
+`set_to_array` and `invert` sort by key rendering so results are deterministic
+(Go map order is random). `record` is now a keyword. `print (a, b)` prints the
+tuple `(a, b)` — previously that was a parse error.
 
 ## Wave 2 — functions robbery (2.2.0-dev)
 

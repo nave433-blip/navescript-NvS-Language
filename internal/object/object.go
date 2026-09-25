@@ -22,6 +22,9 @@ const (
 	BUILTIN_OBJ      = "BUILTIN"
 	ARRAY_OBJ        = "ARRAY"
 	HASH_OBJ         = "HASH"
+	TUPLE_OBJ        = "TUPLE"
+	RECORD_OBJ       = "RECORD"
+	RECORD_DEF_OBJ   = "RECORD_DEF"
 	BREAK_OBJ        = "BREAK"
 	CONTINUE_OBJ     = "CONTINUE"
 	CLASS_OBJ        = "CLASS"
@@ -144,9 +147,11 @@ type NamedArg struct {
 func (na *NamedArg) Type() ObjectType { return NAMED_ARG_OBJ }
 func (na *NamedArg) Inspect() string  { return na.Name + ": " + na.Value.Inspect() }
 
-
 type Array struct {
 	Elements []Object
+	// Frozen marks a deep-frozen (immutable) array. Set by the freeze()
+	// builtin; every mutation path in eval must refuse a frozen array.
+	Frozen bool
 }
 
 func (a *Array) Type() ObjectType { return ARRAY_OBJ }
@@ -161,7 +166,6 @@ func (a *Array) Inspect() string {
 	out.WriteString("]")
 	return out.String()
 }
-
 
 // HashKey for map keys
 type HashKey struct {
@@ -200,6 +204,9 @@ type HashPair struct {
 
 type Hash struct {
 	Pairs map[HashKey]HashPair
+	// Frozen marks a deep-frozen (immutable) hash. Set by the freeze()
+	// builtin; every mutation path in eval must refuse a frozen hash.
+	Frozen bool
 }
 
 func (h *Hash) Type() ObjectType { return HASH_OBJ }
@@ -215,7 +222,78 @@ func (h *Hash) Inspect() string {
 	return out.String()
 }
 
+// ---- Wave 3: tuples, records ----
+
+// Tuple is an immutable ordered sequence: (1, 2), (x,), ().
+// Tuples are immutable by construction — there is no mutation path that
+// accepts one, so no Frozen flag is needed.
+type Tuple struct {
+	Elements []Object
+}
+
+func (t *Tuple) Type() ObjectType { return TUPLE_OBJ }
+func (t *Tuple) Inspect() string {
+	var out bytes.Buffer
+	elements := []string{}
+	for _, e := range t.Elements {
+		elements = append(elements, e.Inspect())
+	}
+	out.WriteString("(")
+	out.WriteString(strings.Join(elements, ", "))
+	if len(t.Elements) == 1 {
+		out.WriteString(",")
+	}
+	out.WriteString(")")
+	return out.String()
+}
+
+// RecordDef is the type object created by `record Point(x, y)`. Calling it
+// (Point(1, 2) or Point(x: 1, y: 2)) constructs an immutable Record.
+type RecordDef struct {
+	Name   string
+	Fields []string
+}
+
+func (r *RecordDef) Type() ObjectType { return RECORD_DEF_OBJ }
+func (r *RecordDef) Inspect() string {
+	return "record " + r.Name + "(" + strings.Join(r.Fields, ", ") + ")"
+}
+
+// FieldIndex returns the positional index of a field name.
+func (r *RecordDef) FieldIndex(name string) (int, bool) {
+	for i, f := range r.Fields {
+		if f == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// Record is an immutable struct value: Point(x=1, y=2).
+type Record struct {
+	Def    *RecordDef
+	Values []Object // parallel to Def.Fields
+}
+
+func (r *Record) Type() ObjectType { return RECORD_OBJ }
+func (r *Record) Inspect() string {
+	parts := []string{}
+	for i, f := range r.Def.Fields {
+		parts = append(parts, f+"="+r.Values[i].Inspect())
+	}
+	return r.Def.Name + "(" + strings.Join(parts, ", ") + ")"
+}
+
+// Field returns the value of a named field.
+func (r *Record) Field(name string) (Object, bool) {
+	if idx, ok := r.Def.FieldIndex(name); ok {
+		return r.Values[idx], true
+	}
+	return nil, false
+}
+
 type Break struct{ Label string }
+
 func (b *Break) Type() ObjectType { return BREAK_OBJ }
 func (b *Break) Inspect() string {
 	if b.Label != "" {
@@ -225,6 +303,7 @@ func (b *Break) Inspect() string {
 }
 
 type Continue struct{ Label string }
+
 func (c *Continue) Type() ObjectType { return CONTINUE_OBJ }
 func (c *Continue) Inspect() string {
 	if c.Label != "" {
@@ -232,7 +311,6 @@ func (c *Continue) Inspect() string {
 	}
 	return "continue"
 }
-
 
 type Class struct {
 	Name    string
@@ -278,10 +356,10 @@ func (i *Instance) Set(name string, val Object) {
 	i.Fields[name] = val
 }
 
-
 type YieldValue struct {
 	Value Object
 }
+
 func (y *YieldValue) Type() ObjectType { return YIELD_OBJ }
 func (y *YieldValue) Inspect() string {
 	if y.Value != nil {
@@ -308,6 +386,7 @@ func (g *Generator) Next() Object {
 	g.Index++
 	return v
 }
+
 // Environment
 
 type Environment struct {
@@ -388,4 +467,3 @@ func (e *Environment) AssignStrict(name string, val Object) (bool, string) {
 	}
 	return false, ""
 }
-

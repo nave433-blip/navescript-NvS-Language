@@ -8,25 +8,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
-	"sort"
-	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
-	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/navescript/nvs/internal/ast"
+	"github.com/navescript/nvs/internal/fuzzy"
+	"github.com/navescript/nvs/internal/highlight"
 	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
 	"github.com/navescript/nvs/internal/parser"
-	"github.com/navescript/nvs/internal/fuzzy"
-	"github.com/navescript/nvs/internal/highlight"
 	"github.com/navescript/nvs/internal/polyglot"
 	"github.com/navescript/nvs/internal/sqlite"
 )
@@ -60,16 +60,14 @@ func LoadPrelude(env *object.Environment) {
 	}
 }
 
-
 var (
-	CLIArgs []string
+	CLIArgs        []string
 	metricCounters = map[string]int64{}
 	metricGauges   = map[string]float64{}
-	TRUE  = &object.Boolean{Value: true}
-	FALSE = &object.Boolean{Value: false}
-	NULL  = &object.Null{}
+	TRUE           = &object.Boolean{Value: true}
+	FALSE          = &object.Boolean{Value: false}
+	NULL           = &object.Null{}
 )
-
 
 func init() {
 	polyglot.NvSValidator = func(code string) error {
@@ -268,6 +266,10 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalMemberAssignExpression(node, env)
 	case *ast.EnumStatement:
 		return evalEnumStatement(node, env)
+	case *ast.TupleLiteral:
+		return evalTupleLiteral(node, env)
+	case *ast.RecordStatement:
+		return evalRecordStatement(node, env)
 	case *ast.DeferStatement:
 		return evalDeferStatement(node, env)
 	case *ast.TryStatement:
@@ -375,10 +377,10 @@ loop:
 type loopSignal int
 
 const (
-	sigNone loopSignal = iota
-	sigBreakMatched    // break targets this loop
-	sigContinueMatched // continue targets this loop
-	sigPropagate       // return value, error, or break/continue for an outer labeled loop
+	sigNone            loopSignal = iota
+	sigBreakMatched               // break targets this loop
+	sigContinueMatched            // continue targets this loop
+	sigPropagate                  // return value, error, or break/continue for an outer labeled loop
 )
 
 // handleLoopResult inspects a loop body result against the loop's label.
@@ -467,6 +469,20 @@ func evalInfixExpression(operator string, left, right object.Object) object.Obje
 		return evalStringInfixExpression(operator, left, right)
 	case left.Type() == object.BOOLEAN_OBJ && right.Type() == object.BOOLEAN_OBJ:
 		return evalBooleanInfixExpression(operator, left, right)
+	case (operator == "==" || operator == "!=") && left.Type() == object.RECORD_OBJ && right.Type() == object.RECORD_OBJ:
+		// Wave 3: records compare field-by-field (value equality).
+		eq := deepEqual(left, right)
+		if operator == "!=" {
+			eq = !eq
+		}
+		return nativeBoolToBooleanObject(eq)
+	case (operator == "==" || operator == "!=") && left.Type() == object.TUPLE_OBJ && right.Type() == object.TUPLE_OBJ:
+		// Wave 3: tuples compare element-by-element (Python semantics).
+		eq := deepEqual(left, right)
+		if operator == "!=" {
+			eq = !eq
+		}
+		return nativeBoolToBooleanObject(eq)
 	case operator == "==":
 		return nativeBoolToBooleanObject(left == right)
 	case operator == "!=":
@@ -650,7 +666,6 @@ func polyglotResult(lang string, r polyglot.Result) object.Object {
 	return &object.String{Value: r.Output}
 }
 
-
 func evalEnumStatement(node *ast.EnumStatement, env *object.Environment) object.Object {
 	pairs := map[object.HashKey]object.HashPair{}
 	for i, m := range node.Members {
@@ -662,6 +677,74 @@ func evalEnumStatement(node *ast.EnumStatement, env *object.Environment) object.
 	h := &object.Hash{Pairs: pairs}
 	env.Set(node.Name.Value, h)
 	return h
+}
+
+// ---- Wave 3: tuples ----
+
+func evalTupleLiteral(node *ast.TupleLiteral, env *object.Environment) object.Object {
+	elements := make([]object.Object, 0, len(node.Elements))
+	for _, el := range node.Elements {
+		evaluated := Eval(el, env)
+		if isError(evaluated) {
+			return evaluated
+		}
+		elements = append(elements, evaluated)
+	}
+	return &object.Tuple{Elements: elements}
+}
+
+func evalTupleIndexExpression(tup, index object.Object) object.Object {
+	tupleObject := tup.(*object.Tuple)
+	idx := index.(*object.Integer).Value
+	max := int64(len(tupleObject.Elements) - 1)
+	if idx < 0 || idx > max {
+		return NULL
+	}
+	return tupleObject.Elements[idx]
+}
+
+// ---- Wave 3: records ----
+
+func evalRecordStatement(node *ast.RecordStatement, env *object.Environment) object.Object {
+	fields := make([]string, 0, len(node.Fields))
+	for _, f := range node.Fields {
+		fields = append(fields, f.Value)
+	}
+	def := &object.RecordDef{Name: node.Name.Value, Fields: fields}
+	env.Set(node.Name.Value, def)
+	return def
+}
+
+// constructRecord builds a Record from a RecordDef, binding positionals in
+// order and `name: value` (wave-2 syntax) arguments by field name.
+func constructRecord(def *object.RecordDef, positional []object.Object, named []*object.NamedArg) object.Object {
+	values := make([]object.Object, len(def.Fields))
+	filled := make([]bool, len(def.Fields))
+	if len(positional) > len(def.Fields) {
+		return newError("record %s expects %d fields, got %d positional arguments",
+			def.Name, len(def.Fields), len(positional))
+	}
+	for i, p := range positional {
+		values[i] = p
+		filled[i] = true
+	}
+	for _, na := range named {
+		idx, ok := def.FieldIndex(na.Name)
+		if !ok {
+			return newError("record %s has no field: %s", def.Name, na.Name)
+		}
+		if filled[idx] {
+			return newError("record %s: duplicate value for field: %s", def.Name, na.Name)
+		}
+		values[idx] = na.Value
+		filled[idx] = true
+	}
+	for i, f := range filled {
+		if !f {
+			return newError("record %s missing value for field: %s", def.Name, def.Fields[i])
+		}
+	}
+	return &object.Record{Def: def, Values: values}
 }
 
 func evalDeferStatement(node *ast.DeferStatement, env *object.Environment) object.Object {
@@ -712,8 +795,6 @@ func runDefers(env *object.Environment) {
 	env.Set(key, &object.Array{Elements: []object.Object{}})
 }
 
-
-
 func deepEqual(a, b object.Object) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -751,6 +832,33 @@ func deepEqual(a, b object.Object) bool {
 		for k, pa := range av.Pairs {
 			pb, ok := bv.Pairs[k]
 			if !ok || !deepEqual(pa.Value, pb.Value) {
+				return false
+			}
+		}
+		return true
+	case *object.Tuple:
+		// Wave 3: element-wise equality.
+		bv := b.(*object.Tuple)
+		if len(av.Elements) != len(bv.Elements) {
+			return false
+		}
+		for i := range av.Elements {
+			if !deepEqual(av.Elements[i], bv.Elements[i]) {
+				return false
+			}
+		}
+		return true
+	case *object.Record:
+		// Wave 3: same record type, field-by-field equality.
+		bv := b.(*object.Record)
+		if av.Def.Name != bv.Def.Name || len(av.Def.Fields) != len(bv.Def.Fields) {
+			return false
+		}
+		for i := range av.Def.Fields {
+			if av.Def.Fields[i] != bv.Def.Fields[i] {
+				return false
+			}
+			if !deepEqual(av.Values[i], bv.Values[i]) {
 				return false
 			}
 		}
@@ -809,6 +917,11 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 		return unwrapReturnValue(result)
 	case *object.Builtin:
 		return fn.Fn(args...)
+	case *object.RecordDef:
+		// Wave 3: calling a record type constructs a record. Named args
+		// are split out by applyCallArgsNamed; a bare applyFunction call
+		// only ever carries positionals.
+		return constructRecord(fn, args, nil)
 	default:
 		return newError("not a function: %s", fn.Type())
 	}
@@ -845,6 +958,10 @@ func applyCallArgs(node *ast.CallExpression, function object.Object, args []obje
 // `?.` chains, which have no CallExpression node).
 func applyCallArgsNamed(function object.Object, args []object.Object, name string) object.Object {
 	positional, named := splitArgs(args)
+	// Wave 3: record construction — Point(1, 2) or Point(x: 1, y: 2).
+	if rec, ok := function.(*object.RecordDef); ok {
+		return constructRecord(rec, positional, named)
+	}
 	if len(named) == 0 {
 		return applyFunction(function, args)
 	}
@@ -974,7 +1091,6 @@ func evalCollectingYields(body *ast.BlockStatement, env *object.Environment) ([]
 	return yields, hasYield, last
 }
 
-
 func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Environment {
 	env := object.NewEnclosedEnvironment(fn.Env)
 	for paramIdx, param := range fn.Parameters {
@@ -999,11 +1115,20 @@ func unwrapReturnValue(obj object.Object) object.Object {
 	return obj
 }
 
-
 func evalIndexExpression(left, index object.Object) object.Object {
 	switch {
 	case left.Type() == object.ARRAY_OBJ && index.Type() == object.INTEGER_OBJ:
 		return evalArrayIndexExpression(left, index)
+	case left.Type() == object.TUPLE_OBJ && index.Type() == object.INTEGER_OBJ:
+		return evalTupleIndexExpression(left, index)
+	case left.Type() == object.RECORD_OBJ && index.Type() == object.INTEGER_OBJ:
+		// Records are tuple-like: r[0] is the first field value.
+		rec := left.(*object.Record)
+		idx := index.(*object.Integer).Value
+		if idx < 0 || idx >= int64(len(rec.Values)) {
+			return NULL
+		}
+		return rec.Values[idx]
 	case left.Type() == object.STRING_OBJ && index.Type() == object.INTEGER_OBJ:
 		return evalStringIndexExpression(left, index)
 	case left.Type() == object.HASH_OBJ:
@@ -1053,7 +1178,28 @@ func evalSliceExpression(left, startObj, endObj object.Object) object.Object {
 		if s > e {
 			return &object.Array{Elements: []object.Object{}}
 		}
-		return &object.Array{Elements: arr.Elements[s:e]}
+		return &object.Array{Elements: arr.Elements[s:e], Frozen: arr.Frozen}
+	case object.TUPLE_OBJ:
+		// Slicing a tuple yields a tuple (Python semantics); tuples are
+		// immutable so no frozen flag is involved.
+		tup := left.(*object.Tuple)
+		n := int64(len(tup.Elements))
+		if e < 0 {
+			e = n
+		}
+		if s < 0 {
+			s = 0
+		}
+		if s > n {
+			s = n
+		}
+		if e > n {
+			e = n
+		}
+		if s > e {
+			return &object.Tuple{Elements: []object.Object{}}
+		}
+		return &object.Tuple{Elements: tup.Elements[s:e]}
 	case object.STRING_OBJ:
 		str := left.(*object.String)
 		runes := []rune(str.Value)
@@ -1176,7 +1322,6 @@ loop:
 	return result
 }
 
-
 func evalHashLiteral(node *ast.HashLiteral, env *object.Environment) object.Object {
 	pairs := make(map[object.HashKey]object.HashPair)
 	// Spreads apply first, in source order; explicit pairs below win on collision.
@@ -1232,34 +1377,57 @@ func evalDestructureLet(node *ast.DestructureLetStatement, env *object.Environme
 	}
 	switch pat := node.Pattern.(type) {
 	case *ast.ArrayPattern:
-		arr, ok := val.(*object.Array)
-		if !ok {
+		// Wave 3: array patterns also destructure tuples and records
+		// (positionally — records are tuple-like).
+		var elems []object.Object
+		switch v := val.(type) {
+		case *object.Array:
+			elems = v.Elements
+		case *object.Tuple:
+			elems = v.Elements
+		case *object.Record:
+			elems = v.Values
+		default:
 			return newError("cannot destructure %s as array", val.Type())
 		}
 		for i, ident := range pat.Elements {
 			var el object.Object = NULL
-			if i < len(arr.Elements) {
-				el = arr.Elements[i]
+			if i < len(elems) {
+				el = elems[i]
 			}
 			bind(ident.Value, el)
 		}
 		if pat.Rest != nil {
 			rest := []object.Object{}
-			if len(arr.Elements) > len(pat.Elements) {
-				rest = append(rest, arr.Elements[len(pat.Elements):]...)
+			if len(elems) > len(pat.Elements) {
+				rest = append(rest, elems[len(pat.Elements):]...)
 			}
 			bind(pat.Rest.Value, &object.Array{Elements: rest})
 		}
 	case *ast.HashPattern:
-		hash, ok := val.(*object.Hash)
-		if !ok {
-			return newError("cannot destructure %s as object", val.Type())
+		// Wave 3: hash patterns also destructure records by field name.
+		lookup := func(name string) (object.Object, bool) {
+			if hash, ok := val.(*object.Hash); ok {
+				key := &object.String{Value: name}
+				if pair, ok := hash.Pairs[key.HashKey()]; ok {
+					return pair.Value, true
+				}
+				return nil, false
+			}
+			if rec, ok := val.(*object.Record); ok {
+				return rec.Field(name)
+			}
+			return nil, false
+		}
+		if _, ok := val.(*object.Hash); !ok {
+			if _, ok := val.(*object.Record); !ok {
+				return newError("cannot destructure %s as object", val.Type())
+			}
 		}
 		for _, e := range pat.Entries {
-			key := &object.String{Value: e.Key.Value}
 			var v object.Object = NULL
-			if pair, ok := hash.Pairs[key.HashKey()]; ok {
-				v = pair.Value
+			if got, ok := lookup(e.Key.Value); ok {
+				v = got
 			}
 			bind(e.Value.Value, v)
 		}
@@ -1284,6 +1452,13 @@ func evalMemberAccess(obj object.Object, name string) object.Object {
 		// allow obj.key as sugar for obj["key"]
 		key := &object.String{Value: name}
 		return evalHashIndexExpression(hash, key)
+	}
+	if rec, ok := obj.(*object.Record); ok {
+		// Wave 3: record field access — point.x
+		if val, ok := rec.Field(name); ok {
+			return val
+		}
+		return newError("record %s has no field: %s", rec.Def.Name, name)
 	}
 	return newError("member access on non-instance: %s", obj.Type())
 }
@@ -1404,14 +1579,28 @@ func evalIndexAssignExpression(node *ast.IndexAssignExpression, env *object.Envi
 	switch {
 	case left.Type() == object.ARRAY_OBJ && index.Type() == object.INTEGER_OBJ:
 		arr := left.(*object.Array)
+		// Wave 3: frozen arrays reject index assignment.
+		if arr.Frozen {
+			return newError("cannot assign index of frozen array: [%d]", index.(*object.Integer).Value)
+		}
 		idx := index.(*object.Integer).Value
 		if idx < 0 || int(idx) >= len(arr.Elements) {
 			return newError("index out of bounds: %d", idx)
 		}
 		arr.Elements[idx] = val
 		return val
+	case left.Type() == object.TUPLE_OBJ:
+		// Wave 3: tuples are immutable — explicit error, never silent.
+		return newError("cannot assign index of immutable tuple")
+	case left.Type() == object.RECORD_OBJ:
+		// Wave 3: records are immutable — explicit error, never silent.
+		return newError("cannot assign index of immutable record")
 	case left.Type() == object.HASH_OBJ:
 		hash := left.(*object.Hash)
+		// Wave 3: frozen hashes reject index assignment.
+		if hash.Frozen {
+			return newError("cannot assign index of frozen hash")
+		}
 		key, ok := index.(object.Hashable)
 		if !ok {
 			return newError("unusable as hash key: %s", index.Type())
@@ -1445,6 +1634,40 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 			case sigBreakMatched:
 				broke = true
 				break loopArr
+			case sigContinueMatched:
+				continue
+			}
+		}
+	case *object.Tuple:
+		// Wave 3: iterate tuple elements, same as arrays.
+	loopTup:
+		for _, el := range it.Elements {
+			env.Set(fs.Name.Value, el)
+			result = Eval(fs.Body, env)
+			sig, prop := handleLoopResult(result, fs.Label)
+			switch sig {
+			case sigPropagate:
+				return prop
+			case sigBreakMatched:
+				broke = true
+				break loopTup
+			case sigContinueMatched:
+				continue
+			}
+		}
+	case *object.Record:
+		// Wave 3: iterate a record's field values in field order.
+	loopRec:
+		for _, el := range it.Values {
+			env.Set(fs.Name.Value, el)
+			result = Eval(fs.Body, env)
+			sig, prop := handleLoopResult(result, fs.Label)
+			switch sig {
+			case sigPropagate:
+				return prop
+			case sigBreakMatched:
+				broke = true
+				break loopRec
 			case sigContinueMatched:
 				continue
 			}
@@ -1523,7 +1746,6 @@ func evalImportStatement(node *ast.ImportStatement, env *object.Environment) obj
 	}
 	return NULL
 }
-
 
 func evalClassStatement(node *ast.ClassStatement, env *object.Environment) object.Object {
 	methods := map[string]*object.Function{}
@@ -1610,9 +1832,17 @@ func evalMemberAssignExpression(node *ast.MemberAssignExpression, env *object.En
 		return val
 	}
 	if hash, ok := obj.(*object.Hash); ok {
+		// Wave 3: frozen hashes reject member assignment.
+		if hash.Frozen {
+			return newError("cannot assign member of frozen hash: .%s", node.Property.Value)
+		}
 		key := &object.String{Value: node.Property.Value}
 		hash.Pairs[key.HashKey()] = object.HashPair{Key: key, Value: val}
 		return val
+	}
+	if rec, ok := obj.(*object.Record); ok {
+		// Wave 3: records are immutable — field assignment is an error.
+		return newError("cannot assign to field of immutable record: %s.%s", rec.Def.Name, node.Property.Value)
 	}
 	return newError("member assign on non-instance: %s", obj.Type())
 }
@@ -1650,7 +1880,6 @@ func applyMethod(fn *object.Function, inst *object.Instance, args []object.Objec
 	result := Eval(fn.Body, extended)
 	return unwrapReturnValue(result)
 }
-
 
 func jsonToObject(data []byte) object.Object {
 	var v interface{}
@@ -1719,11 +1948,24 @@ func objectToInterface(obj object.Object) interface{} {
 			m[pair.Key.Inspect()] = objectToInterface(pair.Value)
 		}
 		return m
+	case *object.Tuple:
+		// Wave 3: tuples serialize as JSON arrays.
+		arr := make([]interface{}, len(o.Elements))
+		for i, e := range o.Elements {
+			arr[i] = objectToInterface(e)
+		}
+		return arr
+	case *object.Record:
+		// Wave 3: records serialize as JSON objects keyed by field name.
+		m := map[string]interface{}{}
+		for i, f := range o.Def.Fields {
+			m[f] = objectToInterface(o.Values[i])
+		}
+		return m
 	default:
 		return o.Inspect()
 	}
 }
-
 
 func evalConstStatement(node *ast.ConstStatement, env *object.Environment) object.Object {
 	val := Eval(node.Value, env)
@@ -1811,7 +2053,6 @@ func matchEquals(a, b object.Object) bool {
 	}
 }
 
-
 func evalYieldStatement(node *ast.YieldStatement, env *object.Environment) object.Object {
 	var val object.Object = NULL
 	if node.Value != nil {
@@ -1874,7 +2115,6 @@ func evalTypedLetStatement(node *ast.TypedLetStatement, env *object.Environment)
 	return NULL
 }
 
-
 func evalTernaryExpression(node *ast.TernaryExpression, env *object.Environment) object.Object {
 	cond := Eval(node.Condition, env)
 	if isError(cond) {
@@ -1885,7 +2125,6 @@ func evalTernaryExpression(node *ast.TernaryExpression, env *object.Environment)
 	}
 	return Eval(node.Alternative, env)
 }
-
 
 func deepCopy(obj object.Object) object.Object {
 	switch o := obj.(type) {
@@ -1908,16 +2147,334 @@ func deepCopy(obj object.Object) object.Object {
 		for k, p := range o.Pairs {
 			pairs[k] = object.HashPair{Key: deepCopy(p.Key), Value: deepCopy(p.Value)}
 		}
-		return &object.Hash{Pairs: pairs}
+		return &object.Hash{Pairs: pairs, Frozen: o.Frozen}
+	case *object.Tuple:
+		// Wave 3: tuples deep-copy to tuples (still immutable).
+		el := make([]object.Object, len(o.Elements))
+		for i, e := range o.Elements {
+			el[i] = deepCopy(e)
+		}
+		return &object.Tuple{Elements: el}
+	case *object.Record:
+		// Wave 3: records deep-copy to records of the same type.
+		vals := make([]object.Object, len(o.Values))
+		for i, v := range o.Values {
+			vals[i] = deepCopy(v)
+		}
+		return &object.Record{Def: o.Def, Values: vals}
 	default:
 		return o
 	}
 }
 
+// ---- Wave 3: freeze / thaw (deep immutability, Python frozenset / JS Object.freeze) ----
+
+// isInherentlyImmutable reports values that can never be mutated.
+func isInherentlyImmutable(obj object.Object) bool {
+	switch obj.(type) {
+	case *object.Integer, *object.Float, *object.Boolean, *object.String,
+		*object.Null, *object.Tuple, *object.Record:
+		return true
+	default:
+		return false
+	}
+}
+
+// deepFreezeInPlace marks obj and every nested array/hash as frozen, in
+// place (JS Object.freeze semantics: the value itself is frozen, aliases see
+// it too). Cycle-safe. Returns obj for chaining.
+func deepFreezeInPlace(obj object.Object, seen map[object.Object]bool) object.Object {
+	if seen[obj] {
+		return obj
+	}
+	seen[obj] = true
+	switch o := obj.(type) {
+	case *object.Array:
+		o.Frozen = true
+		for _, e := range o.Elements {
+			deepFreezeInPlace(e, seen)
+		}
+	case *object.Hash:
+		o.Frozen = true
+		for _, p := range o.Pairs {
+			deepFreezeInPlace(p.Key, seen)
+			deepFreezeInPlace(p.Value, seen)
+		}
+	}
+	return obj
+}
+
+// deepThawCopy returns a deep mutable copy of obj: frozen flags are cleared,
+// tuples become (mutable) arrays and records become hashes of their fields.
+// Cycle-safe: cyclic structures copy to cyclic structures.
+func deepThawCopy(obj object.Object, seen map[object.Object]object.Object) object.Object {
+	if prev, ok := seen[obj]; ok {
+		return prev
+	}
+	switch o := obj.(type) {
+	case *object.Array:
+		cp := &object.Array{Elements: make([]object.Object, len(o.Elements))}
+		seen[obj] = cp
+		for i, e := range o.Elements {
+			cp.Elements[i] = deepThawCopy(e, seen)
+		}
+		return cp
+	case *object.Hash:
+		cp := &object.Hash{Pairs: make(map[object.HashKey]object.HashPair, len(o.Pairs))}
+		seen[obj] = cp
+		for k, p := range o.Pairs {
+			cp.Pairs[k] = object.HashPair{Key: deepThawCopy(p.Key, seen), Value: deepThawCopy(p.Value, seen)}
+		}
+		return cp
+	case *object.Tuple:
+		// The mutable counterpart of a tuple is an array.
+		cp := &object.Array{Elements: make([]object.Object, len(o.Elements))}
+		seen[obj] = cp
+		for i, e := range o.Elements {
+			cp.Elements[i] = deepThawCopy(e, seen)
+		}
+		return cp
+	case *object.Record:
+		// The mutable counterpart of a record is a hash of its fields.
+		cp := &object.Hash{Pairs: make(map[object.HashKey]object.HashPair, len(o.Def.Fields))}
+		seen[obj] = cp
+		for i, f := range o.Def.Fields {
+			k := &object.String{Value: f}
+			cp.Pairs[k.HashKey()] = object.HashPair{Key: k, Value: deepThawCopy(o.Values[i], seen)}
+		}
+		return cp
+	case *object.Integer:
+		return &object.Integer{Value: o.Value}
+	case *object.Float:
+		return &object.Float{Value: o.Value}
+	case *object.String:
+		return &object.String{Value: o.Value}
+	case *object.Boolean:
+		return nativeBoolToBooleanObject(o.Value)
+	case *object.Null:
+		return NULL
+	default:
+		return o
+	}
+}
+
+// mapKeyList extracts the key list for map_pick/map_omit, accepting either
+// map_pick(h, "a", "b") or map_pick(h, ["a", "b"]).
+func mapKeyList(name string, args []object.Object) ([]string, *object.Error) {
+	if len(args) < 1 {
+		return nil, &object.Error{Message: name + ": want map, keys..."}
+	}
+	if _, ok := args[0].(*object.Hash); !ok {
+		return nil, &object.Error{Message: name + ": first argument must be map"}
+	}
+	var keys []string
+	if len(args) == 2 {
+		if arr, ok := args[1].(*object.Array); ok {
+			for _, e := range arr.Elements {
+				s, ok := e.(*object.String)
+				if !ok {
+					return nil, &object.Error{Message: name + ": keys must be strings"}
+				}
+				keys = append(keys, s.Value)
+			}
+			return keys, nil
+		}
+	}
+	for _, a := range args[1:] {
+		s, ok := a.(*object.String)
+		if !ok {
+			return nil, &object.Error{Message: name + ": keys must be strings"}
+		}
+		keys = append(keys, s.Value)
+	}
+	return keys, nil
+}
+
+// ---- Wave 3: deep paths (Lodash _.get / _.set) ----
+
+// parsePathIndex interprets a path segment as an array/tuple index.
+// Only non-negative decimal integers count; anything else is a hash key.
+func parsePathIndex(seg string) (int64, bool) {
+	if seg == "" {
+		return 0, false
+	}
+	for _, c := range seg {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	var n int64
+	for _, c := range seg {
+		n = n*10 + int64(c-'0')
+	}
+	return n, true
+}
+
+// deepGetPath walks segs through obj. Numeric segments index arrays/tuples;
+// other segments key hashes (string key first, then integer key for numeric
+// segments) and name record fields. found=false when the path is missing.
+func deepGetPath(obj object.Object, segs []string) (val object.Object, found bool) {
+	cur := obj
+	for _, seg := range segs {
+		switch c := cur.(type) {
+		case *object.Array:
+			idx, ok := parsePathIndex(seg)
+			if !ok || idx < 0 || idx >= int64(len(c.Elements)) {
+				return nil, false
+			}
+			cur = c.Elements[idx]
+		case *object.Tuple:
+			idx, ok := parsePathIndex(seg)
+			if !ok || idx < 0 || idx >= int64(len(c.Elements)) {
+				return nil, false
+			}
+			cur = c.Elements[idx]
+		case *object.Hash:
+			key := &object.String{Value: seg}
+			if pair, ok := c.Pairs[key.HashKey()]; ok {
+				cur = pair.Value
+				continue
+			}
+			if idx, ok := parsePathIndex(seg); ok {
+				ikey := &object.Integer{Value: idx}
+				if pair, ok := c.Pairs[ikey.HashKey()]; ok {
+					cur = pair.Value
+					continue
+				}
+			}
+			return nil, false
+		case *object.Record:
+			if v, ok := c.Field(seg); ok {
+				cur = v
+				continue
+			}
+			if idx, ok := parsePathIndex(seg); ok && idx >= 0 && idx < int64(len(c.Values)) {
+				cur = c.Values[idx]
+				continue
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// deepSetPath sets the value at segs within cur, creating intermediate
+// hashes as needed (lodash-style). Array indices must already exist — no
+// sparse auto-vivification. Returns the (possibly new) subtree root.
+func deepSetPath(cur object.Object, segs []string, val object.Object) (object.Object, *object.Error) {
+	fail := func(format string, a ...interface{}) (object.Object, *object.Error) {
+		return nil, &object.Error{Message: fmt.Sprintf(format, a...)}
+	}
+	if len(segs) == 1 {
+		seg := segs[0]
+		switch c := cur.(type) {
+		case *object.Hash:
+			if c.Frozen {
+				return fail("cannot deep_set into frozen hash")
+			}
+			// Prefer an existing key: string key first, then integer key
+			// for numeric segments; otherwise create a string key.
+			key := &object.String{Value: seg}
+			if _, ok := c.Pairs[key.HashKey()]; ok {
+				c.Pairs[key.HashKey()] = object.HashPair{Key: key, Value: val}
+				return cur, nil
+			}
+			if idx, ok := parsePathIndex(seg); ok {
+				ikey := &object.Integer{Value: idx}
+				if _, ok := c.Pairs[ikey.HashKey()]; ok {
+					c.Pairs[ikey.HashKey()] = object.HashPair{Key: ikey, Value: val}
+					return cur, nil
+				}
+			}
+			c.Pairs[key.HashKey()] = object.HashPair{Key: key, Value: val}
+			return cur, nil
+		case *object.Array:
+			if c.Frozen {
+				return fail("cannot deep_set into frozen array")
+			}
+			idx, ok := parsePathIndex(seg)
+			if !ok || idx < 0 || idx >= int64(len(c.Elements)) {
+				return fail("deep_set: array index out of range (no sparse array creation): %s", seg)
+			}
+			c.Elements[idx] = val
+			return cur, nil
+		case *object.Tuple:
+			return fail("cannot deep_set through immutable tuple")
+		case *object.Record:
+			return fail("cannot deep_set through immutable record")
+		case *object.Null:
+			// A null root becomes a fresh hash so
+			// deep_set(null, "a", 1) yields {a: 1}.
+			child := &object.Hash{Pairs: map[object.HashKey]object.HashPair{}}
+			return deepSetPath(child, segs, val)
+		default:
+			return fail("deep_set: cannot set field %q on %s", seg, cur.Type())
+		}
+	}
+	seg := segs[0]
+	rest := segs[1:]
+	// nextSegIsIndex tells us whether to auto-create a hash for a missing
+	// child — arrays are never auto-created (no sparse magic).
+	switch c := cur.(type) {
+	case *object.Hash:
+		if c.Frozen {
+			return fail("cannot deep_set into frozen hash")
+		}
+		child, found := deepGetPath(cur, []string{seg})
+		if !found || child.Type() == object.NULL_OBJ {
+			child = &object.Hash{Pairs: map[object.HashKey]object.HashPair{}}
+			if _, errObj := deepSetPath(cur, []string{seg}, child); errObj != nil {
+				return nil, errObj
+			}
+		}
+		if _, errObj := deepSetPath(child, rest, val); errObj != nil {
+			return nil, errObj
+		}
+		return cur, nil
+	case *object.Array:
+		if c.Frozen {
+			return fail("cannot deep_set into frozen array")
+		}
+		idx, ok := parsePathIndex(seg)
+		if !ok || idx < 0 || idx >= int64(len(c.Elements)) {
+			return fail("deep_set: array index out of range (no sparse array creation): %s", seg)
+		}
+		child := c.Elements[idx]
+		if child.Type() == object.NULL_OBJ {
+			child = &object.Hash{Pairs: map[object.HashKey]object.HashPair{}}
+			c.Elements[idx] = child
+		}
+		if _, errObj := deepSetPath(child, rest, val); errObj != nil {
+			return nil, errObj
+		}
+		return cur, nil
+	case *object.Tuple:
+		return fail("cannot deep_set through immutable tuple")
+	case *object.Record:
+		return fail("cannot deep_set through immutable record")
+	case *object.Null:
+		// A null subtree becomes a fresh hash (only reachable when the
+		// caller created it as an intermediate).
+		child := &object.Hash{Pairs: map[object.HashKey]object.HashPair{}}
+		return deepSetPath(child, segs, val)
+	default:
+		return fail("deep_set: cannot traverse into %s at %q", cur.Type(), seg)
+	}
+}
 
 func evalInOperator(left, right object.Object) object.Object {
 	switch r := right.(type) {
 	case *object.Array:
+		for _, el := range r.Elements {
+			if el.Type() == left.Type() && el.Inspect() == left.Inspect() {
+				return TRUE
+			}
+		}
+		return FALSE
+	case *object.Tuple:
+		// Wave 3: element membership, same semantics as arrays.
 		for _, el := range r.Elements {
 			if el.Type() == left.Type() && el.Inspect() == left.Inspect() {
 				return TRUE
@@ -1936,7 +2493,7 @@ func evalInOperator(left, right object.Object) object.Object {
 		}
 		return FALSE
 	default:
-		return newError("in: right side must be array, string, or map")
+		return newError("in: right side must be array, tuple, string, or map")
 	}
 }
 
@@ -1945,2962 +2502,3307 @@ func evalInOperator(left, right object.Object) object.Object {
 var builtins map[string]*object.Builtin
 
 func initBuiltins() {
-	if builtins != nil { return }
+	if builtins != nil {
+		return
+	}
 	builtins = map[string]*object.Builtin{
-	"len": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("wrong number of arguments. got=%d, want=1", len(args))
-			}
-			switch arg := args[0].(type) {
-			case *object.String:
-				return &object.Integer{Value: int64(len(arg.Value))}
-			case *object.Array:
-				return &object.Integer{Value: int64(len(arg.Elements))}
-			default:
-				return newError("argument to `len` not supported, got %s", args[0].Type())
-			}
-		},
-	},
-	"str": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("wrong number of arguments. got=%d, want=1", len(args))
-			}
-			return &object.String{Value: args[0].Inspect()}
-		},
-	},
-	"read_file": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("read_file: want 1 argument")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("read_file: path must be string")
-			}
-			data, err := os.ReadFile(path.Value)
-			if err != nil {
-				return newError("read_file: %s", err.Error())
-			}
-			return &object.String{Value: string(data)}
-		},
-	},
-	"write_file": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("write_file: want 2 arguments (path, content)")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("write_file: path must be string")
-			}
-			content := args[1].Inspect()
-			if s, ok := args[1].(*object.String); ok {
-				content = s.Value
-			}
-			err := os.WriteFile(path.Value, []byte(content), 0644)
-			if err != nil {
-				return newError("write_file: %s", err.Error())
-			}
-			return TRUE
-		},
-	},
-	"http_get": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("http_get: want 1 argument (url)")
-			}
-			url, ok := args[0].(*object.String)
-			if !ok {
-				return newError("http_get: url must be string")
-			}
-			client := &http.Client{Timeout: 15 * time.Second}
-			resp, err := client.Get(url.Value)
-			if err != nil {
-				return newError("http_get: %s", err.Error())
-			}
-			defer resp.Body.Close()
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return newError("http_get: read body: %s", err.Error())
-			}
-			return &object.String{Value: string(body)}
-		},
-	},
-	"json_parse": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("json_parse: want 1 argument")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("json_parse: argument must be string")
-			}
-			return jsonToObject([]byte(s.Value))
-		},
-	},
-	"json_stringify": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("json_stringify: want 1 argument")
-			}
-			data, err := objectToJSON(args[0])
-			if err != nil {
-				return newError("json_stringify: %s", err.Error())
-			}
-			return &object.String{Value: string(data)}
-		},
-	},
-	"type": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("type: want 1 argument")
-			}
-			return &object.String{Value: string(args[0].Type())}
-		},
-	},
-	"push": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("push: want 2 arguments (array, value)")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("push: first arg must be array")
-			}
-			arr.Elements = append(arr.Elements, args[1])
-			return arr
-		},
-	},
-	"range": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 || len(args) > 3 {
-				return newError("range: want 1-3 arguments")
-			}
-			toInt := func(o object.Object) (int64, bool) {
-				if i, ok := o.(*object.Integer); ok {
-					return i.Value, true
+		"len": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("wrong number of arguments. got=%d, want=1", len(args))
 				}
-				return 0, false
-			}
-			var start, end, step int64 = 0, 0, 1
-			if len(args) == 1 {
-				end, _ = toInt(args[0])
-			} else if len(args) == 2 {
-				start, _ = toInt(args[0])
-				end, _ = toInt(args[1])
-			} else {
-				start, _ = toInt(args[0])
-				end, _ = toInt(args[1])
-				step, _ = toInt(args[2])
-				if step == 0 {
-					return newError("range: step cannot be 0")
+				switch arg := args[0].(type) {
+				case *object.String:
+					return &object.Integer{Value: int64(len(arg.Value))}
+				case *object.Array:
+					return &object.Integer{Value: int64(len(arg.Elements))}
+				case *object.Tuple:
+					// Wave 3: tuples and hashes/sets support len too.
+					return &object.Integer{Value: int64(len(arg.Elements))}
+				case *object.Hash:
+					return &object.Integer{Value: int64(len(arg.Pairs))}
+				case *object.Record:
+					return &object.Integer{Value: int64(len(arg.Def.Fields))}
+				default:
+					return newError("argument to `len` not supported, got %s", args[0].Type())
 				}
-			}
-			var elements []object.Object
-			if step > 0 {
-				for i := start; i < end; i += step {
-					elements = append(elements, &object.Integer{Value: i})
+			},
+		},
+		"str": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("wrong number of arguments. got=%d, want=1", len(args))
 				}
-			} else {
-				for i := start; i > end; i += step {
-					elements = append(elements, &object.Integer{Value: i})
+				return &object.String{Value: args[0].Inspect()}
+			},
+		},
+		"read_file": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("read_file: want 1 argument")
 				}
-			}
-			return &object.Array{Elements: elements}
-		},
-	},
-	"keys": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("keys: want 1 argument")
-			}
-			hash, ok := args[0].(*object.Hash)
-			if !ok {
-				return newError("keys: argument must be hash")
-			}
-			var elements []object.Object
-			for _, pair := range hash.Pairs {
-				elements = append(elements, pair.Key)
-			}
-			return &object.Array{Elements: elements}
-		},
-	},
-	"values": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("values: want 1 argument")
-			}
-			hash, ok := args[0].(*object.Hash)
-			if !ok {
-				return newError("values: argument must be hash")
-			}
-			var elements []object.Object
-			for _, pair := range hash.Pairs {
-				elements = append(elements, pair.Value)
-			}
-			return &object.Array{Elements: elements}
-		},
-	},
-	"system": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 {
-				return newError("system: want command string")
-			}
-			cmdStr, ok := args[0].(*object.String)
-			if !ok {
-				return newError("system: command must be string")
-			}
-			cmd := exec.Command("sh", "-c", cmdStr.Value)
-			out, err := cmd.CombinedOutput()
-			result := string(out)
-			if err != nil {
-				return &object.String{Value: result + "\n[exit error: " + err.Error() + "]"}
-			}
-			return &object.String{Value: result}
-		},
-	},
-	"python": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("python: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("python: code must be string")
-			}
-			cmd := exec.Command("python3", "-c", code.Value)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				return newError("python: %s\n%s", err.Error(), string(out))
-			}
-			return &object.String{Value: string(out)}
-		},
-	},
-	
-	"js": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("js: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("js: code must be string")
-			}
-			cmd := exec.Command("node", "-e", code.Value)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				return newError("js: %s\n%s", err.Error(), string(out))
-			}
-			return &object.String{Value: string(out)}
-		},
-	},
-	"ruby": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("ruby: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("ruby: code must be string")
-			}
-			cmd := exec.Command("ruby", "-e", code.Value)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				return newError("ruby: %s\n%s", err.Error(), string(out))
-			}
-			return &object.String{Value: string(out)}
-		},
-	},
-	
-	"rust": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("rust: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("rust: code must be string")
-			}
-			return polyglotResult("rust", polyglot.Rust(code.Value))
-		},
-	},
-	"golang": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("golang: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("golang: code must be string")
-			}
-			return polyglotResult("golang", polyglot.Go(code.Value))
-		},
-	},
-	"c": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("c: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("c: code must be string")
-			}
-			return polyglotResult("c", polyglot.C(code.Value))
-		},
-	},
-	"cpp": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("cpp: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("cpp: code must be string")
-			}
-			return polyglotResult("cpp", polyglot.CPP(code.Value))
-		},
-	},
-	"java": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("java: want 1 argument (code string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("java: code must be string")
-			}
-			return polyglotResult("java", polyglot.Java(code.Value))
-		},
-	},
-	"css": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("css: want 1 argument (css string)")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("css: code must be string")
-			}
-			return polyglotResult("css", polyglot.CSS(code.Value))
-		},
-	},
-	
-	"detect_lang": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("detect_lang: want code string")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("detect_lang: want string")
-			}
-			b := polyglot.NewBridge()
-			info := b.Identify(code.Value)
-			// return hash-like string map as Hash
-			pairs := map[object.HashKey]object.HashPair{}
-			for k, v := range info {
-				ks := &object.String{Value: k}
-				vs := &object.String{Value: v}
-				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
-			}
-			return &object.Hash{Pairs: pairs}
-		},
-	},
-	"run_native": {
-		Fn: func(args ...object.Object) object.Object {
-			// run_native(code) or run_native(lang, code)
-			if len(args) < 1 || len(args) > 2 {
-				return newError("run_native: want code or lang, code")
-			}
-			hint := ""
-			var code string
-			if len(args) == 1 {
-				s, ok := args[0].(*object.String)
+				path, ok := args[0].(*object.String)
 				if !ok {
-					return newError("run_native: code must be string")
+					return newError("read_file: path must be string")
 				}
-				code = s.Value
-			} else {
-				h, ok1 := args[0].(*object.String)
-				s, ok2 := args[1].(*object.String)
-				if !ok1 || !ok2 {
-					return newError("run_native: want string lang, string code")
+				data, err := os.ReadFile(path.Value)
+				if err != nil {
+					return newError("read_file: %s", err.Error())
 				}
-				hint = h.Value
-				code = s.Value
-			}
-			r := polyglot.NewBridge().Run(hint, code)
-			return polyglotResult("run_native", r)
+				return &object.String{Value: string(data)}
+			},
 		},
-	},
-	"to_nvs": {
-		Fn: func(args ...object.Object) object.Object {
-			// to_nvs(code) or to_nvs(lang, code)
-			if len(args) < 1 || len(args) > 2 {
-				return newError("to_nvs: want code or lang, code")
-			}
-			hint := ""
-			var code string
-			if len(args) == 1 {
-				s, ok := args[0].(*object.String)
+		"write_file": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("write_file: want 2 arguments (path, content)")
+				}
+				path, ok := args[0].(*object.String)
 				if !ok {
-					return newError("to_nvs: want string")
+					return newError("write_file: path must be string")
 				}
-				code = s.Value
-			} else {
-				h, ok1 := args[0].(*object.String)
-				s, ok2 := args[1].(*object.String)
-				if !ok1 || !ok2 {
-					return newError("to_nvs: want lang, code strings")
-				}
-				hint, code = h.Value, s.Value
-			}
-			out, err := polyglot.NewBridge().AssembleNvS(hint, code)
-			if err != nil {
-				return newError("to_nvs: %s", err.Error())
-			}
-			return &object.String{Value: out}
-		},
-	},
-	"from_nvs": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("from_nvs: want lang, nvs_code")
-			}
-			lang, ok1 := args[0].(*object.String)
-			code, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("from_nvs: want strings")
-			}
-			out, err := polyglot.NewBridge().ReplicateNative(lang.Value, code.Value)
-			if err != nil {
-				return newError("from_nvs: %s", err.Error())
-			}
-			return &object.String{Value: out}
-		},
-	},
-	
-	"translation_check": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 3 {
-				return newError("translation_check: want from_lang, to_lang, code")
-			}
-			from, ok1 := args[0].(*object.String)
-			to, ok2 := args[1].(*object.String)
-			code, ok3 := args[2].(*object.String)
-			if !ok1 || !ok2 || !ok3 {
-				return newError("translation_check: want strings")
-			}
-			cr := polyglot.TranslateChecked(from.Value, to.Value, code.Value)
-			pairs := map[object.HashKey]object.HashPair{}
-			put := func(k, v string) {
-				ks := &object.String{Value: k}
-				vs := &object.String{Value: v}
-				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
-			}
-			if cr.OK {
-				put("ok", "true")
-			} else {
-				put("ok", "false")
-			}
-			put("output", cr.Output)
-			put("from", cr.FromLang)
-			put("to", cr.ToLang)
-			if cr.Corrected {
-				put("corrected", "true")
-				put("correction_id", cr.CorrectionID)
-			} else {
-				put("corrected", "false")
-			}
-			if len(cr.Errors) > 0 {
-				put("errors", strings.Join(cr.Errors, "; "))
-			} else {
-				put("errors", "")
-			}
-			return &object.Hash{Pairs: pairs}
-		},
-	},
-	"correction_add": {
-		Fn: func(args ...object.Object) object.Object {
-			// correction_add(from, to, source, corrected, [note])
-			if len(args) < 4 || len(args) > 5 {
-				return newError("correction_add: want from, to, source, corrected, [note]")
-			}
-			var strs [5]string
-			for i := 0; i < len(args); i++ {
-				s, ok := args[i].(*object.String)
-				if !ok {
-					return newError("correction_add: all args must be strings")
-				}
-				strs[i] = s.Value
-			}
-			c, err := polyglot.AddCorrection(strs[0], strs[1], strs[2], strs[3], "", strs[4])
-			if err != nil {
-				return newError("correction_add: %s", err.Error())
-			}
-			return &object.String{Value: c.ID}
-		},
-	},
-	"correction_pull": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 3 {
-				return newError("correction_pull: want from, to, source")
-			}
-			from, ok1 := args[0].(*object.String)
-			to, ok2 := args[1].(*object.String)
-			src, ok3 := args[2].(*object.String)
-			if !ok1 || !ok2 || !ok3 {
-				return newError("correction_pull: want strings")
-			}
-			c, ok := polyglot.PullCorrection(from.Value, to.Value, src.Value)
-			if !ok {
-				return NULL
-			}
-			return &object.String{Value: c.Corrected}
-		},
-	},
-	"correction_list": {
-		Fn: func(args ...object.Object) object.Object {
-			from, to := "", ""
-			if len(args) >= 1 {
-				if s, ok := args[0].(*object.String); ok {
-					from = s.Value
-				}
-			}
-			if len(args) >= 2 {
+				content := args[1].Inspect()
 				if s, ok := args[1].(*object.String); ok {
-					to = s.Value
+					content = s.Value
 				}
-			}
-			return &object.String{Value: polyglot.CorrectionsJSON(from, to)}
-		},
-	},
-	"correction_path": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) == 0 {
-				return &object.String{Value: polyglot.CorrectionsPath()}
-			}
-			if len(args) == 1 {
-				s, ok := args[0].(*object.String)
-				if !ok {
-					return newError("correction_path: want string path")
+				err := os.WriteFile(path.Value, []byte(content), 0644)
+				if err != nil {
+					return newError("write_file: %s", err.Error())
 				}
-				polyglot.SetCorrectionsPath(s.Value)
-				return &object.String{Value: polyglot.CorrectionsPath()}
-			}
-			return newError("correction_path: want 0 or 1 args")
-		},
-	},
-	"translation_learn": {
-		Fn: func(args ...object.Object) object.Object {
-			// translation_learn(from, to, source, fixed, [note])
-			if len(args) < 4 || len(args) > 5 {
-				return newError("translation_learn: want from, to, source, fixed, [note]")
-			}
-			var strs [5]string
-			for i := 0; i < len(args); i++ {
-				s, ok := args[i].(*object.String)
-				if !ok {
-					return newError("translation_learn: want strings")
-				}
-				strs[i] = s.Value
-			}
-			// capture current bad translation for DB
-			bad, _ := polyglot.Translate(strs[0], strs[1], strs[2])
-			c, err := polyglot.AutoLearn(strs[0], strs[1], strs[2], bad, strs[3], strs[4])
-			if err != nil {
-				return newError("translation_learn: %s", err.Error())
-			}
-			return &object.String{Value: c.ID}
-		},
-	},
-	"translate": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 3 {
-				return newError("translate: want from_lang, to_lang, code")
-			}
-			from, ok1 := args[0].(*object.String)
-			to, ok2 := args[1].(*object.String)
-			code, ok3 := args[2].(*object.String)
-			if !ok1 || !ok2 || !ok3 {
-				return newError("translate: want strings")
-			}
-			out, err := polyglot.NewBridge().Translate(from.Value, to.Value, code.Value)
-			if err != nil {
-				return newError("translate: %s", err.Error())
-			}
-			return &object.String{Value: out}
-		},
-	},
-	"assemble": {
-		Fn: func(args ...object.Object) object.Object {
-			// alias of to_nvs — assemble NvS from native
-			if len(args) < 1 || len(args) > 2 {
-				return newError("assemble: want code or lang, code")
-			}
-			hint := ""
-			var code string
-			if len(args) == 1 {
-				s, ok := args[0].(*object.String)
-				if !ok {
-					return newError("assemble: want string")
-				}
-				code = s.Value
-			} else {
-				h, ok1 := args[0].(*object.String)
-				s, ok2 := args[1].(*object.String)
-				if !ok1 || !ok2 {
-					return newError("assemble: want strings")
-				}
-				hint, code = h.Value, s.Value
-			}
-			out, err := polyglot.NewBridge().AssembleNvS(hint, code)
-			if err != nil {
-				return newError("assemble: %s", err.Error())
-			}
-			return &object.String{Value: out}
-		},
-	},
-	"replicate": {
-		Fn: func(args ...object.Object) object.Object {
-			// replicate(lang, nvs_code) → native source
-			if len(args) != 2 {
-				return newError("replicate: want lang, nvs_code")
-			}
-			lang, ok1 := args[0].(*object.String)
-			code, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("replicate: want strings")
-			}
-			out, err := polyglot.NewBridge().ReplicateNative(lang.Value, code.Value)
-			if err != nil {
-				return newError("replicate: %s", err.Error())
-			}
-			return &object.String{Value: out}
-		},
-	},
-	"applet_info": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("applet_info: want language id")
-			}
-			id, ok := args[0].(*object.String)
-			if !ok {
-				return newError("applet_info: want string")
-			}
-			return &object.String{Value: polyglot.DescribeApplet(id.Value)}
-		},
-	},
-	"applets": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: polyglot.CatalogJSON()}
-		},
-	},
-	
-	"highlight": {
-		Fn: func(args ...object.Object) object.Object {
-			// highlight(code) or highlight(code, lang)
-			if len(args) < 1 || len(args) > 2 {
-				return newError("highlight: want code or code, lang")
-			}
-			code, ok := args[0].(*object.String)
-			if !ok {
-				return newError("highlight: code must be string")
-			}
-			lang := "nvs"
-			if len(args) == 2 {
-				if s, ok := args[1].(*object.String); ok {
-					lang = s.Value
-				}
-			}
-			return &object.String{Value: highlight.Generic(lang, code.Value)}
-		},
-	},
-	"highlight_strip": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("highlight_strip: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("highlight_strip: want string")
-			}
-			return &object.String{Value: highlight.Strip(s.Value)}
-		},
-	},
-	"fuzzy_score": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("fuzzy_score: want query, candidate")
-			}
-			q, ok1 := args[0].(*object.String)
-			c, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("fuzzy_score: want strings")
-			}
-			return &object.Float{Value: fuzzy.Score(q.Value, c.Value)}
-		},
-	},
-	"fuzzy_match": {
-		Fn: func(args ...object.Object) object.Object {
-			// fuzzy_match(query, candidate, [threshold])
-			if len(args) < 2 || len(args) > 3 {
-				return newError("fuzzy_match: want query, candidate, [threshold]")
-			}
-			q, ok1 := args[0].(*object.String)
-			c, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("fuzzy_match: want strings")
-			}
-			th := 0.3
-			if len(args) == 3 {
-				switch v := args[2].(type) {
-				case *object.Float:
-					th = v.Value
-				case *object.Integer:
-					th = float64(v.Value)
-				}
-			}
-			if fuzzy.Match(q.Value, c.Value, th) {
 				return TRUE
-			}
-			return FALSE
+			},
 		},
-	},
-	"fuzzy_find": {
-		Fn: func(args ...object.Object) object.Object {
-			// fuzzy_find(query, array, [threshold], [limit])
-			if len(args) < 2 || len(args) > 4 {
-				return newError("fuzzy_find: want query, array, [threshold], [limit]")
-			}
-			q, ok := args[0].(*object.String)
-			if !ok {
-				return newError("fuzzy_find: query must be string")
-			}
-			arr, ok := args[1].(*object.Array)
-			if !ok {
-				return newError("fuzzy_find: candidates must be array")
-			}
-			var cands []string
-			for _, el := range arr.Elements {
-				if s, ok := el.(*object.String); ok {
-					cands = append(cands, s.Value)
+		"http_get": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("http_get: want 1 argument (url)")
+				}
+				url, ok := args[0].(*object.String)
+				if !ok {
+					return newError("http_get: url must be string")
+				}
+				client := &http.Client{Timeout: 15 * time.Second}
+				resp, err := client.Get(url.Value)
+				if err != nil {
+					return newError("http_get: %s", err.Error())
+				}
+				defer resp.Body.Close()
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return newError("http_get: read body: %s", err.Error())
+				}
+				return &object.String{Value: string(body)}
+			},
+		},
+		"json_parse": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("json_parse: want 1 argument")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("json_parse: argument must be string")
+				}
+				return jsonToObject([]byte(s.Value))
+			},
+		},
+		"json_stringify": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("json_stringify: want 1 argument")
+				}
+				data, err := objectToJSON(args[0])
+				if err != nil {
+					return newError("json_stringify: %s", err.Error())
+				}
+				return &object.String{Value: string(data)}
+			},
+		},
+		"type": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("type: want 1 argument")
+				}
+				return &object.String{Value: string(args[0].Type())}
+			},
+		},
+		"push": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("push: want 2 arguments (array, value)")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("push: first arg must be array")
+				}
+				// Wave 3: frozen arrays reject push.
+				if arr.Frozen {
+					return newError("cannot push into frozen array")
+				}
+				arr.Elements = append(arr.Elements, args[1])
+				return arr
+			},
+		},
+		"range": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 || len(args) > 3 {
+					return newError("range: want 1-3 arguments")
+				}
+				toInt := func(o object.Object) (int64, bool) {
+					if i, ok := o.(*object.Integer); ok {
+						return i.Value, true
+					}
+					return 0, false
+				}
+				var start, end, step int64 = 0, 0, 1
+				if len(args) == 1 {
+					end, _ = toInt(args[0])
+				} else if len(args) == 2 {
+					start, _ = toInt(args[0])
+					end, _ = toInt(args[1])
 				} else {
-					cands = append(cands, el.Inspect())
+					start, _ = toInt(args[0])
+					end, _ = toInt(args[1])
+					step, _ = toInt(args[2])
+					if step == 0 {
+						return newError("range: step cannot be 0")
+					}
 				}
-			}
-			th := 0.3
-			limit := 10
-			if len(args) >= 3 {
-				switch v := args[2].(type) {
-				case *object.Float:
-					th = v.Value
-				case *object.Integer:
-					th = float64(v.Value)
+				var elements []object.Object
+				if step > 0 {
+					for i := start; i < end; i += step {
+						elements = append(elements, &object.Integer{Value: i})
+					}
+				} else {
+					for i := start; i > end; i += step {
+						elements = append(elements, &object.Integer{Value: i})
+					}
 				}
-			}
-			if len(args) >= 4 {
-				if n, ok := args[3].(*object.Integer); ok {
-					limit = int(n.Value)
+				return &object.Array{Elements: elements}
+			},
+		},
+		"keys": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("keys: want 1 argument")
 				}
-			}
-			ranked := fuzzy.Find(q.Value, cands, th, limit)
-			var elements []object.Object
-			for _, r := range ranked {
-				// return array of {value, score} hashes
+				hash, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("keys: argument must be hash")
+				}
+				var elements []object.Object
+				for _, pair := range hash.Pairs {
+					elements = append(elements, pair.Key)
+				}
+				return &object.Array{Elements: elements}
+			},
+		},
+		"values": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("values: want 1 argument")
+				}
+				hash, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("values: argument must be hash")
+				}
+				var elements []object.Object
+				for _, pair := range hash.Pairs {
+					elements = append(elements, pair.Value)
+				}
+				return &object.Array{Elements: elements}
+			},
+		},
+		"system": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 {
+					return newError("system: want command string")
+				}
+				cmdStr, ok := args[0].(*object.String)
+				if !ok {
+					return newError("system: command must be string")
+				}
+				cmd := exec.Command("sh", "-c", cmdStr.Value)
+				out, err := cmd.CombinedOutput()
+				result := string(out)
+				if err != nil {
+					return &object.String{Value: result + "\n[exit error: " + err.Error() + "]"}
+				}
+				return &object.String{Value: result}
+			},
+		},
+		"python": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("python: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("python: code must be string")
+				}
+				cmd := exec.Command("python3", "-c", code.Value)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return newError("python: %s\n%s", err.Error(), string(out))
+				}
+				return &object.String{Value: string(out)}
+			},
+		},
+
+		"js": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("js: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("js: code must be string")
+				}
+				cmd := exec.Command("node", "-e", code.Value)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return newError("js: %s\n%s", err.Error(), string(out))
+				}
+				return &object.String{Value: string(out)}
+			},
+		},
+		"ruby": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("ruby: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("ruby: code must be string")
+				}
+				cmd := exec.Command("ruby", "-e", code.Value)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return newError("ruby: %s\n%s", err.Error(), string(out))
+				}
+				return &object.String{Value: string(out)}
+			},
+		},
+
+		"rust": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("rust: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("rust: code must be string")
+				}
+				return polyglotResult("rust", polyglot.Rust(code.Value))
+			},
+		},
+		"golang": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("golang: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("golang: code must be string")
+				}
+				return polyglotResult("golang", polyglot.Go(code.Value))
+			},
+		},
+		"c": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("c: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("c: code must be string")
+				}
+				return polyglotResult("c", polyglot.C(code.Value))
+			},
+		},
+		"cpp": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("cpp: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("cpp: code must be string")
+				}
+				return polyglotResult("cpp", polyglot.CPP(code.Value))
+			},
+		},
+		"java": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("java: want 1 argument (code string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("java: code must be string")
+				}
+				return polyglotResult("java", polyglot.Java(code.Value))
+			},
+		},
+		"css": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("css: want 1 argument (css string)")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("css: code must be string")
+				}
+				return polyglotResult("css", polyglot.CSS(code.Value))
+			},
+		},
+
+		"detect_lang": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("detect_lang: want code string")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("detect_lang: want string")
+				}
+				b := polyglot.NewBridge()
+				info := b.Identify(code.Value)
+				// return hash-like string map as Hash
 				pairs := map[object.HashKey]object.HashPair{}
-				ks := &object.String{Value: "value"}
-				vs := &object.String{Value: r.Value}
-				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
-				ks2 := &object.String{Value: "score"}
-				vs2 := &object.Float{Value: r.Score}
-				pairs[ks2.HashKey()] = object.HashPair{Key: ks2, Value: vs2}
-				elements = append(elements, &object.Hash{Pairs: pairs})
-			}
-			return &object.Array{Elements: elements}
+				for k, v := range info {
+					ks := &object.String{Value: k}
+					vs := &object.String{Value: v}
+					pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+				}
+				return &object.Hash{Pairs: pairs}
+			},
 		},
-	},
-	"fuzzy_best": {
-		Fn: func(args ...object.Object) object.Object {
-			// fuzzy_best(query, array, [threshold])
-			if len(args) < 2 || len(args) > 3 {
-				return newError("fuzzy_best: want query, array, [threshold]")
-			}
-			q, ok := args[0].(*object.String)
-			if !ok {
-				return newError("fuzzy_best: query must be string")
-			}
-			arr, ok := args[1].(*object.Array)
-			if !ok {
-				return newError("fuzzy_best: candidates must be array")
-			}
-			var cands []string
-			for _, el := range arr.Elements {
-				if s, ok := el.(*object.String); ok {
-					cands = append(cands, s.Value)
+		"run_native": {
+			Fn: func(args ...object.Object) object.Object {
+				// run_native(code) or run_native(lang, code)
+				if len(args) < 1 || len(args) > 2 {
+					return newError("run_native: want code or lang, code")
+				}
+				hint := ""
+				var code string
+				if len(args) == 1 {
+					s, ok := args[0].(*object.String)
+					if !ok {
+						return newError("run_native: code must be string")
+					}
+					code = s.Value
 				} else {
-					cands = append(cands, el.Inspect())
+					h, ok1 := args[0].(*object.String)
+					s, ok2 := args[1].(*object.String)
+					if !ok1 || !ok2 {
+						return newError("run_native: want string lang, string code")
+					}
+					hint = h.Value
+					code = s.Value
 				}
-			}
-			th := 0.3
-			if len(args) == 3 {
-				switch v := args[2].(type) {
-				case *object.Float:
-					th = v.Value
-				case *object.Integer:
-					th = float64(v.Value)
+				r := polyglot.NewBridge().Run(hint, code)
+				return polyglotResult("run_native", r)
+			},
+		},
+		"to_nvs": {
+			Fn: func(args ...object.Object) object.Object {
+				// to_nvs(code) or to_nvs(lang, code)
+				if len(args) < 1 || len(args) > 2 {
+					return newError("to_nvs: want code or lang, code")
 				}
-			}
-			best := fuzzy.Best(q.Value, cands, th)
-			if best == "" {
-				return NULL
-			}
-			return &object.String{Value: best}
+				hint := ""
+				var code string
+				if len(args) == 1 {
+					s, ok := args[0].(*object.String)
+					if !ok {
+						return newError("to_nvs: want string")
+					}
+					code = s.Value
+				} else {
+					h, ok1 := args[0].(*object.String)
+					s, ok2 := args[1].(*object.String)
+					if !ok1 || !ok2 {
+						return newError("to_nvs: want lang, code strings")
+					}
+					hint, code = h.Value, s.Value
+				}
+				out, err := polyglot.NewBridge().AssembleNvS(hint, code)
+				if err != nil {
+					return newError("to_nvs: %s", err.Error())
+				}
+				return &object.String{Value: out}
+			},
 		},
-	},
-	
-	"nvs_version": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "2.1.0"}
+		"from_nvs": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("from_nvs: want lang, nvs_code")
+				}
+				lang, ok1 := args[0].(*object.String)
+				code, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("from_nvs: want strings")
+				}
+				out, err := polyglot.NewBridge().ReplicateNative(lang.Value, code.Value)
+				if err != nil {
+					return newError("from_nvs: %s", err.Error())
+				}
+				return &object.String{Value: out}
+			},
 		},
-	},
-	"nvs_language": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "NvS"}
+
+		"translation_check": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 3 {
+					return newError("translation_check: want from_lang, to_lang, code")
+				}
+				from, ok1 := args[0].(*object.String)
+				to, ok2 := args[1].(*object.String)
+				code, ok3 := args[2].(*object.String)
+				if !ok1 || !ok2 || !ok3 {
+					return newError("translation_check: want strings")
+				}
+				cr := polyglot.TranslateChecked(from.Value, to.Value, code.Value)
+				pairs := map[object.HashKey]object.HashPair{}
+				put := func(k, v string) {
+					ks := &object.String{Value: k}
+					vs := &object.String{Value: v}
+					pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+				}
+				if cr.OK {
+					put("ok", "true")
+				} else {
+					put("ok", "false")
+				}
+				put("output", cr.Output)
+				put("from", cr.FromLang)
+				put("to", cr.ToLang)
+				if cr.Corrected {
+					put("corrected", "true")
+					put("correction_id", cr.CorrectionID)
+				} else {
+					put("corrected", "false")
+				}
+				if len(cr.Errors) > 0 {
+					put("errors", strings.Join(cr.Errors, "; "))
+				} else {
+					put("errors", "")
+				}
+				return &object.Hash{Pairs: pairs}
+			},
 		},
-	},
-	"nvs_info": {
-		Fn: func(args ...object.Object) object.Object {
-			pairs := map[object.HashKey]object.HashPair{}
-			put := func(k, v string) {
-				ks := &object.String{Value: k}
-				vs := &object.String{Value: v}
-				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
-			}
-			put("name", "NvS")
-			put("full", "Navescript")
-			put("version", "2.1.0")
-			put("impl", "tree-walker")
-			put("host", "go")
-			return &object.Hash{Pairs: pairs}
+		"correction_add": {
+			Fn: func(args ...object.Object) object.Object {
+				// correction_add(from, to, source, corrected, [note])
+				if len(args) < 4 || len(args) > 5 {
+					return newError("correction_add: want from, to, source, corrected, [note]")
+				}
+				var strs [5]string
+				for i := 0; i < len(args); i++ {
+					s, ok := args[i].(*object.String)
+					if !ok {
+						return newError("correction_add: all args must be strings")
+					}
+					strs[i] = s.Value
+				}
+				c, err := polyglot.AddCorrection(strs[0], strs[1], strs[2], strs[3], "", strs[4])
+				if err != nil {
+					return newError("correction_add: %s", err.Error())
+				}
+				return &object.String{Value: c.ID}
+			},
 		},
-	},
-	
-	"typeof": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("typeof: want 1 arg")
-			}
-			return &object.String{Value: string(args[0].Type())}
+		"correction_pull": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 3 {
+					return newError("correction_pull: want from, to, source")
+				}
+				from, ok1 := args[0].(*object.String)
+				to, ok2 := args[1].(*object.String)
+				src, ok3 := args[2].(*object.String)
+				if !ok1 || !ok2 || !ok3 {
+					return newError("correction_pull: want strings")
+				}
+				c, ok := polyglot.PullCorrection(from.Value, to.Value, src.Value)
+				if !ok {
+					return NULL
+				}
+				return &object.String{Value: c.Corrected}
+			},
 		},
-	},
-	"isinstance": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("isinstance: want value, type_name")
-			}
-			tn, ok := args[1].(*object.String)
-			if !ok {
-				return newError("isinstance: type name must be string")
-			}
-			return nativeBoolToBooleanObject(string(args[0].Type()) == tn.Value || strings.EqualFold(string(args[0].Type()), tn.Value))
+		"correction_list": {
+			Fn: func(args ...object.Object) object.Object {
+				from, to := "", ""
+				if len(args) >= 1 {
+					if s, ok := args[0].(*object.String); ok {
+						from = s.Value
+					}
+				}
+				if len(args) >= 2 {
+					if s, ok := args[1].(*object.String); ok {
+						to = s.Value
+					}
+				}
+				return &object.String{Value: polyglot.CorrectionsJSON(from, to)}
+			},
 		},
-	},
-	"deep_equal": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("deep_equal: want 2 args")
-			}
-			return nativeBoolToBooleanObject(deepEqual(args[0], args[1]))
+		"correction_path": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) == 0 {
+					return &object.String{Value: polyglot.CorrectionsPath()}
+				}
+				if len(args) == 1 {
+					s, ok := args[0].(*object.String)
+					if !ok {
+						return newError("correction_path: want string path")
+					}
+					polyglot.SetCorrectionsPath(s.Value)
+					return &object.String{Value: polyglot.CorrectionsPath()}
+				}
+				return newError("correction_path: want 0 or 1 args")
+			},
 		},
-	},
-	"sin": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("sin: want 1 arg")
-			}
-			return func() object.Object {
-				v, ok := toFloat(args[0])
-				if !ok { return newError("sin: number required") }
-				return &object.Float{Value: math.Sin(v)}
-			}()
+		"translation_learn": {
+			Fn: func(args ...object.Object) object.Object {
+				// translation_learn(from, to, source, fixed, [note])
+				if len(args) < 4 || len(args) > 5 {
+					return newError("translation_learn: want from, to, source, fixed, [note]")
+				}
+				var strs [5]string
+				for i := 0; i < len(args); i++ {
+					s, ok := args[i].(*object.String)
+					if !ok {
+						return newError("translation_learn: want strings")
+					}
+					strs[i] = s.Value
+				}
+				// capture current bad translation for DB
+				bad, _ := polyglot.Translate(strs[0], strs[1], strs[2])
+				c, err := polyglot.AutoLearn(strs[0], strs[1], strs[2], bad, strs[3], strs[4])
+				if err != nil {
+					return newError("translation_learn: %s", err.Error())
+				}
+				return &object.String{Value: c.ID}
+			},
 		},
-	},
-	"cos": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("cos: want 1 arg")
-			}
-			return func() object.Object {
-				v, ok := toFloat(args[0])
-				if !ok { return newError("cos: number required") }
-				return &object.Float{Value: math.Cos(v)}
-			}()
+		"translate": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 3 {
+					return newError("translate: want from_lang, to_lang, code")
+				}
+				from, ok1 := args[0].(*object.String)
+				to, ok2 := args[1].(*object.String)
+				code, ok3 := args[2].(*object.String)
+				if !ok1 || !ok2 || !ok3 {
+					return newError("translate: want strings")
+				}
+				out, err := polyglot.NewBridge().Translate(from.Value, to.Value, code.Value)
+				if err != nil {
+					return newError("translate: %s", err.Error())
+				}
+				return &object.String{Value: out}
+			},
 		},
-	},
-	"tan": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("tan: want 1 arg")
-			}
-			return func() object.Object {
-				v, ok := toFloat(args[0])
-				if !ok { return newError("tan: number required") }
-				return &object.Float{Value: math.Tan(v)}
-			}()
+		"assemble": {
+			Fn: func(args ...object.Object) object.Object {
+				// alias of to_nvs — assemble NvS from native
+				if len(args) < 1 || len(args) > 2 {
+					return newError("assemble: want code or lang, code")
+				}
+				hint := ""
+				var code string
+				if len(args) == 1 {
+					s, ok := args[0].(*object.String)
+					if !ok {
+						return newError("assemble: want string")
+					}
+					code = s.Value
+				} else {
+					h, ok1 := args[0].(*object.String)
+					s, ok2 := args[1].(*object.String)
+					if !ok1 || !ok2 {
+						return newError("assemble: want strings")
+					}
+					hint, code = h.Value, s.Value
+				}
+				out, err := polyglot.NewBridge().AssembleNvS(hint, code)
+				if err != nil {
+					return newError("assemble: %s", err.Error())
+				}
+				return &object.String{Value: out}
+			},
 		},
-	},
-	"exp": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("exp: want 1 arg")
-			}
-			return func() object.Object {
-				v, ok := toFloat(args[0])
-				if !ok { return newError("exp: number required") }
-				return &object.Float{Value: math.Exp(v)}
-			}()
+		"replicate": {
+			Fn: func(args ...object.Object) object.Object {
+				// replicate(lang, nvs_code) → native source
+				if len(args) != 2 {
+					return newError("replicate: want lang, nvs_code")
+				}
+				lang, ok1 := args[0].(*object.String)
+				code, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("replicate: want strings")
+				}
+				out, err := polyglot.NewBridge().ReplicateNative(lang.Value, code.Value)
+				if err != nil {
+					return newError("replicate: %s", err.Error())
+				}
+				return &object.String{Value: out}
+			},
 		},
-	},
-	"round": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("round: want 1 arg")
-			}
-			return func() object.Object {
-				v, ok := toFloat(args[0])
-				if !ok { return newError("round: number required") }
-				return &object.Float{Value: math.Round(v)}
-			}()
+		"applet_info": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("applet_info: want language id")
+				}
+				id, ok := args[0].(*object.String)
+				if !ok {
+					return newError("applet_info: want string")
+				}
+				return &object.String{Value: polyglot.DescribeApplet(id.Value)}
+			},
 		},
-	},
-	"set": {
-		Fn: func(args ...object.Object) object.Object {
-			pairs := map[object.HashKey]object.HashPair{}
-			for _, a := range args {
-				if h, ok := a.(object.Hashable); ok {
-					pairs[h.HashKey()] = object.HashPair{Key: a, Value: TRUE}
-				} else if arr, ok := a.(*object.Array); ok {
-					for _, el := range arr.Elements {
-						if hh, ok := el.(object.Hashable); ok {
-							pairs[hh.HashKey()] = object.HashPair{Key: el, Value: TRUE}
+		"applets": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: polyglot.CatalogJSON()}
+			},
+		},
+
+		"highlight": {
+			Fn: func(args ...object.Object) object.Object {
+				// highlight(code) or highlight(code, lang)
+				if len(args) < 1 || len(args) > 2 {
+					return newError("highlight: want code or code, lang")
+				}
+				code, ok := args[0].(*object.String)
+				if !ok {
+					return newError("highlight: code must be string")
+				}
+				lang := "nvs"
+				if len(args) == 2 {
+					if s, ok := args[1].(*object.String); ok {
+						lang = s.Value
+					}
+				}
+				return &object.String{Value: highlight.Generic(lang, code.Value)}
+			},
+		},
+		"highlight_strip": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("highlight_strip: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("highlight_strip: want string")
+				}
+				return &object.String{Value: highlight.Strip(s.Value)}
+			},
+		},
+		"fuzzy_score": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("fuzzy_score: want query, candidate")
+				}
+				q, ok1 := args[0].(*object.String)
+				c, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("fuzzy_score: want strings")
+				}
+				return &object.Float{Value: fuzzy.Score(q.Value, c.Value)}
+			},
+		},
+		"fuzzy_match": {
+			Fn: func(args ...object.Object) object.Object {
+				// fuzzy_match(query, candidate, [threshold])
+				if len(args) < 2 || len(args) > 3 {
+					return newError("fuzzy_match: want query, candidate, [threshold]")
+				}
+				q, ok1 := args[0].(*object.String)
+				c, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("fuzzy_match: want strings")
+				}
+				th := 0.3
+				if len(args) == 3 {
+					switch v := args[2].(type) {
+					case *object.Float:
+						th = v.Value
+					case *object.Integer:
+						th = float64(v.Value)
+					}
+				}
+				if fuzzy.Match(q.Value, c.Value, th) {
+					return TRUE
+				}
+				return FALSE
+			},
+		},
+		"fuzzy_find": {
+			Fn: func(args ...object.Object) object.Object {
+				// fuzzy_find(query, array, [threshold], [limit])
+				if len(args) < 2 || len(args) > 4 {
+					return newError("fuzzy_find: want query, array, [threshold], [limit]")
+				}
+				q, ok := args[0].(*object.String)
+				if !ok {
+					return newError("fuzzy_find: query must be string")
+				}
+				arr, ok := args[1].(*object.Array)
+				if !ok {
+					return newError("fuzzy_find: candidates must be array")
+				}
+				var cands []string
+				for _, el := range arr.Elements {
+					if s, ok := el.(*object.String); ok {
+						cands = append(cands, s.Value)
+					} else {
+						cands = append(cands, el.Inspect())
+					}
+				}
+				th := 0.3
+				limit := 10
+				if len(args) >= 3 {
+					switch v := args[2].(type) {
+					case *object.Float:
+						th = v.Value
+					case *object.Integer:
+						th = float64(v.Value)
+					}
+				}
+				if len(args) >= 4 {
+					if n, ok := args[3].(*object.Integer); ok {
+						limit = int(n.Value)
+					}
+				}
+				ranked := fuzzy.Find(q.Value, cands, th, limit)
+				var elements []object.Object
+				for _, r := range ranked {
+					// return array of {value, score} hashes
+					pairs := map[object.HashKey]object.HashPair{}
+					ks := &object.String{Value: "value"}
+					vs := &object.String{Value: r.Value}
+					pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+					ks2 := &object.String{Value: "score"}
+					vs2 := &object.Float{Value: r.Score}
+					pairs[ks2.HashKey()] = object.HashPair{Key: ks2, Value: vs2}
+					elements = append(elements, &object.Hash{Pairs: pairs})
+				}
+				return &object.Array{Elements: elements}
+			},
+		},
+		"fuzzy_best": {
+			Fn: func(args ...object.Object) object.Object {
+				// fuzzy_best(query, array, [threshold])
+				if len(args) < 2 || len(args) > 3 {
+					return newError("fuzzy_best: want query, array, [threshold]")
+				}
+				q, ok := args[0].(*object.String)
+				if !ok {
+					return newError("fuzzy_best: query must be string")
+				}
+				arr, ok := args[1].(*object.Array)
+				if !ok {
+					return newError("fuzzy_best: candidates must be array")
+				}
+				var cands []string
+				for _, el := range arr.Elements {
+					if s, ok := el.(*object.String); ok {
+						cands = append(cands, s.Value)
+					} else {
+						cands = append(cands, el.Inspect())
+					}
+				}
+				th := 0.3
+				if len(args) == 3 {
+					switch v := args[2].(type) {
+					case *object.Float:
+						th = v.Value
+					case *object.Integer:
+						th = float64(v.Value)
+					}
+				}
+				best := fuzzy.Best(q.Value, cands, th)
+				if best == "" {
+					return NULL
+				}
+				return &object.String{Value: best}
+			},
+		},
+
+		"nvs_version": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: "2.1.0"}
+			},
+		},
+		"nvs_language": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: "NvS"}
+			},
+		},
+		"nvs_info": {
+			Fn: func(args ...object.Object) object.Object {
+				pairs := map[object.HashKey]object.HashPair{}
+				put := func(k, v string) {
+					ks := &object.String{Value: k}
+					vs := &object.String{Value: v}
+					pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+				}
+				put("name", "NvS")
+				put("full", "Navescript")
+				put("version", "2.1.0")
+				put("impl", "tree-walker")
+				put("host", "go")
+				return &object.Hash{Pairs: pairs}
+			},
+		},
+
+		"typeof": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("typeof: want 1 arg")
+				}
+				return &object.String{Value: string(args[0].Type())}
+			},
+		},
+		"isinstance": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("isinstance: want value, type_name")
+				}
+				tn, ok := args[1].(*object.String)
+				if !ok {
+					return newError("isinstance: type name must be string")
+				}
+				return nativeBoolToBooleanObject(string(args[0].Type()) == tn.Value || strings.EqualFold(string(args[0].Type()), tn.Value))
+			},
+		},
+		"deep_equal": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("deep_equal: want 2 args")
+				}
+				return nativeBoolToBooleanObject(deepEqual(args[0], args[1]))
+			},
+		},
+		"sin": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("sin: want 1 arg")
+				}
+				return func() object.Object {
+					v, ok := toFloat(args[0])
+					if !ok {
+						return newError("sin: number required")
+					}
+					return &object.Float{Value: math.Sin(v)}
+				}()
+			},
+		},
+		"cos": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("cos: want 1 arg")
+				}
+				return func() object.Object {
+					v, ok := toFloat(args[0])
+					if !ok {
+						return newError("cos: number required")
+					}
+					return &object.Float{Value: math.Cos(v)}
+				}()
+			},
+		},
+		"tan": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("tan: want 1 arg")
+				}
+				return func() object.Object {
+					v, ok := toFloat(args[0])
+					if !ok {
+						return newError("tan: number required")
+					}
+					return &object.Float{Value: math.Tan(v)}
+				}()
+			},
+		},
+		"exp": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("exp: want 1 arg")
+				}
+				return func() object.Object {
+					v, ok := toFloat(args[0])
+					if !ok {
+						return newError("exp: number required")
+					}
+					return &object.Float{Value: math.Exp(v)}
+				}()
+			},
+		},
+		"round": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("round: want 1 arg")
+				}
+				return func() object.Object {
+					v, ok := toFloat(args[0])
+					if !ok {
+						return newError("round: number required")
+					}
+					return &object.Float{Value: math.Round(v)}
+				}()
+			},
+		},
+		"set": {
+			Fn: func(args ...object.Object) object.Object {
+				pairs := map[object.HashKey]object.HashPair{}
+				for _, a := range args {
+					if h, ok := a.(object.Hashable); ok {
+						pairs[h.HashKey()] = object.HashPair{Key: a, Value: TRUE}
+					} else if arr, ok := a.(*object.Array); ok {
+						for _, el := range arr.Elements {
+							if hh, ok := el.(object.Hashable); ok {
+								pairs[hh.HashKey()] = object.HashPair{Key: el, Value: TRUE}
+							}
 						}
 					}
 				}
-			}
-			return &object.Hash{Pairs: pairs}
+				return &object.Hash{Pairs: pairs}
+			},
 		},
-	},
-	"set_has": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("set_has: want set, value")
-			}
-			h, ok := args[0].(*object.Hash)
-			if !ok {
-				return newError("set_has: not a set/hash")
-			}
-			key, ok := args[1].(object.Hashable)
-			if !ok {
-				return FALSE
-			}
-			_, exists := h.Pairs[key.HashKey()]
-			return nativeBoolToBooleanObject(exists)
-		},
-	},
-	"set_add": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("set_add: want set, value")
-			}
-			h, ok := args[0].(*object.Hash)
-			if !ok {
-				return newError("set_add: not a set/hash")
-			}
-			key, ok := args[1].(object.Hashable)
-			if !ok {
-				return newError("set_add: value not hashable")
-			}
-			h.Pairs[key.HashKey()] = object.HashPair{Key: args[1], Value: TRUE}
-			return h
-		},
-	},
-	"plugins": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: polyglot.Available()}
-		},
-	},
-	"next": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("next: want generator")
-			}
-			gen, ok := args[0].(*object.Generator)
-			if !ok {
-				return newError("next: not a generator")
-			}
-			return gen.Next()
-		},
-	},
-	"metric_inc": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 {
-				return newError("metric_inc: want name")
-			}
-			name := args[0].Inspect()
-			if s, ok := args[0].(*object.String); ok {
-				name = s.Value
-			}
-			by := int64(1)
-			if len(args) >= 2 {
-				if i, ok := args[1].(*object.Integer); ok {
-					by = i.Value
+		"set_has": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("set_has: want set, value")
 				}
-			}
-			metricCounters[name] += by
-			return &object.Integer{Value: metricCounters[name]}
-		},
-	},
-	"metric_get": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("metric_get: want name")
-			}
-			name := args[0].Inspect()
-			if s, ok := args[0].(*object.String); ok {
-				name = s.Value
-			}
-			return &object.Integer{Value: metricCounters[name]}
-		},
-	},
-	"metric_gauge": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("metric_gauge: want name, value")
-			}
-			name := args[0].Inspect()
-			if s, ok := args[0].(*object.String); ok {
-				name = s.Value
-			}
-			var v float64
-			switch n := args[1].(type) {
-			case *object.Integer:
-				v = float64(n.Value)
-			case *object.Float:
-				v = n.Value
-			default:
-				return newError("metric_gauge: value must be number")
-			}
-			metricGauges[name] = v
-			return &object.Float{Value: v}
-		},
-	},
-	"trace": {
-		Fn: func(args ...object.Object) object.Object {
-			parts := make([]string, len(args))
-			for i, a := range args {
-				parts[i] = a.Inspect()
-			}
-			fmt.Println("[trace]", strings.Join(parts, " "))
-			return NULL
-		},
-	},
-	"hardware_info": {
-		Fn: func(args ...object.Object) object.Object {
-			info := "{\"usb\":\"unsupported in this build\",\"spi\":\"unsupported\",\"i2c\":\"unsupported\",\"serial\":\"unsupported\",\"hid\":\"unsupported\",\"note\":\"hardware APIs are stubs matching original claims\"}"
-			return &object.String{Value: info}
-		},
-	},
-	"wasi_info": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "{\"wasi\":\"not embedded\",\"component_model\":\"not embedded\",\"note\":\"use system/python/js for host interop\"}"}
-		},
-	},
-
-	
-	"replace": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 3 {
-				return newError("replace: want string, old, new")
-			}
-			s, a, b := args[0].(*object.String), args[1].(*object.String), args[2].(*object.String)
-			if s == nil || a == nil || b == nil {
-				return newError("replace: want strings")
-			}
-			return &object.String{Value: strings.ReplaceAll(s.Value, a.Value, b.Value)}
-		},
-	},
-	"trim": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("trim: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("trim: want string")
-			}
-			return &object.String{Value: strings.TrimSpace(s.Value)}
-		},
-	},
-	"starts_with": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("starts_with: want string, prefix")
-			}
-			s, ok1 := args[0].(*object.String)
-			p, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("starts_with: want strings")
-			}
-			return nativeBoolToBooleanObject(strings.HasPrefix(s.Value, p.Value))
-		},
-	},
-	"ends_with": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("ends_with: want string, suffix")
-			}
-			s, ok1 := args[0].(*object.String)
-			p, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("ends_with: want strings")
-			}
-			return nativeBoolToBooleanObject(strings.HasSuffix(s.Value, p.Value))
-		},
-	},
-	"substr": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 2 || len(args) > 3 {
-				return newError("substr: want string, start [, len]")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("substr: want string")
-			}
-			runes := []rune(s.Value)
-			start := int(args[1].(*object.Integer).Value)
-			if start < 0 {
-				start = 0
-			}
-			if start > len(runes) {
-				return &object.String{Value: ""}
-			}
-			length := len(runes) - start
-			if len(args) == 3 {
-				length = int(args[2].(*object.Integer).Value)
-			}
-			end := start + length
-			if end > len(runes) {
-				end = len(runes)
-			}
-			return &object.String{Value: string(runes[start:end])}
-		},
-	},
-	"pop": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("pop: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("pop: want array")
-			}
-			if len(arr.Elements) == 0 {
-				return NULL
-			}
-			last := arr.Elements[len(arr.Elements)-1]
-			arr.Elements = arr.Elements[:len(arr.Elements)-1]
-			return last
-		},
-	},
-	"reverse": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("reverse: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("reverse: want array")
-			}
-			n := len(arr.Elements)
-			for i := 0; i < n/2; i++ {
-				arr.Elements[i], arr.Elements[n-1-i] = arr.Elements[n-1-i], arr.Elements[i]
-			}
-			return arr
-		},
-	},
-	"sort": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("sort: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("sort: want array")
-			}
-			sort.SliceStable(arr.Elements, func(i, j int) bool {
-				a, b := arr.Elements[i], arr.Elements[j]
-				if ai, ok := a.(*object.Integer); ok {
-					if bi, ok := b.(*object.Integer); ok {
-						return ai.Value < bi.Value
-					}
-				}
-				if af, ok := a.(*object.Float); ok {
-					if bf, ok := b.(*object.Float); ok {
-						return af.Value < bf.Value
-					}
-				}
-				return a.Inspect() < b.Inspect()
-			})
-			return arr
-		},
-	},
-	"has": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("has: want map, key")
-			}
-			hash, ok := args[0].(*object.Hash)
-			if !ok {
-				return newError("has: want map")
-			}
-			key, ok := args[1].(object.Hashable)
-			if !ok {
-				return newError("has: unusable key")
-			}
-			_, exists := hash.Pairs[key.HashKey()]
-			return nativeBoolToBooleanObject(exists)
-		},
-	},
-	"delete": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("delete: want map, key")
-			}
-			hash, ok := args[0].(*object.Hash)
-			if !ok {
-				return newError("delete: want map")
-			}
-			key, ok := args[1].(object.Hashable)
-			if !ok {
-				return newError("delete: unusable key")
-			}
-			delete(hash.Pairs, key.HashKey())
-			return TRUE
-		},
-	},
-	"min": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) == 0 {
-				return newError("min: want args")
-			}
-			// support min(array) or min(a,b,c)
-			vals := args
-			if len(args) == 1 {
-				if arr, ok := args[0].(*object.Array); ok {
-					vals = arr.Elements
-				}
-			}
-			if len(vals) == 0 {
-				return NULL
-			}
-			best := vals[0]
-			for _, v := range vals[1:] {
-				if bi, ok := best.(*object.Integer); ok {
-					if vi, ok := v.(*object.Integer); ok && vi.Value < bi.Value {
-						best = v
-					}
-				}
-			}
-			return best
-		},
-	},
-	"max": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) == 0 {
-				return newError("max: want args")
-			}
-			vals := args
-			if len(args) == 1 {
-				if arr, ok := args[0].(*object.Array); ok {
-					vals = arr.Elements
-				}
-			}
-			if len(vals) == 0 {
-				return NULL
-			}
-			best := vals[0]
-			for _, v := range vals[1:] {
-				if bi, ok := best.(*object.Integer); ok {
-					if vi, ok := v.(*object.Integer); ok && vi.Value > bi.Value {
-						best = v
-					}
-				}
-			}
-			return best
-		},
-	},
-	"pow": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("pow: want base, exp")
-			}
-			var b, e float64
-			switch v := args[0].(type) {
-			case *object.Integer:
-				b = float64(v.Value)
-			case *object.Float:
-				b = v.Value
-			default:
-				return newError("pow: want numbers")
-			}
-			switch v := args[1].(type) {
-			case *object.Integer:
-				e = float64(v.Value)
-			case *object.Float:
-				e = v.Value
-			default:
-				return newError("pow: want numbers")
-			}
-			return &object.Float{Value: math.Pow(b, e)}
-		},
-	},
-	"sqrt": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("sqrt: want 1 number")
-			}
-			var v float64
-			switch n := args[0].(type) {
-			case *object.Integer:
-				v = float64(n.Value)
-			case *object.Float:
-				v = n.Value
-			default:
-				return newError("sqrt: want number")
-			}
-			return &object.Float{Value: math.Sqrt(v)}
-		},
-	},
-	"floor": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("floor: want number")
-			}
-			switch n := args[0].(type) {
-			case *object.Integer:
-				return n
-			case *object.Float:
-				return &object.Integer{Value: int64(math.Floor(n.Value))}
-			default:
-				return newError("floor: want number")
-			}
-		},
-	},
-	"ceil": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("ceil: want number")
-			}
-			switch n := args[0].(type) {
-			case *object.Integer:
-				return n
-			case *object.Float:
-				return &object.Integer{Value: int64(math.Ceil(n.Value))}
-			default:
-				return newError("ceil: want number")
-			}
-		},
-	},
-	"exists": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("exists: want path")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("exists: want string path")
-			}
-			_, err := os.Stat(path.Value)
-			return nativeBoolToBooleanObject(err == nil)
-		},
-	},
-	"listdir": {
-		Fn: func(args ...object.Object) object.Object {
-			path := "."
-			if len(args) >= 1 {
-				if s, ok := args[0].(*object.String); ok {
-					path = s.Value
-				}
-			}
-			entries, err := os.ReadDir(path)
-			if err != nil {
-				return newError("listdir: %s", err.Error())
-			}
-			el := make([]object.Object, 0, len(entries))
-			for _, e := range entries {
-				el = append(el, &object.String{Value: e.Name()})
-			}
-			return &object.Array{Elements: el}
-		},
-	},
-	"sleep": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("sleep: want milliseconds")
-			}
-			ms, ok := args[0].(*object.Integer)
-			if !ok {
-				return newError("sleep: want integer ms")
-			}
-			time.Sleep(time.Duration(ms.Value) * time.Millisecond)
-			return NULL
-		},
-	},
-	"exit": {
-		Fn: func(args ...object.Object) object.Object {
-			code := 0
-			if len(args) >= 1 {
-				if i, ok := args[0].(*object.Integer); ok {
-					code = int(i.Value)
-				}
-			}
-			os.Exit(code)
-			return NULL
-		},
-	},
-	"format": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 {
-				return newError("format: want format string")
-			}
-			fmtStr, ok := args[0].(*object.String)
-			if !ok {
-				return newError("format: first arg must be string")
-			}
-			// Simple {0} {1} replacement
-			out := fmtStr.Value
-			for i, a := range args[1:] {
-				token := fmt.Sprintf("{%d}", i)
-				out = strings.ReplaceAll(out, token, a.Inspect())
-			}
-			return &object.String{Value: out}
-		},
-	},
-"split": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("split: want string, sep")
-			}
-			s, ok1 := args[0].(*object.String)
-			sep, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("split: want strings")
-			}
-			parts := strings.Split(s.Value, sep.Value)
-			el := make([]object.Object, len(parts))
-			for i, p := range parts {
-				el[i] = &object.String{Value: p}
-			}
-			return &object.Array{Elements: el}
-		},
-	},
-	"join": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("join: want array, sep")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("join: first arg must be array")
-			}
-			sep := ","
-			if s, ok := args[1].(*object.String); ok {
-				sep = s.Value
-			}
-			parts := make([]string, len(arr.Elements))
-			for i, e := range arr.Elements {
-				parts[i] = e.Inspect()
-			}
-			return &object.String{Value: strings.Join(parts, sep)}
-		},
-	},
-	"upper": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("upper: want 1 string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("upper: want string")
-			}
-			return &object.String{Value: strings.ToUpper(s.Value)}
-		},
-	},
-	"lower": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("lower: want 1 string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("lower: want string")
-			}
-			return &object.String{Value: strings.ToLower(s.Value)}
-		},
-	},
-	"contains": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("contains: want string, substr")
-			}
-			s, ok1 := args[0].(*object.String)
-			sub, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("contains: want strings")
-			}
-			return nativeBoolToBooleanObject(strings.Contains(s.Value, sub.Value))
-		},
-	},
-	"slice": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 2 || len(args) > 3 {
-				return newError("slice: want arr, start [, end]")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("slice: first arg must be array")
-			}
-			start := int(args[1].(*object.Integer).Value)
-			end := len(arr.Elements)
-			if len(args) == 3 {
-				end = int(args[2].(*object.Integer).Value)
-			}
-			if start < 0 {
-				start = 0
-			}
-			if end > len(arr.Elements) {
-				end = len(arr.Elements)
-			}
-			if start > end {
-				return &object.Array{Elements: []object.Object{}}
-			}
-			return &object.Array{Elements: arr.Elements[start:end]}
-		},
-	},
-	"assert": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 {
-				return newError("assert: want condition")
-			}
-			if !isTruthy(args[0]) {
-				msg := "assertion failed"
-				if len(args) >= 2 {
-					msg = args[1].Inspect()
-				}
-				return newError("%s", msg)
-			}
-			return TRUE
-		},
-	},
-	"now": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.Integer{Value: time.Now().Unix()}
-		},
-	},
-	"env": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("env: want name")
-			}
-			name := args[0].Inspect()
-			if s, ok := args[0].(*object.String); ok {
-				name = s.Value
-			}
-			return &object.String{Value: os.Getenv(name)}
-		},
-	},
-	"args": {
-		Fn: func(args ...object.Object) object.Object {
-			el := make([]object.Object, len(CLIArgs))
-			for i, a := range CLIArgs {
-				el[i] = &object.String{Value: a}
-			}
-			return &object.Array{Elements: el}
-		},
-	},
-	"int": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("int: want 1 arg")
-			}
-			switch v := args[0].(type) {
-			case *object.Integer:
-				return v
-			case *object.Float:
-				return &object.Integer{Value: int64(v.Value)}
-			case *object.String:
-				var n int64
-				fmt.Sscan(v.Value, &n)
-				return &object.Integer{Value: n}
-			case *object.Boolean:
-				if v.Value {
-					return &object.Integer{Value: 1}
-				}
-				return &object.Integer{Value: 0}
-			default:
-				return newError("int: cannot convert %s", args[0].Type())
-			}
-		},
-	},
-	
-	
-	
-	
-	"group_by": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("group_by: want array, function")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("group_by: want array")
-			}
-			groups := map[string]*object.Array{}
-			order := []string{}
-			for _, el := range arr.Elements {
-				keyObj := applyFunction(args[1], []object.Object{el})
-				if isError(keyObj) {
-					return keyObj
-				}
-				k := keyObj.Inspect()
-				if _, ok := groups[k]; !ok {
-					groups[k] = &object.Array{Elements: []object.Object{}}
-					order = append(order, k)
-				}
-				groups[k].Elements = append(groups[k].Elements, el)
-			}
-			pairs := make(map[object.HashKey]object.HashPair)
-			for _, k := range order {
-				key := &object.String{Value: k}
-				pairs[key.HashKey()] = object.HashPair{Key: key, Value: groups[k]}
-			}
-			return &object.Hash{Pairs: pairs}
-		},
-	},
-	"sort_by": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("sort_by: want array, function")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("sort_by: want array")
-			}
-			type pair struct {
-				el  object.Object
-				key string
-			}
-			items := make([]pair, len(arr.Elements))
-			for i, el := range arr.Elements {
-				k := applyFunction(args[1], []object.Object{el})
-				if isError(k) {
-					return k
-				}
-				items[i] = pair{el: el, key: k.Inspect()}
-			}
-			sort.SliceStable(items, func(i, j int) bool { return items[i].key < items[j].key })
-			out := make([]object.Object, len(items))
-			for i, it := range items {
-				out[i] = it.el
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"glob": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("glob: want pattern")
-			}
-			pat, ok := args[0].(*object.String)
-			if !ok {
-				return newError("glob: want string pattern")
-			}
-			matches, err := filepath.Glob(pat.Value)
-			if err != nil {
-				return newError("glob: %s", err.Error())
-			}
-			out := make([]object.Object, len(matches))
-			for i, m := range matches {
-				out[i] = &object.String{Value: m}
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"set_env": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("set_env: want name, value")
-			}
-			name, ok1 := args[0].(*object.String)
-			if !ok1 {
-				return newError("set_env: name must be string")
-			}
-			val := args[1].Inspect()
-			if s, ok := args[1].(*object.String); ok {
-				val = s.Value
-			}
-			if err := os.Setenv(name.Value, val); err != nil {
-				return newError("set_env: %s", err.Error())
-			}
-			return TRUE
-		},
-	},
-	"is_null": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("is_null: want 1 arg")
-			}
-			return nativeBoolToBooleanObject(args[0].Type() == object.NULL_OBJ)
-		},
-	},
-	"is_empty": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("is_empty: want 1 arg")
-			}
-			switch v := args[0].(type) {
-			case *object.Null:
-				return TRUE
-			case *object.String:
-				return nativeBoolToBooleanObject(v.Value == "")
-			case *object.Array:
-				return nativeBoolToBooleanObject(len(v.Elements) == 0)
-			case *object.Hash:
-				return nativeBoolToBooleanObject(len(v.Pairs) == 0)
-			default:
-				return FALSE
-			}
-		},
-	},
-	"pad_left": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 2 {
-				return newError("pad_left: want string, width [, pad]")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("pad_left: want string")
-			}
-			width := int(args[1].(*object.Integer).Value)
-			pad := " "
-			if len(args) >= 3 {
-				if p, ok := args[2].(*object.String); ok {
-					pad = p.Value
-				}
-			}
-			if pad == "" {
-				pad = " "
-			}
-			out := s.Value
-			for len([]rune(out)) < width {
-				out = pad + out
-			}
-			return &object.String{Value: out}
-		},
-	},
-	"pad_right": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 2 {
-				return newError("pad_right: want string, width [, pad]")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("pad_right: want string")
-			}
-			width := int(args[1].(*object.Integer).Value)
-			pad := " "
-			if len(args) >= 3 {
-				if p, ok := args[2].(*object.String); ok {
-					pad = p.Value
-				}
-			}
-			if pad == "" {
-				pad = " "
-			}
-			out := s.Value
-			for len([]rune(out)) < width {
-				out = out + pad
-			}
-			return &object.String{Value: out}
-		},
-	},
-	"count": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("count: want array/string, value")
-			}
-			if arr, ok := args[0].(*object.Array); ok {
-				n := 0
-				for _, el := range arr.Elements {
-					if el.Type() == args[1].Type() && el.Inspect() == args[1].Inspect() {
-						n++
-					}
-				}
-				return &object.Integer{Value: int64(n)}
-			}
-			if s, ok := args[0].(*object.String); ok {
-				sub, ok := args[1].(*object.String)
+				h, ok := args[0].(*object.Hash)
 				if !ok {
-					return newError("count: substring must be string")
+					return newError("set_has: not a set/hash")
 				}
-				return &object.Integer{Value: int64(strings.Count(s.Value, sub.Value))}
-			}
-			return newError("count: want array or string")
+				key, ok := args[1].(object.Hashable)
+				if !ok {
+					return FALSE
+				}
+				_, exists := h.Pairs[key.HashKey()]
+				return nativeBoolToBooleanObject(exists)
+			},
 		},
-	},
-"sum": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("sum: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("sum: want array")
-			}
-			var total int64
-			var ftotal float64
-			useFloat := false
-			for _, e := range arr.Elements {
-				switch v := e.(type) {
-				case *object.Integer:
-					total += v.Value
-					ftotal += float64(v.Value)
-				case *object.Float:
-					useFloat = true
-					ftotal += v.Value
+		"set_add": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("set_add: want set, value")
+				}
+				h, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("set_add: not a set/hash")
+				}
+				// Wave 3: frozen sets reject additions.
+				if h.Frozen {
+					return newError("cannot set_add into frozen set")
+				}
+				key, ok := args[1].(object.Hashable)
+				if !ok {
+					return newError("set_add: value not hashable")
+				}
+				h.Pairs[key.HashKey()] = object.HashPair{Key: args[1], Value: TRUE}
+				return h
+			},
+		},
+		// ---- Wave 3: data robbery — tuples, records, freeze, deep paths,
+		// stronger set/map builtins ----
+		"tuple": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("tuple: want 1 argument (array)")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("tuple: argument must be array, got %s", args[0].Type())
+				}
+				elements := make([]object.Object, len(arr.Elements))
+				copy(elements, arr.Elements)
+				return &object.Tuple{Elements: elements}
+			},
+		},
+		"freeze": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("freeze: want 1 argument")
+				}
+				switch args[0].(type) {
+				case *object.Array, *object.Hash:
+					// Deep-freeze in place (JS Object.freeze semantics) and
+					// return the same value for chaining.
+					return deepFreezeInPlace(args[0], map[object.Object]bool{})
 				default:
-					return newError("sum: non-numeric element")
+					if isInherentlyImmutable(args[0]) {
+						return args[0]
+					}
+					return newError("freeze: cannot freeze %s (only arrays and hashes)", args[0].Type())
 				}
-			}
-			if useFloat {
-				return &object.Float{Value: ftotal}
-			}
-			return &object.Integer{Value: total}
+			},
 		},
-	},
-	"avg": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("avg: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok || len(arr.Elements) == 0 {
-				return newError("avg: want non-empty array")
-			}
-			s := builtins["sum"].Fn(arr)
-			if isError(s) {
-				return s
-			}
-			n := float64(len(arr.Elements))
-			switch v := s.(type) {
-			case *object.Integer:
-				return &object.Float{Value: float64(v.Value) / n}
-			case *object.Float:
-				return &object.Float{Value: v.Value / n}
-			default:
-				return newError("avg: bad sum")
-			}
-		},
-	},
-	"take": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("take: want array, n")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("take: want array")
-			}
-			n := int(args[1].(*object.Integer).Value)
-			if n < 0 {
-				n = 0
-			}
-			if n > len(arr.Elements) {
-				n = len(arr.Elements)
-			}
-			return &object.Array{Elements: arr.Elements[:n]}
-		},
-	},
-	"drop": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("drop: want array, n")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("drop: want array")
-			}
-			n := int(args[1].(*object.Integer).Value)
-			if n < 0 {
-				n = 0
-			}
-			if n > len(arr.Elements) {
-				return &object.Array{Elements: []object.Object{}}
-			}
-			return &object.Array{Elements: arr.Elements[n:]}
-		},
-	},
-	"chunk": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("chunk: want array, size")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("chunk: want array")
-			}
-			size := int(args[1].(*object.Integer).Value)
-			if size <= 0 {
-				return newError("chunk: size > 0")
-			}
-			var out []object.Object
-			for i := 0; i < len(arr.Elements); i += size {
-				end := i + size
-				if end > len(arr.Elements) {
-					end = len(arr.Elements)
+		"is_frozen": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("is_frozen: want 1 argument")
 				}
-				chunk := make([]object.Object, end-i)
-				copy(chunk, arr.Elements[i:end])
-				out = append(out, &object.Array{Elements: chunk})
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"lines": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("lines: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("lines: want string")
-			}
-			parts := strings.Split(strings.ReplaceAll(s.Value, "\r\n", "\n"), "\n")
-			out := make([]object.Object, len(parts))
-			for i, p := range parts {
-				out[i] = &object.String{Value: p}
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"read_json": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("read_json: want path")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("read_json: want string path")
-			}
-			data, err := os.ReadFile(path.Value)
-			if err != nil {
-				return newError("read_json: %s", err.Error())
-			}
-			return jsonToObject(data)
-		},
-	},
-	"write_json": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("write_json: want path, value")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("write_json: want path string")
-			}
-			data, err := objectToJSON(args[1])
-			if err != nil {
-				return newError("write_json: %s", err.Error())
-			}
-			if err := os.WriteFile(path.Value, data, 0644); err != nil {
-				return newError("write_json: %s", err.Error())
-			}
-			return TRUE
-		},
-	},
-	"mkdir": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("mkdir: want path")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("mkdir: want string")
-			}
-			if err := os.MkdirAll(path.Value, 0755); err != nil {
-				return newError("mkdir: %s", err.Error())
-			}
-			return TRUE
-		},
-	},
-	"remove": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("remove: want path")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("remove: want string")
-			}
-			if err := os.RemoveAll(path.Value); err != nil {
-				return newError("remove: %s", err.Error())
-			}
-			return TRUE
-		},
-	},
-	"cwd": {
-		Fn: func(args ...object.Object) object.Object {
-			d, err := os.Getwd()
-			if err != nil {
-				return newError("cwd: %s", err.Error())
-			}
-			return &object.String{Value: d}
-		},
-	},
-	"cd": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("cd: want path")
-			}
-			path, ok := args[0].(*object.String)
-			if !ok {
-				return newError("cd: want string")
-			}
-			if err := os.Chdir(path.Value); err != nil {
-				return newError("cd: %s", err.Error())
-			}
-			return TRUE
-		},
-	},
-	"find": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("find: want array, function")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("find: want array")
-			}
-			for _, el := range arr.Elements {
-				res := applyFunction(args[1], []object.Object{el})
-				if isError(res) {
-					return res
+				switch o := args[0].(type) {
+				case *object.Array:
+					return nativeBoolToBooleanObject(o.Frozen)
+				case *object.Hash:
+					return nativeBoolToBooleanObject(o.Frozen)
+				default:
+					// Inherently immutable values count as frozen.
+					return nativeBoolToBooleanObject(isInherentlyImmutable(args[0]))
 				}
-				if isTruthy(res) {
-					return el
-				}
-			}
-			return NULL
+			},
 		},
-	},
-	"index_of": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("index_of: want array/string, value")
-			}
-			if arr, ok := args[0].(*object.Array); ok {
-				for i, el := range arr.Elements {
-					if el.Inspect() == args[1].Inspect() && el.Type() == args[1].Type() {
-						return &object.Integer{Value: int64(i)}
+		"thaw": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("thaw: want 1 argument")
+				}
+				return deepThawCopy(args[0], map[object.Object]object.Object{})
+			},
+		},
+		"deep_get": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 || len(args) > 3 {
+					return newError("deep_get: want obj, path [, default]")
+				}
+				path, ok := args[1].(*object.String)
+				if !ok {
+					return newError("deep_get: path must be string")
+				}
+				segs := strings.Split(path.Value, ".")
+				for _, s := range segs {
+					if s == "" {
+						return newError("deep_get: empty path segment in %q", path.Value)
 					}
 				}
-				return &object.Integer{Value: -1}
-			}
-			if s, ok := args[0].(*object.String); ok {
-				sub, ok := args[1].(*object.String)
+				if val, found := deepGetPath(args[0], segs); found {
+					return val
+				}
+				if len(args) == 3 {
+					return args[2]
+				}
+				return NULL
+			},
+		},
+		"deep_set": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 3 {
+					return newError("deep_set: want obj, path, value")
+				}
+				path, ok := args[1].(*object.String)
 				if !ok {
-					return newError("index_of: substring must be string")
+					return newError("deep_set: path must be string")
 				}
-				return &object.Integer{Value: int64(strings.Index(s.Value, sub.Value))}
-			}
-			return newError("index_of: want array or string")
+				segs := strings.Split(path.Value, ".")
+				for _, s := range segs {
+					if s == "" {
+						return newError("deep_set: empty path segment in %q", path.Value)
+					}
+				}
+				root, errObj := deepSetPath(args[0], segs, args[2])
+				if errObj != nil {
+					return errObj
+				}
+				return root
+			},
 		},
-	},
-"map_fn": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("map_fn: want array, function")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("map_fn: want array")
-			}
-			var out []object.Object
-			for _, el := range arr.Elements {
-				res := applyFunction(args[1], []object.Object{el})
-				if isError(res) {
-					return res
+		"set_union": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("set_union: want set, set")
 				}
-				out = append(out, res)
-			}
-			return &object.Array{Elements: out}
+				a, ok1 := args[0].(*object.Hash)
+				b, ok2 := args[1].(*object.Hash)
+				if !ok1 || !ok2 {
+					return newError("set_union: arguments must be sets")
+				}
+				out := make(map[object.HashKey]object.HashPair, len(a.Pairs)+len(b.Pairs))
+				for k, p := range a.Pairs {
+					out[k] = p
+				}
+				for k, p := range b.Pairs {
+					out[k] = p
+				}
+				return &object.Hash{Pairs: out}
+			},
 		},
-	},
-	"filter": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("filter: want array, function")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("filter: want array")
-			}
-			var out []object.Object
-			for _, el := range arr.Elements {
-				res := applyFunction(args[1], []object.Object{el})
-				if isError(res) {
-					return res
+		"set_intersect": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("set_intersect: want set, set")
 				}
-				if isTruthy(res) {
-					out = append(out, el)
+				a, ok1 := args[0].(*object.Hash)
+				b, ok2 := args[1].(*object.Hash)
+				if !ok1 || !ok2 {
+					return newError("set_intersect: arguments must be sets")
 				}
-			}
-			return &object.Array{Elements: out}
+				out := make(map[object.HashKey]object.HashPair)
+				for k, p := range a.Pairs {
+					if _, ok := b.Pairs[k]; ok {
+						out[k] = p
+					}
+				}
+				return &object.Hash{Pairs: out}
+			},
 		},
-	},
-	"reduce": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 2 || len(args) > 3 {
-				return newError("reduce: want array, function [, init]")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("reduce: want array")
-			}
-			fn := args[1]
-			var acc object.Object
-			start := 0
-			if len(args) == 3 {
-				acc = args[2]
-			} else {
+		"set_diff": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("set_diff: want set, set")
+				}
+				a, ok1 := args[0].(*object.Hash)
+				b, ok2 := args[1].(*object.Hash)
+				if !ok1 || !ok2 {
+					return newError("set_diff: arguments must be sets")
+				}
+				out := make(map[object.HashKey]object.HashPair)
+				for k, p := range a.Pairs {
+					if _, ok := b.Pairs[k]; !ok {
+						out[k] = p
+					}
+				}
+				return &object.Hash{Pairs: out}
+			},
+		},
+		"set_len": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("set_len: want set")
+				}
+				h, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("set_len: argument must be set")
+				}
+				return &object.Integer{Value: int64(len(h.Pairs))}
+			},
+		},
+		"set_to_array": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("set_to_array: want set")
+				}
+				h, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("set_to_array: argument must be set")
+				}
+				// Sorted by Inspect() so the result is deterministic
+				// (Go map iteration order is random).
+				keys := make([]string, 0, len(h.Pairs))
+				byInspect := map[string]object.Object{}
+				for _, p := range h.Pairs {
+					s := p.Key.Inspect()
+					keys = append(keys, s)
+					byInspect[s] = p.Key
+				}
+				sort.Strings(keys)
+				elements := make([]object.Object, 0, len(keys))
+				for _, k := range keys {
+					elements = append(elements, byInspect[k])
+				}
+				return &object.Array{Elements: elements}
+			},
+		},
+		"set_remove": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("set_remove: want set, value")
+				}
+				h, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("set_remove: not a set/hash")
+				}
+				if h.Frozen {
+					return newError("cannot set_remove from frozen set")
+				}
+				key, ok := args[1].(object.Hashable)
+				if !ok {
+					return newError("set_remove: value not hashable")
+				}
+				delete(h.Pairs, key.HashKey())
+				return h
+			},
+		},
+		"map_merge": {
+			Fn: func(args ...object.Object) object.Object {
+				// Later maps win on key conflicts; returns a NEW hash.
+				out := make(map[object.HashKey]object.HashPair)
+				for _, a := range args {
+					h, ok := a.(*object.Hash)
+					if !ok {
+						return newError("map_merge: arguments must be maps, got %s", a.Type())
+					}
+					for k, p := range h.Pairs {
+						out[k] = p
+					}
+				}
+				return &object.Hash{Pairs: out}
+			},
+		},
+		"map_pick": {
+			Fn: func(args ...object.Object) object.Object {
+				keys, errObj := mapKeyList("map_pick", args)
+				if errObj != nil {
+					return errObj
+				}
+				h := args[0].(*object.Hash)
+				out := make(map[object.HashKey]object.HashPair)
+				for _, k := range keys {
+					ks := &object.String{Value: k}
+					if p, ok := h.Pairs[ks.HashKey()]; ok {
+						out[ks.HashKey()] = p
+					}
+				}
+				return &object.Hash{Pairs: out}
+			},
+		},
+		"map_omit": {
+			Fn: func(args ...object.Object) object.Object {
+				keys, errObj := mapKeyList("map_omit", args)
+				if errObj != nil {
+					return errObj
+				}
+				h := args[0].(*object.Hash)
+				omit := map[object.HashKey]bool{}
+				for _, k := range keys {
+					ks := &object.String{Value: k}
+					omit[ks.HashKey()] = true
+				}
+				out := make(map[object.HashKey]object.HashPair)
+				for hk, p := range h.Pairs {
+					if !omit[hk] {
+						out[hk] = p
+					}
+				}
+				return &object.Hash{Pairs: out}
+			},
+		},
+		"invert": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("invert: want map")
+				}
+				h, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("invert: argument must be map")
+				}
+				// Deterministic on value collisions: iterate keys sorted by
+				// Inspect() so the surviving key is well-defined.
+				inspects := make([]string, 0, len(h.Pairs))
+				byInspect := map[string]object.HashPair{}
+				for _, p := range h.Pairs {
+					s := p.Key.Inspect()
+					inspects = append(inspects, s)
+					byInspect[s] = p
+				}
+				sort.Strings(inspects)
+				out := make(map[object.HashKey]object.HashPair)
+				for _, s := range inspects {
+					p := byInspect[s]
+					hk, ok := p.Value.(object.Hashable)
+					if !ok {
+						return newError("invert: value not hashable: %s", p.Value.Type())
+					}
+					out[hk.HashKey()] = object.HashPair{Key: p.Value, Value: p.Key}
+				}
+				return &object.Hash{Pairs: out}
+			},
+		},
+		"plugins": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: polyglot.Available()}
+			},
+		},
+		"next": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("next: want generator")
+				}
+				gen, ok := args[0].(*object.Generator)
+				if !ok {
+					return newError("next: not a generator")
+				}
+				return gen.Next()
+			},
+		},
+		"metric_inc": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 {
+					return newError("metric_inc: want name")
+				}
+				name := args[0].Inspect()
+				if s, ok := args[0].(*object.String); ok {
+					name = s.Value
+				}
+				by := int64(1)
+				if len(args) >= 2 {
+					if i, ok := args[1].(*object.Integer); ok {
+						by = i.Value
+					}
+				}
+				metricCounters[name] += by
+				return &object.Integer{Value: metricCounters[name]}
+			},
+		},
+		"metric_get": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("metric_get: want name")
+				}
+				name := args[0].Inspect()
+				if s, ok := args[0].(*object.String); ok {
+					name = s.Value
+				}
+				return &object.Integer{Value: metricCounters[name]}
+			},
+		},
+		"metric_gauge": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("metric_gauge: want name, value")
+				}
+				name := args[0].Inspect()
+				if s, ok := args[0].(*object.String); ok {
+					name = s.Value
+				}
+				var v float64
+				switch n := args[1].(type) {
+				case *object.Integer:
+					v = float64(n.Value)
+				case *object.Float:
+					v = n.Value
+				default:
+					return newError("metric_gauge: value must be number")
+				}
+				metricGauges[name] = v
+				return &object.Float{Value: v}
+			},
+		},
+		"trace": {
+			Fn: func(args ...object.Object) object.Object {
+				parts := make([]string, len(args))
+				for i, a := range args {
+					parts[i] = a.Inspect()
+				}
+				fmt.Println("[trace]", strings.Join(parts, " "))
+				return NULL
+			},
+		},
+		"hardware_info": {
+			Fn: func(args ...object.Object) object.Object {
+				info := "{\"usb\":\"unsupported in this build\",\"spi\":\"unsupported\",\"i2c\":\"unsupported\",\"serial\":\"unsupported\",\"hid\":\"unsupported\",\"note\":\"hardware APIs are stubs matching original claims\"}"
+				return &object.String{Value: info}
+			},
+		},
+		"wasi_info": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: "{\"wasi\":\"not embedded\",\"component_model\":\"not embedded\",\"note\":\"use system/python/js for host interop\"}"}
+			},
+		},
+
+		"replace": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 3 {
+					return newError("replace: want string, old, new")
+				}
+				s, a, b := args[0].(*object.String), args[1].(*object.String), args[2].(*object.String)
+				if s == nil || a == nil || b == nil {
+					return newError("replace: want strings")
+				}
+				return &object.String{Value: strings.ReplaceAll(s.Value, a.Value, b.Value)}
+			},
+		},
+		"trim": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("trim: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("trim: want string")
+				}
+				return &object.String{Value: strings.TrimSpace(s.Value)}
+			},
+		},
+		"starts_with": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("starts_with: want string, prefix")
+				}
+				s, ok1 := args[0].(*object.String)
+				p, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("starts_with: want strings")
+				}
+				return nativeBoolToBooleanObject(strings.HasPrefix(s.Value, p.Value))
+			},
+		},
+		"ends_with": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("ends_with: want string, suffix")
+				}
+				s, ok1 := args[0].(*object.String)
+				p, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("ends_with: want strings")
+				}
+				return nativeBoolToBooleanObject(strings.HasSuffix(s.Value, p.Value))
+			},
+		},
+		"substr": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 || len(args) > 3 {
+					return newError("substr: want string, start [, len]")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("substr: want string")
+				}
+				runes := []rune(s.Value)
+				start := int(args[1].(*object.Integer).Value)
+				if start < 0 {
+					start = 0
+				}
+				if start > len(runes) {
+					return &object.String{Value: ""}
+				}
+				length := len(runes) - start
+				if len(args) == 3 {
+					length = int(args[2].(*object.Integer).Value)
+				}
+				end := start + length
+				if end > len(runes) {
+					end = len(runes)
+				}
+				return &object.String{Value: string(runes[start:end])}
+			},
+		},
+		"pop": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("pop: want array")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("pop: want array")
+				}
+				// Wave 3: frozen arrays reject pop.
+				if arr.Frozen {
+					return newError("cannot pop from frozen array")
+				}
 				if len(arr.Elements) == 0 {
 					return NULL
 				}
-				acc = arr.Elements[0]
-				start = 1
-			}
-			for i := start; i < len(arr.Elements); i++ {
-				res := applyFunction(fn, []object.Object{acc, arr.Elements[i]})
-				if isError(res) {
-					return res
-				}
-				acc = res
-			}
-			return acc
+				last := arr.Elements[len(arr.Elements)-1]
+				arr.Elements = arr.Elements[:len(arr.Elements)-1]
+				return last
+			},
 		},
-	},
-	// ---- Wave 2: function combinators (JS/Python functools, Haskell) ----
-	"partial": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 {
-				return newError("partial: want at least 1 argument (a function)")
-			}
-			if !isCallableObject(args[0]) {
-				return newError("partial: first argument must be a function, got %s", args[0].Type())
-			}
-			fn := args[0]
-			bound := append([]object.Object{}, args[1:]...)
-			// Positional-only: bound args are prepended to each later call.
-			// A partial of a partial composes — the inner partial's own
-			// bound args stay leftmost.
-			return &object.Builtin{
-				Name: "partial(" + callableLabel(fn) + ")",
-				Fn: func(more ...object.Object) object.Object {
-					all := make([]object.Object, 0, len(bound)+len(more))
-					all = append(all, bound...)
-					all = append(all, more...)
-					return applyFunction(fn, all)
-				},
-			}
-		},
-	},
-	"curry": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("curry: want exactly 1 argument (a function)")
-			}
-			fn, ok := args[0].(*object.Function)
-			if !ok {
-				// Honest: a built-in's arity is not knowable from the
-				// outside, so we refuse rather than guess.
-				return newError("curry: can only curry user-defined functions, got %s (arity unknown)", args[0].Type())
-			}
-			// Arity = required parameters (total minus defaulted ones).
-			arity := 0
-			for i := range fn.Parameters {
-				if i >= len(fn.Defaults) || fn.Defaults[i] == nil {
-					arity++
+		"reverse": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("reverse: want array")
 				}
-			}
-			var collect func(collected []object.Object) *object.Builtin
-			collect = func(collected []object.Object) *object.Builtin {
-				return &object.Builtin{
-					Name: "curried(" + callableLabel(fn) + ")",
-					Fn: func(more ...object.Object) object.Object {
-						all := make([]object.Object, 0, len(collected)+len(more))
-						all = append(all, collected...)
-						all = append(all, more...)
-						if len(all) >= arity {
-							// Arity satisfied: apply. Extra args pass
-							// through, matching normal call semantics
-							// (extendFunctionEnv ignores extras).
-							return applyFunction(fn, all)
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("reverse: want array")
+				}
+				// Wave 3: frozen arrays reject in-place reverse.
+				if arr.Frozen {
+					return newError("cannot reverse frozen array")
+				}
+				n := len(arr.Elements)
+				for i := 0; i < n/2; i++ {
+					arr.Elements[i], arr.Elements[n-1-i] = arr.Elements[n-1-i], arr.Elements[i]
+				}
+				return arr
+			},
+		},
+		"sort": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("sort: want array")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("sort: want array")
+				}
+				// Wave 3: frozen arrays reject in-place sort.
+				if arr.Frozen {
+					return newError("cannot sort frozen array")
+				}
+				sort.SliceStable(arr.Elements, func(i, j int) bool {
+					a, b := arr.Elements[i], arr.Elements[j]
+					if ai, ok := a.(*object.Integer); ok {
+						if bi, ok := b.(*object.Integer); ok {
+							return ai.Value < bi.Value
 						}
-						return collect(all)
+					}
+					if af, ok := a.(*object.Float); ok {
+						if bf, ok := b.(*object.Float); ok {
+							return af.Value < bf.Value
+						}
+					}
+					return a.Inspect() < b.Inspect()
+				})
+				return arr
+			},
+		},
+		"has": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("has: want map, key")
+				}
+				hash, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("has: want map")
+				}
+				key, ok := args[1].(object.Hashable)
+				if !ok {
+					return newError("has: unusable key")
+				}
+				_, exists := hash.Pairs[key.HashKey()]
+				return nativeBoolToBooleanObject(exists)
+			},
+		},
+		"delete": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("delete: want map, key")
+				}
+				hash, ok := args[0].(*object.Hash)
+				if !ok {
+					return newError("delete: want map")
+				}
+				// Wave 3: frozen hashes reject delete.
+				if hash.Frozen {
+					return newError("cannot delete key from frozen hash")
+				}
+				key, ok := args[1].(object.Hashable)
+				if !ok {
+					return newError("delete: unusable key")
+				}
+				delete(hash.Pairs, key.HashKey())
+				return TRUE
+			},
+		},
+		"min": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) == 0 {
+					return newError("min: want args")
+				}
+				// support min(array) or min(a,b,c)
+				vals := args
+				if len(args) == 1 {
+					if arr, ok := args[0].(*object.Array); ok {
+						vals = arr.Elements
+					}
+				}
+				if len(vals) == 0 {
+					return NULL
+				}
+				best := vals[0]
+				for _, v := range vals[1:] {
+					if bi, ok := best.(*object.Integer); ok {
+						if vi, ok := v.(*object.Integer); ok && vi.Value < bi.Value {
+							best = v
+						}
+					}
+				}
+				return best
+			},
+		},
+		"max": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) == 0 {
+					return newError("max: want args")
+				}
+				vals := args
+				if len(args) == 1 {
+					if arr, ok := args[0].(*object.Array); ok {
+						vals = arr.Elements
+					}
+				}
+				if len(vals) == 0 {
+					return NULL
+				}
+				best := vals[0]
+				for _, v := range vals[1:] {
+					if bi, ok := best.(*object.Integer); ok {
+						if vi, ok := v.(*object.Integer); ok && vi.Value > bi.Value {
+							best = v
+						}
+					}
+				}
+				return best
+			},
+		},
+		"pow": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("pow: want base, exp")
+				}
+				var b, e float64
+				switch v := args[0].(type) {
+				case *object.Integer:
+					b = float64(v.Value)
+				case *object.Float:
+					b = v.Value
+				default:
+					return newError("pow: want numbers")
+				}
+				switch v := args[1].(type) {
+				case *object.Integer:
+					e = float64(v.Value)
+				case *object.Float:
+					e = v.Value
+				default:
+					return newError("pow: want numbers")
+				}
+				return &object.Float{Value: math.Pow(b, e)}
+			},
+		},
+		"sqrt": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("sqrt: want 1 number")
+				}
+				var v float64
+				switch n := args[0].(type) {
+				case *object.Integer:
+					v = float64(n.Value)
+				case *object.Float:
+					v = n.Value
+				default:
+					return newError("sqrt: want number")
+				}
+				return &object.Float{Value: math.Sqrt(v)}
+			},
+		},
+		"floor": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("floor: want number")
+				}
+				switch n := args[0].(type) {
+				case *object.Integer:
+					return n
+				case *object.Float:
+					return &object.Integer{Value: int64(math.Floor(n.Value))}
+				default:
+					return newError("floor: want number")
+				}
+			},
+		},
+		"ceil": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("ceil: want number")
+				}
+				switch n := args[0].(type) {
+				case *object.Integer:
+					return n
+				case *object.Float:
+					return &object.Integer{Value: int64(math.Ceil(n.Value))}
+				default:
+					return newError("ceil: want number")
+				}
+			},
+		},
+		"exists": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("exists: want path")
+				}
+				path, ok := args[0].(*object.String)
+				if !ok {
+					return newError("exists: want string path")
+				}
+				_, err := os.Stat(path.Value)
+				return nativeBoolToBooleanObject(err == nil)
+			},
+		},
+		"listdir": {
+			Fn: func(args ...object.Object) object.Object {
+				path := "."
+				if len(args) >= 1 {
+					if s, ok := args[0].(*object.String); ok {
+						path = s.Value
+					}
+				}
+				entries, err := os.ReadDir(path)
+				if err != nil {
+					return newError("listdir: %s", err.Error())
+				}
+				el := make([]object.Object, 0, len(entries))
+				for _, e := range entries {
+					el = append(el, &object.String{Value: e.Name()})
+				}
+				return &object.Array{Elements: el}
+			},
+		},
+		"sleep": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("sleep: want milliseconds")
+				}
+				ms, ok := args[0].(*object.Integer)
+				if !ok {
+					return newError("sleep: want integer ms")
+				}
+				time.Sleep(time.Duration(ms.Value) * time.Millisecond)
+				return NULL
+			},
+		},
+		"exit": {
+			Fn: func(args ...object.Object) object.Object {
+				code := 0
+				if len(args) >= 1 {
+					if i, ok := args[0].(*object.Integer); ok {
+						code = int(i.Value)
+					}
+				}
+				os.Exit(code)
+				return NULL
+			},
+		},
+		"format": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 {
+					return newError("format: want format string")
+				}
+				fmtStr, ok := args[0].(*object.String)
+				if !ok {
+					return newError("format: first arg must be string")
+				}
+				// Simple {0} {1} replacement
+				out := fmtStr.Value
+				for i, a := range args[1:] {
+					token := fmt.Sprintf("{%d}", i)
+					out = strings.ReplaceAll(out, token, a.Inspect())
+				}
+				return &object.String{Value: out}
+			},
+		},
+		"split": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("split: want string, sep")
+				}
+				s, ok1 := args[0].(*object.String)
+				sep, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("split: want strings")
+				}
+				parts := strings.Split(s.Value, sep.Value)
+				el := make([]object.Object, len(parts))
+				for i, p := range parts {
+					el[i] = &object.String{Value: p}
+				}
+				return &object.Array{Elements: el}
+			},
+		},
+		"join": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("join: want array, sep")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("join: first arg must be array")
+				}
+				sep := ","
+				if s, ok := args[1].(*object.String); ok {
+					sep = s.Value
+				}
+				parts := make([]string, len(arr.Elements))
+				for i, e := range arr.Elements {
+					parts[i] = e.Inspect()
+				}
+				return &object.String{Value: strings.Join(parts, sep)}
+			},
+		},
+		"upper": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("upper: want 1 string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("upper: want string")
+				}
+				return &object.String{Value: strings.ToUpper(s.Value)}
+			},
+		},
+		"lower": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("lower: want 1 string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("lower: want string")
+				}
+				return &object.String{Value: strings.ToLower(s.Value)}
+			},
+		},
+		"contains": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("contains: want string, substr")
+				}
+				s, ok1 := args[0].(*object.String)
+				sub, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("contains: want strings")
+				}
+				return nativeBoolToBooleanObject(strings.Contains(s.Value, sub.Value))
+			},
+		},
+		"slice": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 || len(args) > 3 {
+					return newError("slice: want arr, start [, end]")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("slice: first arg must be array")
+				}
+				start := int(args[1].(*object.Integer).Value)
+				end := len(arr.Elements)
+				if len(args) == 3 {
+					end = int(args[2].(*object.Integer).Value)
+				}
+				if start < 0 {
+					start = 0
+				}
+				if end > len(arr.Elements) {
+					end = len(arr.Elements)
+				}
+				if start > end {
+					return &object.Array{Elements: []object.Object{}}
+				}
+				// Wave 3: slices of a frozen array stay frozen.
+				return &object.Array{Elements: arr.Elements[start:end], Frozen: arr.Frozen}
+			},
+		},
+		"assert": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 {
+					return newError("assert: want condition")
+				}
+				if !isTruthy(args[0]) {
+					msg := "assertion failed"
+					if len(args) >= 2 {
+						msg = args[1].Inspect()
+					}
+					return newError("%s", msg)
+				}
+				return TRUE
+			},
+		},
+		"now": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.Integer{Value: time.Now().Unix()}
+			},
+		},
+		"env": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("env: want name")
+				}
+				name := args[0].Inspect()
+				if s, ok := args[0].(*object.String); ok {
+					name = s.Value
+				}
+				return &object.String{Value: os.Getenv(name)}
+			},
+		},
+		"args": {
+			Fn: func(args ...object.Object) object.Object {
+				el := make([]object.Object, len(CLIArgs))
+				for i, a := range CLIArgs {
+					el[i] = &object.String{Value: a}
+				}
+				return &object.Array{Elements: el}
+			},
+		},
+		"int": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("int: want 1 arg")
+				}
+				switch v := args[0].(type) {
+				case *object.Integer:
+					return v
+				case *object.Float:
+					return &object.Integer{Value: int64(v.Value)}
+				case *object.String:
+					var n int64
+					fmt.Sscan(v.Value, &n)
+					return &object.Integer{Value: n}
+				case *object.Boolean:
+					if v.Value {
+						return &object.Integer{Value: 1}
+					}
+					return &object.Integer{Value: 0}
+				default:
+					return newError("int: cannot convert %s", args[0].Type())
+				}
+			},
+		},
+
+		"group_by": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("group_by: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("group_by: want array")
+				}
+				groups := map[string]*object.Array{}
+				order := []string{}
+				for _, el := range arr.Elements {
+					keyObj := applyFunction(args[1], []object.Object{el})
+					if isError(keyObj) {
+						return keyObj
+					}
+					k := keyObj.Inspect()
+					if _, ok := groups[k]; !ok {
+						groups[k] = &object.Array{Elements: []object.Object{}}
+						order = append(order, k)
+					}
+					groups[k].Elements = append(groups[k].Elements, el)
+				}
+				pairs := make(map[object.HashKey]object.HashPair)
+				for _, k := range order {
+					key := &object.String{Value: k}
+					pairs[key.HashKey()] = object.HashPair{Key: key, Value: groups[k]}
+				}
+				return &object.Hash{Pairs: pairs}
+			},
+		},
+		"sort_by": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("sort_by: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("sort_by: want array")
+				}
+				type pair struct {
+					el  object.Object
+					key string
+				}
+				items := make([]pair, len(arr.Elements))
+				for i, el := range arr.Elements {
+					k := applyFunction(args[1], []object.Object{el})
+					if isError(k) {
+						return k
+					}
+					items[i] = pair{el: el, key: k.Inspect()}
+				}
+				sort.SliceStable(items, func(i, j int) bool { return items[i].key < items[j].key })
+				out := make([]object.Object, len(items))
+				for i, it := range items {
+					out[i] = it.el
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"glob": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("glob: want pattern")
+				}
+				pat, ok := args[0].(*object.String)
+				if !ok {
+					return newError("glob: want string pattern")
+				}
+				matches, err := filepath.Glob(pat.Value)
+				if err != nil {
+					return newError("glob: %s", err.Error())
+				}
+				out := make([]object.Object, len(matches))
+				for i, m := range matches {
+					out[i] = &object.String{Value: m}
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"set_env": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("set_env: want name, value")
+				}
+				name, ok1 := args[0].(*object.String)
+				if !ok1 {
+					return newError("set_env: name must be string")
+				}
+				val := args[1].Inspect()
+				if s, ok := args[1].(*object.String); ok {
+					val = s.Value
+				}
+				if err := os.Setenv(name.Value, val); err != nil {
+					return newError("set_env: %s", err.Error())
+				}
+				return TRUE
+			},
+		},
+		"is_null": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("is_null: want 1 arg")
+				}
+				return nativeBoolToBooleanObject(args[0].Type() == object.NULL_OBJ)
+			},
+		},
+		"is_empty": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("is_empty: want 1 arg")
+				}
+				switch v := args[0].(type) {
+				case *object.Null:
+					return TRUE
+				case *object.String:
+					return nativeBoolToBooleanObject(v.Value == "")
+				case *object.Array:
+					return nativeBoolToBooleanObject(len(v.Elements) == 0)
+				case *object.Hash:
+					return nativeBoolToBooleanObject(len(v.Pairs) == 0)
+				default:
+					return FALSE
+				}
+			},
+		},
+		"pad_left": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 {
+					return newError("pad_left: want string, width [, pad]")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("pad_left: want string")
+				}
+				width := int(args[1].(*object.Integer).Value)
+				pad := " "
+				if len(args) >= 3 {
+					if p, ok := args[2].(*object.String); ok {
+						pad = p.Value
+					}
+				}
+				if pad == "" {
+					pad = " "
+				}
+				out := s.Value
+				for len([]rune(out)) < width {
+					out = pad + out
+				}
+				return &object.String{Value: out}
+			},
+		},
+		"pad_right": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 {
+					return newError("pad_right: want string, width [, pad]")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("pad_right: want string")
+				}
+				width := int(args[1].(*object.Integer).Value)
+				pad := " "
+				if len(args) >= 3 {
+					if p, ok := args[2].(*object.String); ok {
+						pad = p.Value
+					}
+				}
+				if pad == "" {
+					pad = " "
+				}
+				out := s.Value
+				for len([]rune(out)) < width {
+					out = out + pad
+				}
+				return &object.String{Value: out}
+			},
+		},
+		"count": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("count: want array/string, value")
+				}
+				if arr, ok := args[0].(*object.Array); ok {
+					n := 0
+					for _, el := range arr.Elements {
+						if el.Type() == args[1].Type() && el.Inspect() == args[1].Inspect() {
+							n++
+						}
+					}
+					return &object.Integer{Value: int64(n)}
+				}
+				if s, ok := args[0].(*object.String); ok {
+					sub, ok := args[1].(*object.String)
+					if !ok {
+						return newError("count: substring must be string")
+					}
+					return &object.Integer{Value: int64(strings.Count(s.Value, sub.Value))}
+				}
+				return newError("count: want array or string")
+			},
+		},
+		"sum": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("sum: want array")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("sum: want array")
+				}
+				var total int64
+				var ftotal float64
+				useFloat := false
+				for _, e := range arr.Elements {
+					switch v := e.(type) {
+					case *object.Integer:
+						total += v.Value
+						ftotal += float64(v.Value)
+					case *object.Float:
+						useFloat = true
+						ftotal += v.Value
+					default:
+						return newError("sum: non-numeric element")
+					}
+				}
+				if useFloat {
+					return &object.Float{Value: ftotal}
+				}
+				return &object.Integer{Value: total}
+			},
+		},
+		"avg": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("avg: want array")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok || len(arr.Elements) == 0 {
+					return newError("avg: want non-empty array")
+				}
+				s := builtins["sum"].Fn(arr)
+				if isError(s) {
+					return s
+				}
+				n := float64(len(arr.Elements))
+				switch v := s.(type) {
+				case *object.Integer:
+					return &object.Float{Value: float64(v.Value) / n}
+				case *object.Float:
+					return &object.Float{Value: v.Value / n}
+				default:
+					return newError("avg: bad sum")
+				}
+			},
+		},
+		"take": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("take: want array, n")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("take: want array")
+				}
+				n := int(args[1].(*object.Integer).Value)
+				if n < 0 {
+					n = 0
+				}
+				if n > len(arr.Elements) {
+					n = len(arr.Elements)
+				}
+				return &object.Array{Elements: arr.Elements[:n]}
+			},
+		},
+		"drop": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("drop: want array, n")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("drop: want array")
+				}
+				n := int(args[1].(*object.Integer).Value)
+				if n < 0 {
+					n = 0
+				}
+				if n > len(arr.Elements) {
+					return &object.Array{Elements: []object.Object{}}
+				}
+				return &object.Array{Elements: arr.Elements[n:]}
+			},
+		},
+		"chunk": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("chunk: want array, size")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("chunk: want array")
+				}
+				size := int(args[1].(*object.Integer).Value)
+				if size <= 0 {
+					return newError("chunk: size > 0")
+				}
+				var out []object.Object
+				for i := 0; i < len(arr.Elements); i += size {
+					end := i + size
+					if end > len(arr.Elements) {
+						end = len(arr.Elements)
+					}
+					chunk := make([]object.Object, end-i)
+					copy(chunk, arr.Elements[i:end])
+					out = append(out, &object.Array{Elements: chunk})
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"lines": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("lines: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("lines: want string")
+				}
+				parts := strings.Split(strings.ReplaceAll(s.Value, "\r\n", "\n"), "\n")
+				out := make([]object.Object, len(parts))
+				for i, p := range parts {
+					out[i] = &object.String{Value: p}
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"read_json": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("read_json: want path")
+				}
+				path, ok := args[0].(*object.String)
+				if !ok {
+					return newError("read_json: want string path")
+				}
+				data, err := os.ReadFile(path.Value)
+				if err != nil {
+					return newError("read_json: %s", err.Error())
+				}
+				return jsonToObject(data)
+			},
+		},
+		"write_json": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("write_json: want path, value")
+				}
+				path, ok := args[0].(*object.String)
+				if !ok {
+					return newError("write_json: want path string")
+				}
+				data, err := objectToJSON(args[1])
+				if err != nil {
+					return newError("write_json: %s", err.Error())
+				}
+				if err := os.WriteFile(path.Value, data, 0644); err != nil {
+					return newError("write_json: %s", err.Error())
+				}
+				return TRUE
+			},
+		},
+		"mkdir": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("mkdir: want path")
+				}
+				path, ok := args[0].(*object.String)
+				if !ok {
+					return newError("mkdir: want string")
+				}
+				if err := os.MkdirAll(path.Value, 0755); err != nil {
+					return newError("mkdir: %s", err.Error())
+				}
+				return TRUE
+			},
+		},
+		"remove": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("remove: want path")
+				}
+				path, ok := args[0].(*object.String)
+				if !ok {
+					return newError("remove: want string")
+				}
+				if err := os.RemoveAll(path.Value); err != nil {
+					return newError("remove: %s", err.Error())
+				}
+				return TRUE
+			},
+		},
+		"cwd": {
+			Fn: func(args ...object.Object) object.Object {
+				d, err := os.Getwd()
+				if err != nil {
+					return newError("cwd: %s", err.Error())
+				}
+				return &object.String{Value: d}
+			},
+		},
+		"cd": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("cd: want path")
+				}
+				path, ok := args[0].(*object.String)
+				if !ok {
+					return newError("cd: want string")
+				}
+				if err := os.Chdir(path.Value); err != nil {
+					return newError("cd: %s", err.Error())
+				}
+				return TRUE
+			},
+		},
+		"find": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("find: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("find: want array")
+				}
+				for _, el := range arr.Elements {
+					res := applyFunction(args[1], []object.Object{el})
+					if isError(res) {
+						return res
+					}
+					if isTruthy(res) {
+						return el
+					}
+				}
+				return NULL
+			},
+		},
+		"index_of": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("index_of: want array/string, value")
+				}
+				if arr, ok := args[0].(*object.Array); ok {
+					for i, el := range arr.Elements {
+						if el.Inspect() == args[1].Inspect() && el.Type() == args[1].Type() {
+							return &object.Integer{Value: int64(i)}
+						}
+					}
+					return &object.Integer{Value: -1}
+				}
+				if s, ok := args[0].(*object.String); ok {
+					sub, ok := args[1].(*object.String)
+					if !ok {
+						return newError("index_of: substring must be string")
+					}
+					return &object.Integer{Value: int64(strings.Index(s.Value, sub.Value))}
+				}
+				return newError("index_of: want array or string")
+			},
+		},
+		"map_fn": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("map_fn: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("map_fn: want array")
+				}
+				var out []object.Object
+				for _, el := range arr.Elements {
+					res := applyFunction(args[1], []object.Object{el})
+					if isError(res) {
+						return res
+					}
+					out = append(out, res)
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"filter": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("filter: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("filter: want array")
+				}
+				var out []object.Object
+				for _, el := range arr.Elements {
+					res := applyFunction(args[1], []object.Object{el})
+					if isError(res) {
+						return res
+					}
+					if isTruthy(res) {
+						out = append(out, el)
+					}
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"reduce": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 || len(args) > 3 {
+					return newError("reduce: want array, function [, init]")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("reduce: want array")
+				}
+				fn := args[1]
+				var acc object.Object
+				start := 0
+				if len(args) == 3 {
+					acc = args[2]
+				} else {
+					if len(arr.Elements) == 0 {
+						return NULL
+					}
+					acc = arr.Elements[0]
+					start = 1
+				}
+				for i := start; i < len(arr.Elements); i++ {
+					res := applyFunction(fn, []object.Object{acc, arr.Elements[i]})
+					if isError(res) {
+						return res
+					}
+					acc = res
+				}
+				return acc
+			},
+		},
+		// ---- Wave 2: function combinators (JS/Python functools, Haskell) ----
+		"partial": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 {
+					return newError("partial: want at least 1 argument (a function)")
+				}
+				if !isCallableObject(args[0]) {
+					return newError("partial: first argument must be a function, got %s", args[0].Type())
+				}
+				fn := args[0]
+				bound := append([]object.Object{}, args[1:]...)
+				// Positional-only: bound args are prepended to each later call.
+				// A partial of a partial composes — the inner partial's own
+				// bound args stay leftmost.
+				return &object.Builtin{
+					Name: "partial(" + callableLabel(fn) + ")",
+					Fn: func(more ...object.Object) object.Object {
+						all := make([]object.Object, 0, len(bound)+len(more))
+						all = append(all, bound...)
+						all = append(all, more...)
+						return applyFunction(fn, all)
 					},
 				}
-			}
-			return collect(nil)
+			},
 		},
-	},
-	"compose": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 2 {
-				return newError("compose: want at least 2 functions")
-			}
-			for _, a := range args {
-				if !isCallableObject(a) {
-					return newError("compose: all arguments must be functions, got %s", a.Type())
+		"curry": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("curry: want exactly 1 argument (a function)")
 				}
-			}
-			fns := append([]object.Object{}, args...)
-			labels := make([]string, len(fns))
-			for i, f := range fns {
-				labels[i] = callableLabel(f)
-			}
-			// Right-to-left like Haskell's (.): compose(f, g, h)(x) = f(g(h(x))).
-			// Composes with partials and curried functions — anything callable.
-			return &object.Builtin{
-				Name: "compose(" + strings.Join(labels, ", ") + ")",
-				Fn: func(more ...object.Object) object.Object {
-					result := applyFunction(fns[len(fns)-1], more)
-					if isError(result) {
-						return result
+				fn, ok := args[0].(*object.Function)
+				if !ok {
+					// Honest: a built-in's arity is not knowable from the
+					// outside, so we refuse rather than guess.
+					return newError("curry: can only curry user-defined functions, got %s (arity unknown)", args[0].Type())
+				}
+				// Arity = required parameters (total minus defaulted ones).
+				arity := 0
+				for i := range fn.Parameters {
+					if i >= len(fn.Defaults) || fn.Defaults[i] == nil {
+						arity++
 					}
-					for i := len(fns) - 2; i >= 0; i-- {
-						result = applyFunction(fns[i], []object.Object{result})
+				}
+				var collect func(collected []object.Object) *object.Builtin
+				collect = func(collected []object.Object) *object.Builtin {
+					return &object.Builtin{
+						Name: "curried(" + callableLabel(fn) + ")",
+						Fn: func(more ...object.Object) object.Object {
+							all := make([]object.Object, 0, len(collected)+len(more))
+							all = append(all, collected...)
+							all = append(all, more...)
+							if len(all) >= arity {
+								// Arity satisfied: apply. Extra args pass
+								// through, matching normal call semantics
+								// (extendFunctionEnv ignores extras).
+								return applyFunction(fn, all)
+							}
+							return collect(all)
+						},
+					}
+				}
+				return collect(nil)
+			},
+		},
+		"compose": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 {
+					return newError("compose: want at least 2 functions")
+				}
+				for _, a := range args {
+					if !isCallableObject(a) {
+						return newError("compose: all arguments must be functions, got %s", a.Type())
+					}
+				}
+				fns := append([]object.Object{}, args...)
+				labels := make([]string, len(fns))
+				for i, f := range fns {
+					labels[i] = callableLabel(f)
+				}
+				// Right-to-left like Haskell's (.): compose(f, g, h)(x) = f(g(h(x))).
+				// Composes with partials and curried functions — anything callable.
+				return &object.Builtin{
+					Name: "compose(" + strings.Join(labels, ", ") + ")",
+					Fn: func(more ...object.Object) object.Object {
+						result := applyFunction(fns[len(fns)-1], more)
 						if isError(result) {
 							return result
 						}
+						for i := len(fns) - 2; i >= 0; i-- {
+							result = applyFunction(fns[i], []object.Object{result})
+							if isError(result) {
+								return result
+							}
+						}
+						return result
+					},
+				}
+			},
+		},
+		"zip": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("zip: want two arrays")
+				}
+				a, ok1 := args[0].(*object.Array)
+				b, ok2 := args[1].(*object.Array)
+				if !ok1 || !ok2 {
+					return newError("zip: want arrays")
+				}
+				n := len(a.Elements)
+				if len(b.Elements) < n {
+					n = len(b.Elements)
+				}
+				out := make([]object.Object, n)
+				for i := 0; i < n; i++ {
+					out[i] = &object.Array{Elements: []object.Object{a.Elements[i], b.Elements[i]}}
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"repeat": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("repeat: want string, count")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("repeat: want string")
+				}
+				n, ok := args[1].(*object.Integer)
+				if !ok {
+					return newError("repeat: want count int")
+				}
+				if n.Value < 0 {
+					return newError("repeat: count >= 0")
+				}
+				return &object.String{Value: strings.Repeat(s.Value, int(n.Value))}
+			},
+		},
+		"enumerate": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("enumerate: want array")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("enumerate: want array")
+				}
+				out := make([]object.Object, len(arr.Elements))
+				for i, el := range arr.Elements {
+					out[i] = &object.Array{Elements: []object.Object{
+						&object.Integer{Value: int64(i)},
+						el,
+					}}
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"regex_match": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("regex_match: want pattern, string")
+				}
+				pat, ok1 := args[0].(*object.String)
+				s, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("regex_match: want strings")
+				}
+				re, err := regexp.Compile(pat.Value)
+				if err != nil {
+					return newError("regex_match: %s", err.Error())
+				}
+				return nativeBoolToBooleanObject(re.MatchString(s.Value))
+			},
+		},
+		"regex_find": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("regex_find: want pattern, string")
+				}
+				pat, ok1 := args[0].(*object.String)
+				s, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("regex_find: want strings")
+				}
+				re, err := regexp.Compile(pat.Value)
+				if err != nil {
+					return newError("regex_find: %s", err.Error())
+				}
+				all := re.FindAllString(s.Value, -1)
+				out := make([]object.Object, len(all))
+				for i, m := range all {
+					out[i] = &object.String{Value: m}
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"regex_replace": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 3 {
+					return newError("regex_replace: want pattern, string, repl")
+				}
+				pat, ok1 := args[0].(*object.String)
+				s, ok2 := args[1].(*object.String)
+				repl, ok3 := args[2].(*object.String)
+				if !ok1 || !ok2 || !ok3 {
+					return newError("regex_replace: want strings")
+				}
+				re, err := regexp.Compile(pat.Value)
+				if err != nil {
+					return newError("regex_replace: %s", err.Error())
+				}
+				return &object.String{Value: re.ReplaceAllString(s.Value, repl.Value)}
+			},
+		},
+		"csv_parse": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("csv_parse: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("csv_parse: want string")
+				}
+				lines := strings.Split(strings.ReplaceAll(s.Value, "\r\n", "\n"), "\n")
+				var rows []object.Object
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
 					}
-					return result
-				},
-			}
-		},
-	},
-	"zip": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("zip: want two arrays")
-			}
-			a, ok1 := args[0].(*object.Array)
-			b, ok2 := args[1].(*object.Array)
-			if !ok1 || !ok2 {
-				return newError("zip: want arrays")
-			}
-			n := len(a.Elements)
-			if len(b.Elements) < n {
-				n = len(b.Elements)
-			}
-			out := make([]object.Object, n)
-			for i := 0; i < n; i++ {
-				out[i] = &object.Array{Elements: []object.Object{a.Elements[i], b.Elements[i]}}
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"repeat": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("repeat: want string, count")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("repeat: want string")
-			}
-			n, ok := args[1].(*object.Integer)
-			if !ok {
-				return newError("repeat: want count int")
-			}
-			if n.Value < 0 {
-				return newError("repeat: count >= 0")
-			}
-			return &object.String{Value: strings.Repeat(s.Value, int(n.Value))}
-		},
-	},
-	"enumerate": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("enumerate: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("enumerate: want array")
-			}
-			out := make([]object.Object, len(arr.Elements))
-			for i, el := range arr.Elements {
-				out[i] = &object.Array{Elements: []object.Object{
-					&object.Integer{Value: int64(i)},
-					el,
-				}}
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"regex_match": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("regex_match: want pattern, string")
-			}
-			pat, ok1 := args[0].(*object.String)
-			s, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("regex_match: want strings")
-			}
-			re, err := regexp.Compile(pat.Value)
-			if err != nil {
-				return newError("regex_match: %s", err.Error())
-			}
-			return nativeBoolToBooleanObject(re.MatchString(s.Value))
-		},
-	},
-	"regex_find": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("regex_find: want pattern, string")
-			}
-			pat, ok1 := args[0].(*object.String)
-			s, ok2 := args[1].(*object.String)
-			if !ok1 || !ok2 {
-				return newError("regex_find: want strings")
-			}
-			re, err := regexp.Compile(pat.Value)
-			if err != nil {
-				return newError("regex_find: %s", err.Error())
-			}
-			all := re.FindAllString(s.Value, -1)
-			out := make([]object.Object, len(all))
-			for i, m := range all {
-				out[i] = &object.String{Value: m}
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"regex_replace": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 3 {
-				return newError("regex_replace: want pattern, string, repl")
-			}
-			pat, ok1 := args[0].(*object.String)
-			s, ok2 := args[1].(*object.String)
-			repl, ok3 := args[2].(*object.String)
-			if !ok1 || !ok2 || !ok3 {
-				return newError("regex_replace: want strings")
-			}
-			re, err := regexp.Compile(pat.Value)
-			if err != nil {
-				return newError("regex_replace: %s", err.Error())
-			}
-			return &object.String{Value: re.ReplaceAllString(s.Value, repl.Value)}
-		},
-	},
-	"csv_parse": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("csv_parse: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("csv_parse: want string")
-			}
-			lines := strings.Split(strings.ReplaceAll(s.Value, "\r\n", "\n"), "\n")
-			var rows []object.Object
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				parts := strings.Split(line, ",")
-				cells := make([]object.Object, len(parts))
-				for i, c := range parts {
-					cells[i] = &object.String{Value: strings.TrimSpace(c)}
-				}
-				rows = append(rows, &object.Array{Elements: cells})
-			}
-			return &object.Array{Elements: rows}
-		},
-	},
-	"url_encode": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("url_encode: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("url_encode: want string")
-			}
-			return &object.String{Value: url.QueryEscape(s.Value)}
-		},
-	},
-	"url_decode": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("url_decode: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("url_decode: want string")
-			}
-			out, err := url.QueryUnescape(s.Value)
-			if err != nil {
-				return newError("url_decode: %s", err.Error())
-			}
-			return &object.String{Value: out}
-		},
-	},
-	
-	"log": {
-		Fn: func(args ...object.Object) object.Object {
-			parts := make([]string, len(args))
-			for i, a := range args {
-				parts[i] = a.Inspect()
-			}
-			fmt.Println(strings.Join(parts, " "))
-			return NULL
-		},
-	},
-	"print": {
-		Fn: func(args ...object.Object) object.Object {
-			parts := []string{}
-			for _, a := range args {
-				parts = append(parts, a.Inspect())
-			}
-			fmt.Println(strings.Join(parts, " "))
-			return NULL
-		},
-	},
-	"printf": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 {
-				return newError("printf: want format")
-			}
-			fmtStr, ok := args[0].(*object.String)
-			if !ok {
-				return newError("printf: format must be string")
-			}
-			out := fmtStr.Value
-			for i, a := range args[1:] {
-				token := fmt.Sprintf("{%d}", i)
-				out = strings.ReplaceAll(out, token, a.Inspect())
-			}
-			fmt.Print(out)
-			return NULL
-		},
-	},
-	"metrics_text": {
-		Fn: func(args ...object.Object) object.Object {
-			var b strings.Builder
-			for name, v := range metricCounters {
-				b.WriteString(fmt.Sprintf("# TYPE %s counter\n%s %d\n", name, name, v))
-			}
-			for name, v := range metricGauges {
-				b.WriteString(fmt.Sprintf("# TYPE %s gauge\n%s %g\n", name, name, v))
-			}
-			return &object.String{Value: b.String()}
-		},
-	},
-	
-	"ws_connect": {
-		Fn: func(args ...object.Object) object.Object {
-			return newError("ws_connect: WebSocket client not linked in this build; use python/js polyglot")
-		},
-	},
-"ws_info": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "{\"websocket\":\"partial\",\"hint\":\"use python/js polyglot for full ws\"}"}
-		},
-	},
-	"grpc_info": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "{\"grpc\":\"stub\",\"status\":\"not embedded\"}"}
-		},
-	},
-	"otel_info": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "{\"opentelemetry\":\"partial\",\"metrics\":\"metric_* + metrics_text\",\"traces\":\"trace\"}"}
-		},
-	},
-"eprint": {
-		Fn: func(args ...object.Object) object.Object {
-			parts := make([]string, len(args))
-			for i, a := range args {
-				parts[i] = a.Inspect()
-			}
-			fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
-			return NULL
-		},
-	},
-	"timeit": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 1 {
-				return newError("timeit: want function [, times]")
-			}
-			times := 1
-			if len(args) >= 2 {
-				if i, ok := args[1].(*object.Integer); ok {
-					times = int(i.Value)
-				}
-			}
-			start := time.Now()
-			var last object.Object = NULL
-			for i := 0; i < times; i++ {
-				last = applyFunction(args[0], []object.Object{})
-				if isError(last) {
-					return last
-				}
-			}
-			elapsed := time.Since(start).Milliseconds()
-			return &object.Integer{Value: elapsed}
-		},
-	},
-	"any": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("any: want array, function")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("any: want array")
-			}
-			for _, el := range arr.Elements {
-				res := applyFunction(args[1], []object.Object{el})
-				if isError(res) {
-					return res
-				}
-				if isTruthy(res) {
-					return TRUE
-				}
-			}
-			return FALSE
-		},
-	},
-	"all": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("all: want array, function")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("all: want array")
-			}
-			for _, el := range arr.Elements {
-				res := applyFunction(args[1], []object.Object{el})
-				if isError(res) {
-					return res
-				}
-				if !isTruthy(res) {
-					return FALSE
-				}
-			}
-			return TRUE
-		},
-	},
-"random": {
-		Fn: func(args ...object.Object) object.Object {
-			return &object.Float{Value: rand.Float64()}
-		},
-	},
-	"rand_int": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) == 1 {
-				n := int(args[0].(*object.Integer).Value)
-				if n <= 0 {
-					return newError("rand_int: n must be > 0")
-				}
-				return &object.Integer{Value: int64(rand.Intn(n))}
-			}
-			if len(args) == 2 {
-				lo := int(args[0].(*object.Integer).Value)
-				hi := int(args[1].(*object.Integer).Value)
-				if hi <= lo {
-					return newError("rand_int: hi must be > lo")
-				}
-				return &object.Integer{Value: int64(lo + rand.Intn(hi-lo))}
-			}
-			return newError("rand_int: want max or lo, hi")
-		},
-	},
-	"uuid": {
-		Fn: func(args ...object.Object) object.Object {
-			b := make([]byte, 16)
-			rand.Read(b)
-			b[6] = (b[6] & 0x0f) | 0x40
-			b[8] = (b[8] & 0x3f) | 0x80
-			s := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-			return &object.String{Value: s}
-		},
-	},
-	"date": {
-		Fn: func(args ...object.Object) object.Object {
-			t := time.Now()
-			if len(args) >= 1 {
-				if i, ok := args[0].(*object.Integer); ok {
-					t = time.Unix(i.Value, 0)
-				}
-			}
-			layout := time.RFC3339
-			if len(args) >= 2 {
-				if s, ok := args[1].(*object.String); ok {
-					layout = s.Value
-				}
-			}
-			return &object.String{Value: t.Format(layout)}
-		},
-	},
-	"clamp": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 3 {
-				return newError("clamp: want val, lo, hi")
-			}
-			v := args[0].(*object.Integer).Value
-			lo := args[1].(*object.Integer).Value
-			hi := args[2].(*object.Integer).Value
-			if v < lo {
-				v = lo
-			}
-			if v > hi {
-				v = hi
-			}
-			return &object.Integer{Value: v}
-		},
-	},
-	"unique": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("unique: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("unique: want array")
-			}
-			seen := map[string]bool{}
-			var out []object.Object
-			for _, e := range arr.Elements {
-				k := string(e.Type()) + ":" + e.Inspect()
-				if !seen[k] {
-					seen[k] = true
-					out = append(out, e)
-				}
-			}
-			return &object.Array{Elements: out}
-		},
-	},
-	"flatten": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("flatten: want array")
-			}
-			arr, ok := args[0].(*object.Array)
-			if !ok {
-				return newError("flatten: want array")
-			}
-			var out []object.Object
-			var walk func(object.Object)
-			walk = func(o object.Object) {
-				if a, ok := o.(*object.Array); ok {
-					for _, e := range a.Elements {
-						walk(e)
+					parts := strings.Split(line, ",")
+					cells := make([]object.Object, len(parts))
+					for i, c := range parts {
+						cells[i] = &object.String{Value: strings.TrimSpace(c)}
 					}
-				} else {
-					out = append(out, o)
+					rows = append(rows, &object.Array{Elements: cells})
 				}
-			}
-			walk(arr)
-			return &object.Array{Elements: out}
+				return &object.Array{Elements: rows}
+			},
 		},
-	},
-	"base64_encode": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("base64_encode: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("base64_encode: want string")
-			}
-			return &object.String{Value: base64.StdEncoding.EncodeToString([]byte(s.Value))}
+		"url_encode": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("url_encode: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("url_encode: want string")
+				}
+				return &object.String{Value: url.QueryEscape(s.Value)}
+			},
 		},
-	},
-	"base64_decode": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("base64_decode: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("base64_decode: want string")
-			}
-			b, err := base64.StdEncoding.DecodeString(s.Value)
-			if err != nil {
-				return newError("base64_decode: %s", err.Error())
-			}
-			return &object.String{Value: string(b)}
+		"url_decode": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("url_decode: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("url_decode: want string")
+				}
+				out, err := url.QueryUnescape(s.Value)
+				if err != nil {
+					return newError("url_decode: %s", err.Error())
+				}
+				return &object.String{Value: out}
+			},
 		},
-	},
-	"md5": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("md5: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("md5: want string")
-			}
-			sum := md5.Sum([]byte(s.Value))
-			return &object.String{Value: hex.EncodeToString(sum[:])}
+
+		"log": {
+			Fn: func(args ...object.Object) object.Object {
+				parts := make([]string, len(args))
+				for i, a := range args {
+					parts[i] = a.Inspect()
+				}
+				fmt.Println(strings.Join(parts, " "))
+				return NULL
+			},
 		},
-	},
-	"sha256": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("sha256: want string")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("sha256: want string")
-			}
-			sum := sha256.Sum256([]byte(s.Value))
-			return &object.String{Value: hex.EncodeToString(sum[:])}
-		},
-	},
-	"basename": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("basename: want path")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("basename: want string")
-			}
-			return &object.String{Value: filepath.Base(s.Value)}
-		},
-	},
-	"dirname": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("dirname: want path")
-			}
-			s, ok := args[0].(*object.String)
-			if !ok {
-				return newError("dirname: want string")
-			}
-			return &object.String{Value: filepath.Dir(s.Value)}
-		},
-	},
-	"join_path": {
-		Fn: func(args ...object.Object) object.Object {
-			parts := make([]string, 0, len(args))
-			for _, a := range args {
-				if s, ok := a.(*object.String); ok {
-					parts = append(parts, s.Value)
-				} else {
+		"print": {
+			Fn: func(args ...object.Object) object.Object {
+				parts := []string{}
+				for _, a := range args {
 					parts = append(parts, a.Inspect())
 				}
-			}
-			return &object.String{Value: filepath.Join(parts...)}
+				fmt.Println(strings.Join(parts, " "))
+				return NULL
+			},
 		},
-	},
-	"http_serve": {
-		Fn: func(args ...object.Object) object.Object {
-			// http_serve(port, body_or_handler_message)
-			if len(args) < 1 {
-				return newError("http_serve: want port [, body]")
-			}
-			port := args[0].Inspect()
-			if i, ok := args[0].(*object.Integer); ok {
-				port = fmt.Sprintf("%d", i.Value)
-			} else if s, ok := args[0].(*object.String); ok {
-				port = s.Value
-			}
-			body := "Navescript OK"
-			if len(args) >= 2 {
+		"printf": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 {
+					return newError("printf: want format")
+				}
+				fmtStr, ok := args[0].(*object.String)
+				if !ok {
+					return newError("printf: format must be string")
+				}
+				out := fmtStr.Value
+				for i, a := range args[1:] {
+					token := fmt.Sprintf("{%d}", i)
+					out = strings.ReplaceAll(out, token, a.Inspect())
+				}
+				fmt.Print(out)
+				return NULL
+			},
+		},
+		"metrics_text": {
+			Fn: func(args ...object.Object) object.Object {
+				var b strings.Builder
+				for name, v := range metricCounters {
+					b.WriteString(fmt.Sprintf("# TYPE %s counter\n%s %d\n", name, name, v))
+				}
+				for name, v := range metricGauges {
+					b.WriteString(fmt.Sprintf("# TYPE %s gauge\n%s %g\n", name, name, v))
+				}
+				return &object.String{Value: b.String()}
+			},
+		},
+
+		"ws_connect": {
+			Fn: func(args ...object.Object) object.Object {
+				return newError("ws_connect: WebSocket client not linked in this build; use python/js polyglot")
+			},
+		},
+		"ws_info": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: "{\"websocket\":\"partial\",\"hint\":\"use python/js polyglot for full ws\"}"}
+			},
+		},
+		"grpc_info": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: "{\"grpc\":\"stub\",\"status\":\"not embedded\"}"}
+			},
+		},
+		"otel_info": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: "{\"opentelemetry\":\"partial\",\"metrics\":\"metric_* + metrics_text\",\"traces\":\"trace\"}"}
+			},
+		},
+		"eprint": {
+			Fn: func(args ...object.Object) object.Object {
+				parts := make([]string, len(args))
+				for i, a := range args {
+					parts[i] = a.Inspect()
+				}
+				fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
+				return NULL
+			},
+		},
+		"timeit": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 1 {
+					return newError("timeit: want function [, times]")
+				}
+				times := 1
+				if len(args) >= 2 {
+					if i, ok := args[1].(*object.Integer); ok {
+						times = int(i.Value)
+					}
+				}
+				start := time.Now()
+				var last object.Object = NULL
+				for i := 0; i < times; i++ {
+					last = applyFunction(args[0], []object.Object{})
+					if isError(last) {
+						return last
+					}
+				}
+				elapsed := time.Since(start).Milliseconds()
+				return &object.Integer{Value: elapsed}
+			},
+		},
+		"any": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("any: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("any: want array")
+				}
+				for _, el := range arr.Elements {
+					res := applyFunction(args[1], []object.Object{el})
+					if isError(res) {
+						return res
+					}
+					if isTruthy(res) {
+						return TRUE
+					}
+				}
+				return FALSE
+			},
+		},
+		"all": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("all: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("all: want array")
+				}
+				for _, el := range arr.Elements {
+					res := applyFunction(args[1], []object.Object{el})
+					if isError(res) {
+						return res
+					}
+					if !isTruthy(res) {
+						return FALSE
+					}
+				}
+				return TRUE
+			},
+		},
+		"random": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.Float{Value: rand.Float64()}
+			},
+		},
+		"rand_int": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) == 1 {
+					n := int(args[0].(*object.Integer).Value)
+					if n <= 0 {
+						return newError("rand_int: n must be > 0")
+					}
+					return &object.Integer{Value: int64(rand.Intn(n))}
+				}
+				if len(args) == 2 {
+					lo := int(args[0].(*object.Integer).Value)
+					hi := int(args[1].(*object.Integer).Value)
+					if hi <= lo {
+						return newError("rand_int: hi must be > lo")
+					}
+					return &object.Integer{Value: int64(lo + rand.Intn(hi-lo))}
+				}
+				return newError("rand_int: want max or lo, hi")
+			},
+		},
+		"uuid": {
+			Fn: func(args ...object.Object) object.Object {
+				b := make([]byte, 16)
+				rand.Read(b)
+				b[6] = (b[6] & 0x0f) | 0x40
+				b[8] = (b[8] & 0x3f) | 0x80
+				s := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+				return &object.String{Value: s}
+			},
+		},
+		"date": {
+			Fn: func(args ...object.Object) object.Object {
+				t := time.Now()
+				if len(args) >= 1 {
+					if i, ok := args[0].(*object.Integer); ok {
+						t = time.Unix(i.Value, 0)
+					}
+				}
+				layout := time.RFC3339
+				if len(args) >= 2 {
+					if s, ok := args[1].(*object.String); ok {
+						layout = s.Value
+					}
+				}
+				return &object.String{Value: t.Format(layout)}
+			},
+		},
+		"clamp": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 3 {
+					return newError("clamp: want val, lo, hi")
+				}
+				v := args[0].(*object.Integer).Value
+				lo := args[1].(*object.Integer).Value
+				hi := args[2].(*object.Integer).Value
+				if v < lo {
+					v = lo
+				}
+				if v > hi {
+					v = hi
+				}
+				return &object.Integer{Value: v}
+			},
+		},
+		"unique": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("unique: want array")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("unique: want array")
+				}
+				seen := map[string]bool{}
+				var out []object.Object
+				for _, e := range arr.Elements {
+					k := string(e.Type()) + ":" + e.Inspect()
+					if !seen[k] {
+						seen[k] = true
+						out = append(out, e)
+					}
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"flatten": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("flatten: want array")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("flatten: want array")
+				}
+				var out []object.Object
+				var walk func(object.Object)
+				walk = func(o object.Object) {
+					if a, ok := o.(*object.Array); ok {
+						for _, e := range a.Elements {
+							walk(e)
+						}
+					} else {
+						out = append(out, o)
+					}
+				}
+				walk(arr)
+				return &object.Array{Elements: out}
+			},
+		},
+		"base64_encode": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("base64_encode: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("base64_encode: want string")
+				}
+				return &object.String{Value: base64.StdEncoding.EncodeToString([]byte(s.Value))}
+			},
+		},
+		"base64_decode": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("base64_decode: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("base64_decode: want string")
+				}
+				b, err := base64.StdEncoding.DecodeString(s.Value)
+				if err != nil {
+					return newError("base64_decode: %s", err.Error())
+				}
+				return &object.String{Value: string(b)}
+			},
+		},
+		"md5": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("md5: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("md5: want string")
+				}
+				sum := md5.Sum([]byte(s.Value))
+				return &object.String{Value: hex.EncodeToString(sum[:])}
+			},
+		},
+		"sha256": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("sha256: want string")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("sha256: want string")
+				}
+				sum := sha256.Sum256([]byte(s.Value))
+				return &object.String{Value: hex.EncodeToString(sum[:])}
+			},
+		},
+		"basename": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("basename: want path")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("basename: want string")
+				}
+				return &object.String{Value: filepath.Base(s.Value)}
+			},
+		},
+		"dirname": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("dirname: want path")
+				}
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("dirname: want string")
+				}
+				return &object.String{Value: filepath.Dir(s.Value)}
+			},
+		},
+		"join_path": {
+			Fn: func(args ...object.Object) object.Object {
+				parts := make([]string, 0, len(args))
+				for _, a := range args {
+					if s, ok := a.(*object.String); ok {
+						parts = append(parts, s.Value)
+					} else {
+						parts = append(parts, a.Inspect())
+					}
+				}
+				return &object.String{Value: filepath.Join(parts...)}
+			},
+		},
+		"http_serve": {
+			Fn: func(args ...object.Object) object.Object {
+				// http_serve(port, body_or_handler_message)
+				if len(args) < 1 {
+					return newError("http_serve: want port [, body]")
+				}
+				port := args[0].Inspect()
+				if i, ok := args[0].(*object.Integer); ok {
+					port = fmt.Sprintf("%d", i.Value)
+				} else if s, ok := args[0].(*object.String); ok {
+					port = s.Value
+				}
+				body := "Navescript OK"
+				if len(args) >= 2 {
+					if s, ok := args[1].(*object.String); ok {
+						body = s.Value
+					} else {
+						body = args[1].Inspect()
+					}
+				}
+				addr := ":" + port
+				mux := http.NewServeMux()
+				mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+					w.Header().Set("X-Powered-By", "Navescript")
+					fmt.Fprint(w, body)
+				})
+				// non-blocking start
+				go func() {
+					_ = http.ListenAndServe(addr, mux)
+				}()
+				time.Sleep(50 * time.Millisecond)
+				return &object.String{Value: "listening on " + addr}
+			},
+		},
+		"copy": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("copy: want 1 value")
+				}
+				return deepCopy(args[0])
+			},
+		},
+		"abs": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("abs: want 1 number")
+				}
+				switch v := args[0].(type) {
+				case *object.Integer:
+					if v.Value < 0 {
+						return &object.Integer{Value: -v.Value}
+					}
+					return v
+				case *object.Float:
+					if v.Value < 0 {
+						return &object.Float{Value: -v.Value}
+					}
+					return v
+				default:
+					return newError("abs: want number")
+				}
+			},
+		},
+		"sqlite_open": {
+			Fn: func(args ...object.Object) object.Object {
+				path := ":memory:"
+				if len(args) >= 1 {
+					if s, ok := args[0].(*object.String); ok {
+						path = s.Value
+					}
+				}
+				id, err := sqlite.Open(path)
+				if err != nil {
+					return newError("sqlite_open: %s", err.Error())
+				}
+				return &object.String{Value: id}
+			},
+		},
+		"sqlite_exec": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("sqlite_exec: want handle, query")
+				}
+				id, ok := args[0].(*object.String)
+				if !ok {
+					return newError("sqlite_exec: handle must be string")
+				}
+				query, ok := args[1].(*object.String)
+				if !ok {
+					return newError("sqlite_exec: query must be string")
+				}
+				n, err := sqlite.Exec(id.Value, query.Value)
+				if err != nil {
+					return newError("sqlite_exec: %s", err.Error())
+				}
+				return &object.Integer{Value: n}
+			},
+		},
+		"sqlite_query": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("sqlite_query: want handle, query")
+				}
+				id, ok := args[0].(*object.String)
+				if !ok {
+					return newError("sqlite_query: handle must be string")
+				}
+				query, ok := args[1].(*object.String)
+				if !ok {
+					return newError("sqlite_query: query must be string")
+				}
+				rows, cols, err := sqlite.Query(id.Value, query.Value)
+				if err != nil {
+					return newError("sqlite_query: %s", err.Error())
+				}
+				// Return array of hashes
+				var result []object.Object
+				for _, row := range rows {
+					pairs := make(map[object.HashKey]object.HashPair)
+					for i, col := range cols {
+						k := &object.String{Value: col}
+						v := &object.String{Value: row[i]}
+						pairs[k.HashKey()] = object.HashPair{Key: k, Value: v}
+					}
+					result = append(result, &object.Hash{Pairs: pairs})
+				}
+				return &object.Array{Elements: result}
+			},
+		},
+		"sqlite_close": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 1 {
+					return newError("sqlite_close: want handle")
+				}
+				id, ok := args[0].(*object.String)
+				if !ok {
+					return newError("sqlite_close: handle must be string")
+				}
+				if err := sqlite.Close(id.Value); err != nil {
+					return newError("sqlite_close: %s", err.Error())
+				}
+				return TRUE
+			},
+		},
+		"http_post": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) < 2 {
+					return newError("http_post: want url, body [, content_type]")
+				}
+				url, ok := args[0].(*object.String)
+				if !ok {
+					return newError("http_post: url must be string")
+				}
+				body := args[1].Inspect()
 				if s, ok := args[1].(*object.String); ok {
 					body = s.Value
-				} else {
-					body = args[1].Inspect()
 				}
-			}
-			addr := ":" + port
-			mux := http.NewServeMux()
-			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-				w.Header().Set("X-Powered-By", "Navescript")
-				fmt.Fprint(w, body)
-			})
-			// non-blocking start
-			go func() {
-				_ = http.ListenAndServe(addr, mux)
-			}()
-			time.Sleep(50 * time.Millisecond)
-			return &object.String{Value: "listening on " + addr}
-		},
-	},
-	"copy": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("copy: want 1 value")
-			}
-			return deepCopy(args[0])
-		},
-	},
-"abs": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("abs: want 1 number")
-			}
-			switch v := args[0].(type) {
-			case *object.Integer:
-				if v.Value < 0 {
-					return &object.Integer{Value: -v.Value}
+				ct := "application/json"
+				if len(args) >= 3 {
+					if s, ok := args[2].(*object.String); ok {
+						ct = s.Value
+					}
 				}
-				return v
-			case *object.Float:
-				if v.Value < 0 {
-					return &object.Float{Value: -v.Value}
+				client := &http.Client{Timeout: 15 * time.Second}
+				resp, err := client.Post(url.Value, ct, strings.NewReader(body))
+				if err != nil {
+					return newError("http_post: %s", err.Error())
 				}
-				return v
-			default:
-				return newError("abs: want number")
-			}
-		},
-	},
-"sqlite_open": {
-		Fn: func(args ...object.Object) object.Object {
-			path := ":memory:"
-			if len(args) >= 1 {
-				if s, ok := args[0].(*object.String); ok {
-					path = s.Value
+				defer resp.Body.Close()
+				data, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return newError("http_post: %s", err.Error())
 				}
-			}
-			id, err := sqlite.Open(path)
-			if err != nil {
-				return newError("sqlite_open: %s", err.Error())
-			}
-			return &object.String{Value: id}
+				return &object.String{Value: string(data)}
+			},
 		},
-	},
-	"sqlite_exec": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("sqlite_exec: want handle, query")
-			}
-			id, ok := args[0].(*object.String)
-			if !ok {
-				return newError("sqlite_exec: handle must be string")
-			}
-			query, ok := args[1].(*object.String)
-			if !ok {
-				return newError("sqlite_exec: query must be string")
-			}
-			n, err := sqlite.Exec(id.Value, query.Value)
-			if err != nil {
-				return newError("sqlite_exec: %s", err.Error())
-			}
-			return &object.Integer{Value: n}
-		},
-	},
-	"sqlite_query": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 2 {
-				return newError("sqlite_query: want handle, query")
-			}
-			id, ok := args[0].(*object.String)
-			if !ok {
-				return newError("sqlite_query: handle must be string")
-			}
-			query, ok := args[1].(*object.String)
-			if !ok {
-				return newError("sqlite_query: query must be string")
-			}
-			rows, cols, err := sqlite.Query(id.Value, query.Value)
-			if err != nil {
-				return newError("sqlite_query: %s", err.Error())
-			}
-			// Return array of hashes
-			var result []object.Object
-			for _, row := range rows {
-				pairs := make(map[object.HashKey]object.HashPair)
-				for i, col := range cols {
-					k := &object.String{Value: col}
-					v := &object.String{Value: row[i]}
-					pairs[k.HashKey()] = object.HashPair{Key: k, Value: v}
-				}
-				result = append(result, &object.Hash{Pairs: pairs})
-			}
-			return &object.Array{Elements: result}
-		},
-	},
-	"sqlite_close": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) != 1 {
-				return newError("sqlite_close: want handle")
-			}
-			id, ok := args[0].(*object.String)
-			if !ok {
-				return newError("sqlite_close: handle must be string")
-			}
-			if err := sqlite.Close(id.Value); err != nil {
-				return newError("sqlite_close: %s", err.Error())
-			}
-			return TRUE
-		},
-	},
-	"http_post": {
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) < 2 {
-				return newError("http_post: want url, body [, content_type]")
-			}
-			url, ok := args[0].(*object.String)
-			if !ok {
-				return newError("http_post: url must be string")
-			}
-			body := args[1].Inspect()
-			if s, ok := args[1].(*object.String); ok {
-				body = s.Value
-			}
-			ct := "application/json"
-			if len(args) >= 3 {
-				if s, ok := args[2].(*object.String); ok {
-					ct = s.Value
-				}
-			}
-			client := &http.Client{Timeout: 15 * time.Second}
-			resp, err := client.Post(url.Value, ct, strings.NewReader(body))
-			if err != nil {
-				return newError("http_post: %s", err.Error())
-			}
-			defer resp.Body.Close()
-			data, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return newError("http_post: %s", err.Error())
-			}
-			return &object.String{Value: string(data)}
-		},
-	},
-}
+	}
 }
 
 func ensureBuiltins() {
@@ -4908,5 +5810,3 @@ func ensureBuiltins() {
 		initBuiltins()
 	}
 }
-
-

@@ -25,38 +25,38 @@ const (
 )
 
 var precedences = map[lexer.TokenType]int{
-	lexer.ASSIGN:   ASSIGN_PREC,
-	lexer.PLUS_ASSIGN: ASSIGN_PREC,
-	lexer.MINUS_ASSIGN: ASSIGN_PREC,
-	lexer.STAR_ASSIGN: ASSIGN_PREC,
-	lexer.SLASH_ASSIGN: ASSIGN_PREC,
-	lexer.QUESTION:  ASSIGN_PREC,
-	lexer.NULL_COAL: ASSIGN_PREC,
-	lexer.PIPE:      PIPELINE,
-	lexer.IN:        EQUALS,
-	lexer.EQ:       EQUALS,
-	lexer.NOT_EQ:   EQUALS,
-	lexer.ELLIPSIS: RANGE,
-	lexer.LT:       LESSGREATER,
-	lexer.GT:       LESSGREATER,
-	lexer.LTE:      LESSGREATER,
-	lexer.GTE:      LESSGREATER,
-	lexer.PLUS:     SUM,
-	lexer.MINUS:    SUM,
-	lexer.SLASH:    PRODUCT,
-	lexer.ASTERISK: PRODUCT,
-	lexer.MOD:      PRODUCT,
-	lexer.BIT_AND:  PRODUCT,
-	lexer.BIT_OR:   PRODUCT,
-	lexer.BIT_XOR:  PRODUCT,
-	lexer.SHL:      PRODUCT,
-	lexer.SHR:      PRODUCT,
-	lexer.LPAREN:   CALL,
-	lexer.LBRACKET: INDEX,
-	lexer.DOT:     INDEX,
+	lexer.ASSIGN:         ASSIGN_PREC,
+	lexer.PLUS_ASSIGN:    ASSIGN_PREC,
+	lexer.MINUS_ASSIGN:   ASSIGN_PREC,
+	lexer.STAR_ASSIGN:    ASSIGN_PREC,
+	lexer.SLASH_ASSIGN:   ASSIGN_PREC,
+	lexer.QUESTION:       ASSIGN_PREC,
+	lexer.NULL_COAL:      ASSIGN_PREC,
+	lexer.PIPE:           PIPELINE,
+	lexer.IN:             EQUALS,
+	lexer.EQ:             EQUALS,
+	lexer.NOT_EQ:         EQUALS,
+	lexer.ELLIPSIS:       RANGE,
+	lexer.LT:             LESSGREATER,
+	lexer.GT:             LESSGREATER,
+	lexer.LTE:            LESSGREATER,
+	lexer.GTE:            LESSGREATER,
+	lexer.PLUS:           SUM,
+	lexer.MINUS:          SUM,
+	lexer.SLASH:          PRODUCT,
+	lexer.ASTERISK:       PRODUCT,
+	lexer.MOD:            PRODUCT,
+	lexer.BIT_AND:        PRODUCT,
+	lexer.BIT_OR:         PRODUCT,
+	lexer.BIT_XOR:        PRODUCT,
+	lexer.SHL:            PRODUCT,
+	lexer.SHR:            PRODUCT,
+	lexer.LPAREN:         CALL,
+	lexer.LBRACKET:       INDEX,
+	lexer.DOT:            INDEX,
 	lexer.OPTIONAL_CHAIN: INDEX,
-	lexer.AND:      EQUALS,
-	lexer.OR:       EQUALS,
+	lexer.AND:            EQUALS,
+	lexer.OR:             EQUALS,
 }
 
 type (
@@ -196,6 +196,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseDecoratorStatement()
 	case lexer.ENUM:
 		return p.parseEnumStatement()
+	case lexer.RECORD:
+		return p.parseRecordStatement()
 	case lexer.DEFER:
 		return p.parseDeferStatement()
 	case lexer.THROW:
@@ -471,8 +473,38 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 }
 
 func (p *Parser) parseGroupedExpression() ast.Expression {
+	// Wave 3: tuple literals. () is the empty tuple; (e,) is a 1-tuple;
+	// (a, b, ...) is a tuple. (x) stays a plain grouped expression.
+	// This is non-breaking: `(` expr `,` `)` never parsed before.
+	tok := p.curToken
+	if p.peekTokenIs(lexer.RPAREN) {
+		p.nextToken() // consume )
+		return &ast.TupleLiteral{Token: tok, Elements: []ast.Expression{}}
+	}
 	p.nextToken()
 	exp := p.parseExpression(LOWEST)
+	if exp == nil {
+		return nil
+	}
+	if p.peekTokenIs(lexer.COMMA) {
+		elements := []ast.Expression{exp}
+		for p.peekTokenIs(lexer.COMMA) {
+			p.nextToken() // consume comma
+			if p.peekTokenIs(lexer.RPAREN) {
+				break // trailing comma: (1,)
+			}
+			p.nextToken()
+			e := p.parseExpression(LOWEST)
+			if e == nil {
+				return nil
+			}
+			elements = append(elements, e)
+		}
+		if !p.expectPeek(lexer.RPAREN) {
+			return nil
+		}
+		return &ast.TupleLiteral{Token: tok, Elements: elements}
+	}
 	if !p.expectPeek(lexer.RPAREN) {
 		return nil
 	}
@@ -581,9 +613,6 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	exp.Arguments = p.parseCallArguments()
 	return exp
 }
-
-
-
 
 func (p *Parser) parseCompoundAssign(left ast.Expression) ast.Expression {
 	ident, ok := left.(*ast.Identifier)
@@ -798,9 +827,6 @@ func (p *Parser) parseCStyleFor(tok lexer.Token, alreadyConsumed bool) *ast.ForS
 	stmt.OrElse = p.parseLoopElse()
 	return stmt
 }
-
-
-
 
 func (p *Parser) parseYieldStatement() *ast.YieldStatement {
 	stmt := &ast.YieldStatement{Token: p.curToken}
@@ -1095,7 +1121,6 @@ func (p *Parser) parseHashLiteral() ast.Expression {
 	}
 	return hash
 }
-
 
 func (p *Parser) parseCallArguments() []ast.Expression {
 	args := []ast.Expression{}
@@ -1576,6 +1601,51 @@ func (p *Parser) parseEnumStatement() *ast.EnumStatement {
 	return stmt
 }
 
+// parseRecordStatement: record Point(x, y) — wave 3.
+func (p *Parser) parseRecordStatement() ast.Statement {
+	stmt := &ast.RecordStatement{Token: p.curToken}
+	if !p.expectPeek(lexer.IDENT) {
+		return nil
+	}
+	stmt.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+	if !p.expectPeek(lexer.LPAREN) {
+		return nil
+	}
+	stmt.Fields = []*ast.Identifier{}
+	seen := map[string]bool{}
+	addField := func() bool {
+		if !p.curTokenIs(lexer.IDENT) {
+			p.peekError(lexer.IDENT)
+			return false
+		}
+		name := p.curToken.Literal
+		if seen[name] {
+			p.errors = append(p.errors, fmt.Sprintf("duplicate field %q in record %s", name, stmt.Name.Value))
+			return false
+		}
+		seen[name] = true
+		stmt.Fields = append(stmt.Fields, &ast.Identifier{Token: p.curToken, Value: name})
+		return true
+	}
+	if !p.peekTokenIs(lexer.RPAREN) {
+		p.nextToken()
+		if !addField() {
+			return nil
+		}
+		for p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			if !addField() {
+				return nil
+			}
+		}
+	}
+	if !p.expectPeek(lexer.RPAREN) {
+		return nil
+	}
+	return stmt
+}
+
 func (p *Parser) parseDeferStatement() *ast.DeferStatement {
 	stmt := &ast.DeferStatement{Token: p.curToken}
 	p.nextToken()
@@ -1585,8 +1655,8 @@ func (p *Parser) parseDeferStatement() *ast.DeferStatement {
 		arg := p.parseExpression(LOWEST)
 		// desugar to call of builtin print via identifier
 		stmt.Call = &ast.CallExpression{
-			Token:    stmt.Token,
-			Function: &ast.Identifier{Token: stmt.Token, Value: "print"},
+			Token:     stmt.Token,
+			Function:  &ast.Identifier{Token: stmt.Token, Value: "print"},
 			Arguments: []ast.Expression{arg},
 		}
 	} else {

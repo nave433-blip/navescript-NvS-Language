@@ -112,12 +112,12 @@ func Generic(lang, code string) string {
 }
 
 var (
-	nvsKeywords     = []string{"fn", "let", "const", "if", "else", "return", "while", "for", "import", "print", "null", "true", "false", "break", "continue", "in", "class", "new", "this", "extends", "try", "catch", "throw", "match", "case", "default", "yield", "switch", "and", "or"}
-	pythonKeywords = []string{"def", "return", "if", "elif", "else", "for", "while", "import", "from", "class", "True", "False", "None", "and", "or", "not", "in", "print", "with", "as", "try", "except", "raise", "yield", "lambda"}
-	jsKeywords     = []string{"function", "return", "if", "else", "for", "while", "const", "let", "var", "class", "true", "false", "null", "undefined", "new", "this", "import", "export", "async", "await", "try", "catch", "throw"}
-	goKeywords     = []string{"func", "return", "if", "else", "for", "range", "package", "import", "var", "const", "type", "struct", "interface", "true", "false", "nil", "go", "defer", "select", "case", "default", "switch", "map"}
-	rustKeywords   = []string{"fn", "let", "mut", "return", "if", "else", "for", "while", "loop", "match", "struct", "enum", "impl", "trait", "true", "false", "pub", "use", "mod", "async", "await"}
-	rubyKeywords   = []string{"def", "end", "return", "if", "elsif", "else", "for", "while", "class", "module", "true", "false", "nil", "do", "yield", "begin", "rescue", "raise"}
+	nvsKeywords     = []string{"fn", "let", "const", "if", "else", "return", "while", "for", "import", "print", "null", "true", "false", "break", "continue", "in", "class", "new", "this", "extends", "try", "catch", "throw", "match", "case", "default", "yield", "switch", "and", "or", "record"}
+	pythonKeywords  = []string{"def", "return", "if", "elif", "else", "for", "while", "import", "from", "class", "True", "False", "None", "and", "or", "not", "in", "print", "with", "as", "try", "except", "raise", "yield", "lambda"}
+	jsKeywords      = []string{"function", "return", "if", "else", "for", "while", "const", "let", "var", "class", "true", "false", "null", "undefined", "new", "this", "import", "export", "async", "await", "try", "catch", "throw"}
+	goKeywords      = []string{"func", "return", "if", "else", "for", "range", "package", "import", "var", "const", "type", "struct", "interface", "true", "false", "nil", "go", "defer", "select", "case", "default", "switch", "map"}
+	rustKeywords    = []string{"fn", "let", "mut", "return", "if", "else", "for", "while", "loop", "match", "struct", "enum", "impl", "trait", "true", "false", "pub", "use", "mod", "async", "await"}
+	rubyKeywords    = []string{"def", "end", "return", "if", "elsif", "else", "for", "while", "class", "module", "true", "false", "nil", "do", "yield", "begin", "rescue", "raise"}
 	cFamilyKeywords = []string{"int", "return", "if", "else", "for", "while", "class", "public", "private", "static", "void", "true", "false", "null", "new", "this", "include", "define", "struct", "typedef"}
 )
 

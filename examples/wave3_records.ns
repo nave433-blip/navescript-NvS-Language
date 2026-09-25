@@ -1,0 +1,67 @@
+// wave3_records.ns — Wave 3: records / named-tuples (Python namedtuple, C# records)
+record Point(x, y)
+
+// positional construction
+let p = Point(1, 2)
+print p          // Point(x=1, y=2)
+print p.x        // 1
+print p.y        // 2
+print p[0]       // 1 (records are tuple-like: positional index works)
+
+// named-argument construction (wave-2 syntax composes naturally)
+let q = Point(y: 20, x: 10)
+print q          // Point(x=10, y=20)
+
+// mixed positional + named
+let r = Point(5, y: 6)
+print r          // Point(x=5, y=6)
+
+// value equality: field-by-field
+print p == Point(1, 2)   // true
+print p == q             // false
+print p != q             // true
+record Other(x, y)
+print p == Other(1, 2)   // false — different record types never equal
+
+// field access through optional chaining and deep paths
+print p?.x               // 1
+print deep_get({"p": p}, "p.y")  // 2
+
+// records destructure with the wave-1 `let {x, y}` form...
+let {x, y} = Point(3, 4)
+print x + y              // 7
+// ...and positionally like tuples
+let [a, b] = Point(3, 4)
+print a * b              // 12
+
+// iteration yields field values in field order
+let s = 0
+for (v in Point(1, 2)) {
+  s = s + v
+}
+print s                  // 3
+
+// records are immutable: field assignment is a loud runtime error
+try {
+  p.x = 99
+} catch (e) {
+  print e                // cannot assign to field of immutable record: Point.x
+}
+try {
+  Point(1)
+} catch (e) {
+  print e                // record Point missing value for field: y
+}
+try {
+  Point(z: 1, x: 1, y: 2)
+} catch (e) {
+  print e                // record Point has no field: z
+}
+try {
+  p.zzz
+} catch (e) {
+  print e                // record Point has no field: zzz
+}
+
+print type(p)            // RECORD
+print "RECORDS OK"

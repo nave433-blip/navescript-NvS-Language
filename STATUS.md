@@ -50,3 +50,18 @@ nvs run examples/wave2_named_args.ns
 nvs run examples/wave2_partial_curry_compose.ns
 nvs run examples/wave2_chains.ns
 ```
+
+### Wave 3 — data robbery (in progress)
+- [x] Tuples `(1, 2)`, `(x,)`, `()` — immutable; `(x)` stays grouping; index/slice/`in`/`len`/for-in; value `==`; `tuple(arr)`; destructurable; all mutations are loud runtime errors
+- [x] Records `record Point(x, y)` — immutable struct types; `Point(1, 2)` / `Point(x: 1, y: 2)`; `.x` access; field-by-field `==`; `Point(x=1, y=2)` printing; `let {x, y}` destructuring; field assignment is a runtime error
+- [x] `freeze(obj)` deep-freezes arrays/hashes in place; `is_frozen(x)`; `thaw(x)` deep mutable copy (tuple→array, record→hash); every mutation path (`push`/`pop`/`sort`/`reverse`/`delete`/`set_add`/`set_remove`, index/member assign, `deep_set`) refuses frozen values with a named error
+- [x] `deep_get(obj, "a.b.0.c")` / `deep_get(obj, "a.b", default)`; `deep_set(obj, "a.b.c", v)` creates intermediate hashes lodash-style, works through existing array indices (no sparse auto-vivification), returns the root
+- [x] Set/map builtins: `set_union`/`set_intersect`/`set_diff`/`set_len`/`set_to_array`/`set_remove`; `len()` handles sets, tuples, records; `map_merge` (later-wins), `map_pick`/`map_omit`, `invert`
+
+```bash
+nvs run examples/wave3_tuples.ns
+nvs run examples/wave3_records.ns
+nvs run examples/wave3_freeze.ns
+nvs run examples/wave3_deep.ns
+nvs run examples/wave3_setmap.ns
+```

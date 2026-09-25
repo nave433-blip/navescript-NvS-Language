@@ -340,9 +340,9 @@ func (ae *AssignExpression) String() string {
 // init and post may be nil
 type ForStatement struct {
 	Token     lexer.Token
-	Init      Statement   // let x = 0  or  x = 0  or expression statement
+	Init      Statement // let x = 0  or  x = 0  or expression statement
 	Condition Expression
-	Post      Expression  // typically assignment or call
+	Post      Expression // typically assignment or call
 	Body      *BlockStatement
 	OrElse    *BlockStatement // optional else: runs only if the loop didn't break
 	Label     string          // optional loop label for break/continue
@@ -463,10 +463,10 @@ func (ia *IndexAssignExpression) String() string {
 
 // ClassStatement: class Name { methods... }  or  class Name extends Parent { ... }
 type ClassStatement struct {
-	Token      lexer.Token
-	Name       *Identifier
-	Parent     *Identifier // optional
-	Methods    []*ClassMethod
+	Token   lexer.Token
+	Name    *Identifier
+	Parent  *Identifier // optional
+	Methods []*ClassMethod
 }
 
 type ClassMethod struct {
@@ -617,9 +617,9 @@ func (ys *YieldStatement) String() string {
 // @decorator
 // fn name() { }
 type DecoratorStatement struct {
-	Token      lexer.Token
-	Decorator  *Identifier
-	Function   Statement // LetStatement binding a function
+	Token     lexer.Token
+	Decorator *Identifier
+	Function  Statement // LetStatement binding a function
 }
 
 func (ds *DecoratorStatement) statementNode()       {}
@@ -665,17 +665,56 @@ func (nl *NullLiteral) expressionNode()      {}
 func (nl *NullLiteral) TokenLiteral() string { return nl.Token.Literal }
 func (nl *NullLiteral) String() string       { return "null" }
 
-
 // EnumStatement: enum Color { Red, Green, Blue }
 type EnumStatement struct {
-	Token  lexer.Token
-	Name   *Identifier
+	Token   lexer.Token
+	Name    *Identifier
 	Members []*Identifier
 }
 
 func (es *EnumStatement) statementNode()       {}
 func (es *EnumStatement) TokenLiteral() string { return es.Token.Literal }
 func (es *EnumStatement) String() string       { return "enum " + es.Name.String() }
+
+// TupleLiteral: (1, 2), (x,), () — wave 3. (x) stays a grouped expression.
+type TupleLiteral struct {
+	Token    lexer.Token
+	Elements []Expression
+}
+
+func (tl *TupleLiteral) expressionNode()      {}
+func (tl *TupleLiteral) TokenLiteral() string { return tl.Token.Literal }
+func (tl *TupleLiteral) String() string {
+	var out bytes.Buffer
+	elements := []string{}
+	for _, e := range tl.Elements {
+		elements = append(elements, e.String())
+	}
+	out.WriteString("(")
+	out.WriteString(strings.Join(elements, ", "))
+	if len(tl.Elements) == 1 {
+		out.WriteString(",")
+	}
+	out.WriteString(")")
+	return out.String()
+}
+
+// RecordStatement: record Point(x, y) — wave 3 (Python namedtuple / C# record).
+type RecordStatement struct {
+	Token  lexer.Token
+	Name   *Identifier
+	Fields []*Identifier
+}
+
+func (rs *RecordStatement) statementNode()       {}
+func (rs *RecordStatement) TokenLiteral() string { return rs.Token.Literal }
+func (rs *RecordStatement) String() string {
+	fields := []string{}
+	for _, f := range rs.Fields {
+		fields = append(fields, f.String())
+	}
+	return "record " + rs.Name.String() + "(" + strings.Join(fields, ", ") + ")"
+}
 
 // DeferStatement: defer expr/call  (runs at end of enclosing function/block)
 type DeferStatement struct {
