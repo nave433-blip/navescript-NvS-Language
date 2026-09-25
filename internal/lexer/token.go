@@ -83,6 +83,10 @@ const (
 	CASE     TokenType = "case"
 	DEFAULT  TokenType = "default"
 	YIELD    TokenType = "yield"
+	ENUM     TokenType = "enum"
+	DEFER    TokenType = "defer"
+	FINALLY  TokenType = "finally"
+	ELLIPSIS TokenType = "..."
 )
 
 // Token represents a single lexical token.
@@ -121,6 +125,12 @@ var keywords = map[string]TokenType{
 	"case":    CASE,
 	"default": DEFAULT,
 	"yield":   YIELD,
+	"enum":    ENUM,
+	"defer":   DEFER,
+	"finally": FINALLY,
+	"switch":  MATCH, // alias for match
+	"and":     AND,
+	"or":      OR,
 }
 
 // LookupIdent returns the token type for an identifier (keyword or IDENT).

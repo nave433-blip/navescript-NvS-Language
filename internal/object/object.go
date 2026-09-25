@@ -70,13 +70,21 @@ func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
 
 type Error struct {
 	Message string
+	Line    int
+	Column  int
 }
 
 func (e *Error) Type() ObjectType { return ERROR_OBJ }
-func (e *Error) Inspect() string  { return "ERROR: " + e.Message }
+func (e *Error) Inspect() string {
+	if e.Line > 0 {
+		return fmt.Sprintf("ERROR (line %d): %s", e.Line, e.Message)
+	}
+	return "ERROR: " + e.Message
+}
 
 type Function struct {
 	Parameters []*ast.Identifier
+	Defaults   []ast.Expression // optional default expressions (parallel to Parameters)
 	Body       *ast.BlockStatement
 	Env        *Environment
 }

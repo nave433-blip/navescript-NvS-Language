@@ -230,10 +230,11 @@ func (ws *WhileStatement) String() string {
 	return "while " + ws.Condition.String() + " " + ws.Body.String()
 }
 
-// FunctionLiteral: fn(x, y) { ... }
+// FunctionLiteral: fn(x, y) { ... }  (optional defaults: fn(x, y=1))
 type FunctionLiteral struct {
 	Token      lexer.Token
 	Parameters []*Identifier
+	Defaults   []Expression // parallel to Parameters; nil entry = required
 	Body       *BlockStatement
 }
 
@@ -306,11 +307,12 @@ func (al *ArrayLiteral) String() string {
 	return out.String()
 }
 
-// IndexExpression: arr[0]
+// IndexExpression: arr[0] or slice arr[1:3] (End != nil means slice)
 type IndexExpression struct {
 	Token lexer.Token
 	Left  Expression
-	Index Expression
+	Index Expression // start for slice; single index otherwise
+	End   Expression // if non-nil, this is a slice [Index:End]
 }
 
 func (ie *IndexExpression) expressionNode()      {}
@@ -522,12 +524,13 @@ func (ma *MemberAssignExpression) String() string {
 	return ma.Object.String() + "." + ma.Property.String() + " = " + ma.Value.String()
 }
 
-// TryStatement: try { ... } catch (e) { ... }
+// TryStatement: try { ... } catch (e) { ... } finally { ... }
 type TryStatement struct {
 	Token   lexer.Token
 	Body    *BlockStatement
 	Catch   *BlockStatement
 	CatchId *Identifier // optional binding
+	Finally *BlockStatement
 }
 
 func (ts *TryStatement) statementNode()       {}
@@ -642,3 +645,35 @@ type NullLiteral struct {
 func (nl *NullLiteral) expressionNode()      {}
 func (nl *NullLiteral) TokenLiteral() string { return nl.Token.Literal }
 func (nl *NullLiteral) String() string       { return "null" }
+
+
+// EnumStatement: enum Color { Red, Green, Blue }
+type EnumStatement struct {
+	Token  lexer.Token
+	Name   *Identifier
+	Members []*Identifier
+}
+
+func (es *EnumStatement) statementNode()       {}
+func (es *EnumStatement) TokenLiteral() string { return es.Token.Literal }
+func (es *EnumStatement) String() string       { return "enum " + es.Name.String() }
+
+// DeferStatement: defer expr/call  (runs at end of enclosing function/block)
+type DeferStatement struct {
+	Token lexer.Token
+	Call  Expression
+}
+
+func (ds *DeferStatement) statementNode()       {}
+func (ds *DeferStatement) TokenLiteral() string { return ds.Token.Literal }
+func (ds *DeferStatement) String() string       { return "defer ..." }
+
+// SpreadElement used inside arrays: [...arr]
+type SpreadExpression struct {
+	Token lexer.Token
+	Value Expression
+}
+
+func (se *SpreadExpression) expressionNode()      {}
+func (se *SpreadExpression) TokenLiteral() string { return se.Token.Literal }
+func (se *SpreadExpression) String() string       { return "..." + se.Value.String() }

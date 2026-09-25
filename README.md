@@ -1,4 +1,8 @@
-# Navescript (NvS) 1.3.0
+# NvS (Navescript) 2.0.0
+
+A custom multi-paradigm scripting language.
+
+# Navescript (NvS) 2.0.0
 
 A practical scripting language implemented in Go. Original ambitious claims are implemented **where feasible**, with honest stubs where not.
 
@@ -20,10 +24,12 @@ go run ./cmd/nvs/ version
 | Control | `if/else if/else`, `while`, `for`, `for-in`, `break`/`continue` |
 | Match | `match/case/default` |
 | Errors | `try/catch/throw` |
-| Functions | Closures, generators (`yield`/`next`), decorators (`@name`) |
+| Functions | Closures, defaults, generators (`yield`/`next`), decorators (`@name`) |
+| Keywords | `switch`≡`match`, `and`/`or`≡`&&`/`||` |
 | OOP | `class`, `new`, `this`, `extends` |
 | Modules | `import "file.ns"` |
-| Polyglot | `python()`, `js()`, `ruby()`, `system()` |
+| Interop | `detect_lang`, `to_nvs`/`assemble`, `from_nvs`/`replicate`, `translate`, `run_native`, `applets` |
+| Polyglot | `python`, `js`, `ruby`, `rust`, `golang`, `c`, `cpp`, `java`, `css`, `system`, `plugins()` |
 | Higher-order | `map_fn`, `filter`, `reduce`, `any`, `all`, `find`, `group_by`, `sort_by` |
 | HTTP | `http_get`, `http_post`, `http_serve` |
 | WebSocket | `ws_connect(url, msg)` |

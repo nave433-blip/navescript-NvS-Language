@@ -1,21 +1,18 @@
-# Status — 1.3.0-working
+# Status — NvS 2.1.0
 
-## Fixed
-- [x] `examples/complete_test.ns` rewritten to modern syntax
-- [x] Regression pass: classes, hof, claimed, more3, complete_test
-- [x] Short-circuit `&&` `||` `??`
-- [x] Membership `in`
+Broad language-feature expansion based on established languages.
 
-## Added
-- [x] `log`, `printf`
-- [x] `metrics_text` (Prometheus-like exposition)
-- [x] `ws_connect` WebSocket client
-- [x] Claim status APIs: `ws_info`, `grpc_info`, `otel_info`
+### Newly solidified
+- [x] Hex / binary literals (`0x`, `0b`)
+- [x] Array & string slices `a[i:j]`, `a[i:]`
+- [x] `enum`
+- [x] `try/catch/finally`
+- [x] `defer` (function-scoped LIFO)
+- [x] `typeof` / `isinstance` / `deep_equal`
+- [x] Math: sin/cos/tan/exp/round
+- [x] Sets: set / set_add / set_has
+- [x] `print` as callable (for defer/HOF)
 
-## Verify
 ```bash
-go run ./cmd/nvs/ run examples/complete_test.ns
-go run ./cmd/nvs/ run examples/more3.ns
-go run ./cmd/nvs/ run examples/classes.ns
-go run ./cmd/nvs/ version
+nvs run examples/language_features.ns
 ```

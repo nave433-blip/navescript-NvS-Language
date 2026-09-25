@@ -1,0 +1,32 @@
+// Default parameters
+fn greet(name, greeting="Hello") {
+  return greeting + ", " + name
+}
+print greet("Nave")
+print greet("Nave", "Hi")
+
+fn add(a, b=1, c=2) {
+  return a + b + c
+}
+print add(10)
+print add(10, 5)
+print add(10, 5, 5)
+
+// switch alias for match
+let x = 2
+print switch (x) {
+  case 1 { "one" }
+  case 2 { "two" }
+  default { "other" }
+}
+
+// and / or keywords
+print true and false
+print false or true
+print 1 < 2 and 3 > 1
+
+// Named fn statement still works
+fn double(n) { return n * 2 }
+print double(21)
+
+print "DEFAULTS OK"

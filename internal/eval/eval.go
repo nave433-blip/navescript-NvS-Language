@@ -6,13 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
 	"sort"
 	"io"
 	"net/http"
-	"golang.org/x/net/websocket"
 	"os"
 	"os/exec"
 	"net/url"
@@ -25,8 +25,41 @@ import (
 	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
 	"github.com/navescript/nvs/internal/parser"
+	"github.com/navescript/nvs/internal/fuzzy"
+	"github.com/navescript/nvs/internal/highlight"
+	"github.com/navescript/nvs/internal/polyglot"
 	"github.com/navescript/nvs/internal/sqlite"
 )
+
+// CurrentFile is set by the CLI when running a script (for relative imports).
+var CurrentFile string
+
+// PreludePaths are searched for the auto-loaded NvS prelude.
+var PreludePaths = []string{
+	"stdlib/prelude.ns",
+	"lib/prelude.ns",
+}
+
+// LoadPrelude evaluates the NvS standard prelude into env (best-effort).
+func LoadPrelude(env *object.Environment) {
+	// Always inject language identity builtins first via ensureBuiltins
+	ensureBuiltins()
+	for _, path := range PreludePaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		l := lexer.New(string(data))
+		p := parser.New(l)
+		program := p.ParseProgram()
+		if len(p.Errors()) > 0 {
+			continue
+		}
+		_ = Eval(program, env)
+		return
+	}
+}
+
 
 var (
 	CLIArgs []string
@@ -36,6 +69,20 @@ var (
 	FALSE = &object.Boolean{Value: false}
 	NULL  = &object.Null{}
 )
+
+
+func init() {
+	polyglot.NvSValidator = func(code string) error {
+		l := lexer.New(code)
+		p := parser.New(l)
+		p.ParseProgram()
+		errs := p.Errors()
+		if len(errs) == 0 {
+			return nil
+		}
+		return errors.New(strings.Join(errs, "; "))
+	}
+}
 
 func Eval(node ast.Node, env *object.Environment) object.Object {
 	switch node := node.(type) {
@@ -141,9 +188,12 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.Identifier:
 		return evalIdentifier(node, env)
 	case *ast.FunctionLiteral:
-		params := node.Parameters
-		body := node.Body
-		return &object.Function{Parameters: params, Body: body, Env: env}
+		return &object.Function{
+			Parameters: node.Parameters,
+			Defaults:   node.Defaults,
+			Body:       node.Body,
+			Env:        env,
+		}
 	case *ast.CallExpression:
 		// Method call: obj.method(args)
 		if mem, ok := node.Function.(*ast.MemberExpression); ok {
@@ -181,6 +231,13 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(index) {
 			return index
 		}
+		if node.End != nil {
+			end := Eval(node.End, env)
+			if isError(end) {
+				return end
+			}
+			return evalSliceExpression(left, index, end)
+		}
 		return evalIndexExpression(left, index)
 	case *ast.AssignExpression:
 		return evalAssignExpression(node, env)
@@ -208,6 +265,10 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalMemberExpression(node, env)
 	case *ast.MemberAssignExpression:
 		return evalMemberAssignExpression(node, env)
+	case *ast.EnumStatement:
+		return evalEnumStatement(node, env)
+	case *ast.DeferStatement:
+		return evalDeferStatement(node, env)
 	case *ast.TryStatement:
 		return evalTryStatement(node, env)
 	case *ast.ThrowStatement:
@@ -519,6 +580,127 @@ func isTruthy(obj object.Object) bool {
 	}
 }
 
+func polyglotResult(lang string, r polyglot.Result) object.Object {
+	if r.Err != nil {
+		msg := r.Output
+		if msg != "" {
+			return newError("%s: %s\n%s", lang, r.Err.Error(), msg)
+		}
+		return newError("%s: %s", lang, r.Err.Error())
+	}
+	return &object.String{Value: r.Output}
+}
+
+
+func evalEnumStatement(node *ast.EnumStatement, env *object.Environment) object.Object {
+	pairs := map[object.HashKey]object.HashPair{}
+	for i, m := range node.Members {
+		ks := &object.String{Value: m.Value}
+		vs := &object.Integer{Value: int64(i)}
+		pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+		// also allow Color.Red style via nested hash stored under name
+	}
+	h := &object.Hash{Pairs: pairs}
+	env.Set(node.Name.Value, h)
+	return h
+}
+
+func evalDeferStatement(node *ast.DeferStatement, env *object.Environment) object.Object {
+	// Store deferred expression on env under special key
+	key := "__defer__"
+	var list *object.Array
+	if v, ok := env.Get(key); ok {
+		if a, ok := v.(*object.Array); ok {
+			list = a
+		}
+	}
+	if list == nil {
+		list = &object.Array{Elements: []object.Object{}}
+	}
+	// wrap expression as thunk by evaluating later — store as string form not possible;
+	// evaluate call expression now is wrong. Store a Function that closes over nothing —
+	// simplest: if Call is CallExpression, store args evaluated now and function.
+	// Practical approach: evaluate deferred expression immediately into a zero-arg closure result placeholder.
+	// We store the AST via evaluating to a Function if it's a call: defer f(x) → run f(x) at end.
+	list.Elements = append(list.Elements, &object.String{Value: "defer"})
+	// Real defer: evaluate expression at end — stash as Builtin thunk
+	expr := node.Call
+	thunk := &object.Builtin{Fn: func(args ...object.Object) object.Object {
+		return Eval(expr, env)
+	}}
+	list.Elements[len(list.Elements)-1] = thunk
+	env.Set(key, list)
+	return NULL
+}
+
+func runDefers(env *object.Environment) {
+	key := "__defer__"
+	v, ok := env.Get(key)
+	if !ok {
+		return
+	}
+	arr, ok := v.(*object.Array)
+	if !ok {
+		return
+	}
+	// LIFO
+	for i := len(arr.Elements) - 1; i >= 0; i-- {
+		el := arr.Elements[i]
+		if b, ok := el.(*object.Builtin); ok {
+			b.Fn()
+		}
+	}
+	env.Set(key, &object.Array{Elements: []object.Object{}})
+}
+
+
+
+func deepEqual(a, b object.Object) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Type() != b.Type() {
+		return false
+	}
+	switch av := a.(type) {
+	case *object.Integer:
+		return av.Value == b.(*object.Integer).Value
+	case *object.Float:
+		return av.Value == b.(*object.Float).Value
+	case *object.Boolean:
+		return av.Value == b.(*object.Boolean).Value
+	case *object.String:
+		return av.Value == b.(*object.String).Value
+	case *object.Null:
+		return true
+	case *object.Array:
+		bv := b.(*object.Array)
+		if len(av.Elements) != len(bv.Elements) {
+			return false
+		}
+		for i := range av.Elements {
+			if !deepEqual(av.Elements[i], bv.Elements[i]) {
+				return false
+			}
+		}
+		return true
+	case *object.Hash:
+		bv := b.(*object.Hash)
+		if len(av.Pairs) != len(bv.Pairs) {
+			return false
+		}
+		for k, pa := range av.Pairs {
+			pb, ok := bv.Pairs[k]
+			if !ok || !deepEqual(pa.Value, pb.Value) {
+				return false
+			}
+		}
+		return true
+	default:
+		return a.Inspect() == b.Inspect()
+	}
+}
+
 func newError(format string, a ...interface{}) *object.Error {
 	return &object.Error{Message: fmt.Sprintf(format, a...)}
 }
@@ -548,6 +730,7 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 		extendedEnv := extendFunctionEnv(fn, args)
 		// Collect yields for generator functions
 		values, isGen, result := evalCollectingYields(fn.Body, extendedEnv)
+		runDefers(extendedEnv)
 		if isGen {
 			return &object.Generator{Values: values}
 		}
@@ -590,7 +773,14 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Enviro
 	for paramIdx, param := range fn.Parameters {
 		if paramIdx < len(args) {
 			env.Set(param.Value, args[paramIdx])
+			continue
 		}
+		if paramIdx < len(fn.Defaults) && fn.Defaults[paramIdx] != nil {
+			val := Eval(fn.Defaults[paramIdx], env)
+			env.Set(param.Value, val)
+			continue
+		}
+		env.Set(param.Value, NULL)
 	}
 	return env
 }
@@ -627,6 +817,59 @@ func evalHashIndexExpression(hash, index object.Object) object.Object {
 		return NULL
 	}
 	return pair.Value
+}
+
+func evalSliceExpression(left, startObj, endObj object.Object) object.Object {
+	start, ok1 := startObj.(*object.Integer)
+	end, ok2 := endObj.(*object.Integer)
+	if !ok1 || !ok2 {
+		return newError("slice indices must be integers")
+	}
+	s := start.Value
+	e := end.Value
+	switch left.Type() {
+	case object.ARRAY_OBJ:
+		arr := left.(*object.Array)
+		n := int64(len(arr.Elements))
+		if e < 0 {
+			e = n
+		}
+		if s < 0 {
+			s = 0
+		}
+		if s > n {
+			s = n
+		}
+		if e > n {
+			e = n
+		}
+		if s > e {
+			return &object.Array{Elements: []object.Object{}}
+		}
+		return &object.Array{Elements: arr.Elements[s:e]}
+	case object.STRING_OBJ:
+		str := left.(*object.String)
+		runes := []rune(str.Value)
+		n := int64(len(runes))
+		if e < 0 {
+			e = n
+		}
+		if s < 0 {
+			s = 0
+		}
+		if s > n {
+			s = n
+		}
+		if e > n {
+			e = n
+		}
+		if s > e {
+			return &object.String{Value: ""}
+		}
+		return &object.String{Value: string(runes[s:e])}
+	default:
+		return newError("slice not supported on %s", left.Type())
+	}
 }
 
 func evalArrayIndexExpression(array, index object.Object) object.Object {
@@ -1103,9 +1346,14 @@ func evalTryStatement(node *ast.TryStatement, env *object.Environment) object.Ob
 			if node.CatchId != nil {
 				catchEnv.Set(node.CatchId.Value, &object.String{Value: result.(*object.Error).Message})
 			}
-			return Eval(node.Catch, catchEnv)
+			result = Eval(node.Catch, catchEnv)
 		}
-		return result
+	}
+	if node.Finally != nil {
+		fin := Eval(node.Finally, env)
+		if isError(fin) {
+			return fin
+		}
 	}
 	return result
 }
@@ -1559,6 +1807,725 @@ func initBuiltins() {
 				return newError("ruby: %s\n%s", err.Error(), string(out))
 			}
 			return &object.String{Value: string(out)}
+		},
+	},
+	
+	"rust": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("rust: want 1 argument (code string)")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("rust: code must be string")
+			}
+			return polyglotResult("rust", polyglot.Rust(code.Value))
+		},
+	},
+	"golang": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("golang: want 1 argument (code string)")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("golang: code must be string")
+			}
+			return polyglotResult("golang", polyglot.Go(code.Value))
+		},
+	},
+	"c": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("c: want 1 argument (code string)")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("c: code must be string")
+			}
+			return polyglotResult("c", polyglot.C(code.Value))
+		},
+	},
+	"cpp": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("cpp: want 1 argument (code string)")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("cpp: code must be string")
+			}
+			return polyglotResult("cpp", polyglot.CPP(code.Value))
+		},
+	},
+	"java": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("java: want 1 argument (code string)")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("java: code must be string")
+			}
+			return polyglotResult("java", polyglot.Java(code.Value))
+		},
+	},
+	"css": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("css: want 1 argument (css string)")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("css: code must be string")
+			}
+			return polyglotResult("css", polyglot.CSS(code.Value))
+		},
+	},
+	
+	"detect_lang": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("detect_lang: want code string")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("detect_lang: want string")
+			}
+			b := polyglot.NewBridge()
+			info := b.Identify(code.Value)
+			// return hash-like string map as Hash
+			pairs := map[object.HashKey]object.HashPair{}
+			for k, v := range info {
+				ks := &object.String{Value: k}
+				vs := &object.String{Value: v}
+				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+			}
+			return &object.Hash{Pairs: pairs}
+		},
+	},
+	"run_native": {
+		Fn: func(args ...object.Object) object.Object {
+			// run_native(code) or run_native(lang, code)
+			if len(args) < 1 || len(args) > 2 {
+				return newError("run_native: want code or lang, code")
+			}
+			hint := ""
+			var code string
+			if len(args) == 1 {
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("run_native: code must be string")
+				}
+				code = s.Value
+			} else {
+				h, ok1 := args[0].(*object.String)
+				s, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("run_native: want string lang, string code")
+				}
+				hint = h.Value
+				code = s.Value
+			}
+			r := polyglot.NewBridge().Run(hint, code)
+			return polyglotResult("run_native", r)
+		},
+	},
+	"to_nvs": {
+		Fn: func(args ...object.Object) object.Object {
+			// to_nvs(code) or to_nvs(lang, code)
+			if len(args) < 1 || len(args) > 2 {
+				return newError("to_nvs: want code or lang, code")
+			}
+			hint := ""
+			var code string
+			if len(args) == 1 {
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("to_nvs: want string")
+				}
+				code = s.Value
+			} else {
+				h, ok1 := args[0].(*object.String)
+				s, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("to_nvs: want lang, code strings")
+				}
+				hint, code = h.Value, s.Value
+			}
+			out, err := polyglot.NewBridge().AssembleNvS(hint, code)
+			if err != nil {
+				return newError("to_nvs: %s", err.Error())
+			}
+			return &object.String{Value: out}
+		},
+	},
+	"from_nvs": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("from_nvs: want lang, nvs_code")
+			}
+			lang, ok1 := args[0].(*object.String)
+			code, ok2 := args[1].(*object.String)
+			if !ok1 || !ok2 {
+				return newError("from_nvs: want strings")
+			}
+			out, err := polyglot.NewBridge().ReplicateNative(lang.Value, code.Value)
+			if err != nil {
+				return newError("from_nvs: %s", err.Error())
+			}
+			return &object.String{Value: out}
+		},
+	},
+	
+	"translation_check": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 3 {
+				return newError("translation_check: want from_lang, to_lang, code")
+			}
+			from, ok1 := args[0].(*object.String)
+			to, ok2 := args[1].(*object.String)
+			code, ok3 := args[2].(*object.String)
+			if !ok1 || !ok2 || !ok3 {
+				return newError("translation_check: want strings")
+			}
+			cr := polyglot.TranslateChecked(from.Value, to.Value, code.Value)
+			pairs := map[object.HashKey]object.HashPair{}
+			put := func(k, v string) {
+				ks := &object.String{Value: k}
+				vs := &object.String{Value: v}
+				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+			}
+			if cr.OK {
+				put("ok", "true")
+			} else {
+				put("ok", "false")
+			}
+			put("output", cr.Output)
+			put("from", cr.FromLang)
+			put("to", cr.ToLang)
+			if cr.Corrected {
+				put("corrected", "true")
+				put("correction_id", cr.CorrectionID)
+			} else {
+				put("corrected", "false")
+			}
+			if len(cr.Errors) > 0 {
+				put("errors", strings.Join(cr.Errors, "; "))
+			} else {
+				put("errors", "")
+			}
+			return &object.Hash{Pairs: pairs}
+		},
+	},
+	"correction_add": {
+		Fn: func(args ...object.Object) object.Object {
+			// correction_add(from, to, source, corrected, [note])
+			if len(args) < 4 || len(args) > 5 {
+				return newError("correction_add: want from, to, source, corrected, [note]")
+			}
+			var strs [5]string
+			for i := 0; i < len(args); i++ {
+				s, ok := args[i].(*object.String)
+				if !ok {
+					return newError("correction_add: all args must be strings")
+				}
+				strs[i] = s.Value
+			}
+			c, err := polyglot.AddCorrection(strs[0], strs[1], strs[2], strs[3], "", strs[4])
+			if err != nil {
+				return newError("correction_add: %s", err.Error())
+			}
+			return &object.String{Value: c.ID}
+		},
+	},
+	"correction_pull": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 3 {
+				return newError("correction_pull: want from, to, source")
+			}
+			from, ok1 := args[0].(*object.String)
+			to, ok2 := args[1].(*object.String)
+			src, ok3 := args[2].(*object.String)
+			if !ok1 || !ok2 || !ok3 {
+				return newError("correction_pull: want strings")
+			}
+			c, ok := polyglot.PullCorrection(from.Value, to.Value, src.Value)
+			if !ok {
+				return NULL
+			}
+			return &object.String{Value: c.Corrected}
+		},
+	},
+	"correction_list": {
+		Fn: func(args ...object.Object) object.Object {
+			from, to := "", ""
+			if len(args) >= 1 {
+				if s, ok := args[0].(*object.String); ok {
+					from = s.Value
+				}
+			}
+			if len(args) >= 2 {
+				if s, ok := args[1].(*object.String); ok {
+					to = s.Value
+				}
+			}
+			return &object.String{Value: polyglot.CorrectionsJSON(from, to)}
+		},
+	},
+	"correction_path": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) == 0 {
+				return &object.String{Value: polyglot.CorrectionsPath()}
+			}
+			if len(args) == 1 {
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("correction_path: want string path")
+				}
+				polyglot.SetCorrectionsPath(s.Value)
+				return &object.String{Value: polyglot.CorrectionsPath()}
+			}
+			return newError("correction_path: want 0 or 1 args")
+		},
+	},
+	"translation_learn": {
+		Fn: func(args ...object.Object) object.Object {
+			// translation_learn(from, to, source, fixed, [note])
+			if len(args) < 4 || len(args) > 5 {
+				return newError("translation_learn: want from, to, source, fixed, [note]")
+			}
+			var strs [5]string
+			for i := 0; i < len(args); i++ {
+				s, ok := args[i].(*object.String)
+				if !ok {
+					return newError("translation_learn: want strings")
+				}
+				strs[i] = s.Value
+			}
+			// capture current bad translation for DB
+			bad, _ := polyglot.Translate(strs[0], strs[1], strs[2])
+			c, err := polyglot.AutoLearn(strs[0], strs[1], strs[2], bad, strs[3], strs[4])
+			if err != nil {
+				return newError("translation_learn: %s", err.Error())
+			}
+			return &object.String{Value: c.ID}
+		},
+	},
+	"translate": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 3 {
+				return newError("translate: want from_lang, to_lang, code")
+			}
+			from, ok1 := args[0].(*object.String)
+			to, ok2 := args[1].(*object.String)
+			code, ok3 := args[2].(*object.String)
+			if !ok1 || !ok2 || !ok3 {
+				return newError("translate: want strings")
+			}
+			out, err := polyglot.NewBridge().Translate(from.Value, to.Value, code.Value)
+			if err != nil {
+				return newError("translate: %s", err.Error())
+			}
+			return &object.String{Value: out}
+		},
+	},
+	"assemble": {
+		Fn: func(args ...object.Object) object.Object {
+			// alias of to_nvs — assemble NvS from native
+			if len(args) < 1 || len(args) > 2 {
+				return newError("assemble: want code or lang, code")
+			}
+			hint := ""
+			var code string
+			if len(args) == 1 {
+				s, ok := args[0].(*object.String)
+				if !ok {
+					return newError("assemble: want string")
+				}
+				code = s.Value
+			} else {
+				h, ok1 := args[0].(*object.String)
+				s, ok2 := args[1].(*object.String)
+				if !ok1 || !ok2 {
+					return newError("assemble: want strings")
+				}
+				hint, code = h.Value, s.Value
+			}
+			out, err := polyglot.NewBridge().AssembleNvS(hint, code)
+			if err != nil {
+				return newError("assemble: %s", err.Error())
+			}
+			return &object.String{Value: out}
+		},
+	},
+	"replicate": {
+		Fn: func(args ...object.Object) object.Object {
+			// replicate(lang, nvs_code) → native source
+			if len(args) != 2 {
+				return newError("replicate: want lang, nvs_code")
+			}
+			lang, ok1 := args[0].(*object.String)
+			code, ok2 := args[1].(*object.String)
+			if !ok1 || !ok2 {
+				return newError("replicate: want strings")
+			}
+			out, err := polyglot.NewBridge().ReplicateNative(lang.Value, code.Value)
+			if err != nil {
+				return newError("replicate: %s", err.Error())
+			}
+			return &object.String{Value: out}
+		},
+	},
+	"applet_info": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("applet_info: want language id")
+			}
+			id, ok := args[0].(*object.String)
+			if !ok {
+				return newError("applet_info: want string")
+			}
+			return &object.String{Value: polyglot.DescribeApplet(id.Value)}
+		},
+	},
+	"applets": {
+		Fn: func(args ...object.Object) object.Object {
+			return &object.String{Value: polyglot.CatalogJSON()}
+		},
+	},
+	
+	"highlight": {
+		Fn: func(args ...object.Object) object.Object {
+			// highlight(code) or highlight(code, lang)
+			if len(args) < 1 || len(args) > 2 {
+				return newError("highlight: want code or code, lang")
+			}
+			code, ok := args[0].(*object.String)
+			if !ok {
+				return newError("highlight: code must be string")
+			}
+			lang := "nvs"
+			if len(args) == 2 {
+				if s, ok := args[1].(*object.String); ok {
+					lang = s.Value
+				}
+			}
+			return &object.String{Value: highlight.Generic(lang, code.Value)}
+		},
+	},
+	"highlight_strip": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("highlight_strip: want string")
+			}
+			s, ok := args[0].(*object.String)
+			if !ok {
+				return newError("highlight_strip: want string")
+			}
+			return &object.String{Value: highlight.Strip(s.Value)}
+		},
+	},
+	"fuzzy_score": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("fuzzy_score: want query, candidate")
+			}
+			q, ok1 := args[0].(*object.String)
+			c, ok2 := args[1].(*object.String)
+			if !ok1 || !ok2 {
+				return newError("fuzzy_score: want strings")
+			}
+			return &object.Float{Value: fuzzy.Score(q.Value, c.Value)}
+		},
+	},
+	"fuzzy_match": {
+		Fn: func(args ...object.Object) object.Object {
+			// fuzzy_match(query, candidate, [threshold])
+			if len(args) < 2 || len(args) > 3 {
+				return newError("fuzzy_match: want query, candidate, [threshold]")
+			}
+			q, ok1 := args[0].(*object.String)
+			c, ok2 := args[1].(*object.String)
+			if !ok1 || !ok2 {
+				return newError("fuzzy_match: want strings")
+			}
+			th := 0.3
+			if len(args) == 3 {
+				switch v := args[2].(type) {
+				case *object.Float:
+					th = v.Value
+				case *object.Integer:
+					th = float64(v.Value)
+				}
+			}
+			if fuzzy.Match(q.Value, c.Value, th) {
+				return TRUE
+			}
+			return FALSE
+		},
+	},
+	"fuzzy_find": {
+		Fn: func(args ...object.Object) object.Object {
+			// fuzzy_find(query, array, [threshold], [limit])
+			if len(args) < 2 || len(args) > 4 {
+				return newError("fuzzy_find: want query, array, [threshold], [limit]")
+			}
+			q, ok := args[0].(*object.String)
+			if !ok {
+				return newError("fuzzy_find: query must be string")
+			}
+			arr, ok := args[1].(*object.Array)
+			if !ok {
+				return newError("fuzzy_find: candidates must be array")
+			}
+			var cands []string
+			for _, el := range arr.Elements {
+				if s, ok := el.(*object.String); ok {
+					cands = append(cands, s.Value)
+				} else {
+					cands = append(cands, el.Inspect())
+				}
+			}
+			th := 0.3
+			limit := 10
+			if len(args) >= 3 {
+				switch v := args[2].(type) {
+				case *object.Float:
+					th = v.Value
+				case *object.Integer:
+					th = float64(v.Value)
+				}
+			}
+			if len(args) >= 4 {
+				if n, ok := args[3].(*object.Integer); ok {
+					limit = int(n.Value)
+				}
+			}
+			ranked := fuzzy.Find(q.Value, cands, th, limit)
+			var elements []object.Object
+			for _, r := range ranked {
+				// return array of {value, score} hashes
+				pairs := map[object.HashKey]object.HashPair{}
+				ks := &object.String{Value: "value"}
+				vs := &object.String{Value: r.Value}
+				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+				ks2 := &object.String{Value: "score"}
+				vs2 := &object.Float{Value: r.Score}
+				pairs[ks2.HashKey()] = object.HashPair{Key: ks2, Value: vs2}
+				elements = append(elements, &object.Hash{Pairs: pairs})
+			}
+			return &object.Array{Elements: elements}
+		},
+	},
+	"fuzzy_best": {
+		Fn: func(args ...object.Object) object.Object {
+			// fuzzy_best(query, array, [threshold])
+			if len(args) < 2 || len(args) > 3 {
+				return newError("fuzzy_best: want query, array, [threshold]")
+			}
+			q, ok := args[0].(*object.String)
+			if !ok {
+				return newError("fuzzy_best: query must be string")
+			}
+			arr, ok := args[1].(*object.Array)
+			if !ok {
+				return newError("fuzzy_best: candidates must be array")
+			}
+			var cands []string
+			for _, el := range arr.Elements {
+				if s, ok := el.(*object.String); ok {
+					cands = append(cands, s.Value)
+				} else {
+					cands = append(cands, el.Inspect())
+				}
+			}
+			th := 0.3
+			if len(args) == 3 {
+				switch v := args[2].(type) {
+				case *object.Float:
+					th = v.Value
+				case *object.Integer:
+					th = float64(v.Value)
+				}
+			}
+			best := fuzzy.Best(q.Value, cands, th)
+			if best == "" {
+				return NULL
+			}
+			return &object.String{Value: best}
+		},
+	},
+	
+	"nvs_version": {
+		Fn: func(args ...object.Object) object.Object {
+			return &object.String{Value: "2.1.0"}
+		},
+	},
+	"nvs_language": {
+		Fn: func(args ...object.Object) object.Object {
+			return &object.String{Value: "NvS"}
+		},
+	},
+	"nvs_info": {
+		Fn: func(args ...object.Object) object.Object {
+			pairs := map[object.HashKey]object.HashPair{}
+			put := func(k, v string) {
+				ks := &object.String{Value: k}
+				vs := &object.String{Value: v}
+				pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+			}
+			put("name", "NvS")
+			put("full", "Navescript")
+			put("version", "2.1.0")
+			put("impl", "tree-walker")
+			put("host", "go")
+			return &object.Hash{Pairs: pairs}
+		},
+	},
+	
+	"typeof": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("typeof: want 1 arg")
+			}
+			return &object.String{Value: string(args[0].Type())}
+		},
+	},
+	"isinstance": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("isinstance: want value, type_name")
+			}
+			tn, ok := args[1].(*object.String)
+			if !ok {
+				return newError("isinstance: type name must be string")
+			}
+			return nativeBoolToBooleanObject(string(args[0].Type()) == tn.Value || strings.EqualFold(string(args[0].Type()), tn.Value))
+		},
+	},
+	"deep_equal": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("deep_equal: want 2 args")
+			}
+			return nativeBoolToBooleanObject(deepEqual(args[0], args[1]))
+		},
+	},
+	"sin": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("sin: want 1 arg")
+			}
+			return func() object.Object {
+				v, ok := toFloat(args[0])
+				if !ok { return newError("sin: number required") }
+				return &object.Float{Value: math.Sin(v)}
+			}()
+		},
+	},
+	"cos": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("cos: want 1 arg")
+			}
+			return func() object.Object {
+				v, ok := toFloat(args[0])
+				if !ok { return newError("cos: number required") }
+				return &object.Float{Value: math.Cos(v)}
+			}()
+		},
+	},
+	"tan": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("tan: want 1 arg")
+			}
+			return func() object.Object {
+				v, ok := toFloat(args[0])
+				if !ok { return newError("tan: number required") }
+				return &object.Float{Value: math.Tan(v)}
+			}()
+		},
+	},
+	"exp": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("exp: want 1 arg")
+			}
+			return func() object.Object {
+				v, ok := toFloat(args[0])
+				if !ok { return newError("exp: number required") }
+				return &object.Float{Value: math.Exp(v)}
+			}()
+		},
+	},
+	"round": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("round: want 1 arg")
+			}
+			return func() object.Object {
+				v, ok := toFloat(args[0])
+				if !ok { return newError("round: number required") }
+				return &object.Float{Value: math.Round(v)}
+			}()
+		},
+	},
+	"set": {
+		Fn: func(args ...object.Object) object.Object {
+			pairs := map[object.HashKey]object.HashPair{}
+			for _, a := range args {
+				if h, ok := a.(object.Hashable); ok {
+					pairs[h.HashKey()] = object.HashPair{Key: a, Value: TRUE}
+				} else if arr, ok := a.(*object.Array); ok {
+					for _, el := range arr.Elements {
+						if hh, ok := el.(object.Hashable); ok {
+							pairs[hh.HashKey()] = object.HashPair{Key: el, Value: TRUE}
+						}
+					}
+				}
+			}
+			return &object.Hash{Pairs: pairs}
+		},
+	},
+	"set_has": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("set_has: want set, value")
+			}
+			h, ok := args[0].(*object.Hash)
+			if !ok {
+				return newError("set_has: not a set/hash")
+			}
+			key, ok := args[1].(object.Hashable)
+			if !ok {
+				return FALSE
+			}
+			_, exists := h.Pairs[key.HashKey()]
+			return nativeBoolToBooleanObject(exists)
+		},
+	},
+	"set_add": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("set_add: want set, value")
+			}
+			h, ok := args[0].(*object.Hash)
+			if !ok {
+				return newError("set_add: not a set/hash")
+			}
+			key, ok := args[1].(object.Hashable)
+			if !ok {
+				return newError("set_add: value not hashable")
+			}
+			h.Pairs[key.HashKey()] = object.HashPair{Key: args[1], Value: TRUE}
+			return h
+		},
+	},
+	"plugins": {
+		Fn: func(args ...object.Object) object.Object {
+			return &object.String{Value: polyglot.Available()}
 		},
 	},
 	"next": {
@@ -2912,6 +3879,16 @@ func initBuiltins() {
 			return NULL
 		},
 	},
+	"print": {
+		Fn: func(args ...object.Object) object.Object {
+			parts := []string{}
+			for _, a := range args {
+				parts = append(parts, a.Inspect())
+			}
+			fmt.Println(strings.Join(parts, " "))
+			return NULL
+		},
+	},
 	"printf": {
 		Fn: func(args ...object.Object) object.Object {
 			if len(args) < 1 {
@@ -2945,37 +3922,7 @@ func initBuiltins() {
 	
 	"ws_connect": {
 		Fn: func(args ...object.Object) object.Object {
-			// ws_connect(url, message) -> response string (single request/response style)
-			if len(args) < 1 {
-				return newError("ws_connect: want url [, message]")
-			}
-			urlStr, ok := args[0].(*object.String)
-			if !ok {
-				return newError("ws_connect: url must be string")
-			}
-			msg := ""
-			if len(args) >= 2 {
-				if s, ok := args[1].(*object.String); ok {
-					msg = s.Value
-				} else {
-					msg = args[1].Inspect()
-				}
-			}
-			ws, err := websocket.Dial(urlStr.Value, "", "http://localhost/")
-			if err != nil {
-				return newError("ws_connect: %s", err.Error())
-			}
-			defer ws.Close()
-			if msg != "" {
-				if err := websocket.Message.Send(ws, msg); err != nil {
-					return newError("ws_connect send: %s", err.Error())
-				}
-			}
-			var reply string
-			if err := websocket.Message.Receive(ws, &reply); err != nil {
-				return newError("ws_connect recv: %s", err.Error())
-			}
-			return &object.String{Value: reply}
+			return newError("ws_connect: WebSocket client not linked in this build; use python/js polyglot")
 		},
 	},
 "ws_info": {

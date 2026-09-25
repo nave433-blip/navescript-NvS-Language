@@ -246,8 +246,20 @@ func (l *Lexer) NextToken() Token {
 		tok.Type = RBRACKET
 		tok.Literal = string(l.ch)
 	case '.':
-		tok.Type = DOT
-		tok.Literal = string(l.ch)
+		if l.peekChar() == '.' {
+			l.readChar()
+			if l.peekChar() == '.' {
+				l.readChar()
+				tok.Type = ELLIPSIS
+				tok.Literal = "..."
+			} else {
+				tok.Type = ILLEGAL
+				tok.Literal = ".."
+			}
+		} else {
+			tok.Type = DOT
+			tok.Literal = string(l.ch)
+		}
 	case '@':
 		tok.Type = AT
 		tok.Literal = string(l.ch)
@@ -287,6 +299,17 @@ func (l *Lexer) readNumber() Token {
 	start := l.position
 	line, col := l.line, l.column
 	isFloat := false
+
+	// 0x hex / 0b binary
+	if l.ch == '0' && (l.peekChar() == 'x' || l.peekChar() == 'X' || l.peekChar() == 'b' || l.peekChar() == 'B') {
+		l.readChar() // 0
+		l.readChar() // x or b
+		for isDigit(l.ch) || (l.ch >= 'a' && l.ch <= 'f') || (l.ch >= 'A' && l.ch <= 'F') {
+			l.readChar()
+		}
+		lit := l.input[start:l.position]
+		return Token{Type: INT, Literal: lit, Line: line, Column: col}
+	}
 
 	for isDigit(l.ch) {
 		l.readChar()

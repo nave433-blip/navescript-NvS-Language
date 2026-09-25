@@ -1,0 +1,36 @@
+print "=== catalog ==="
+print applet_info("python")
+print applet_info("rust")
+
+print "=== detect ==="
+let d1 = detect_lang("def hello():\n  print(1)")
+print d1["language"]
+print d1["applet"]
+print d1["confidence"]
+
+let d2 = detect_lang("fmt.Println(\"hi\")")
+print d2["language"]
+
+print "=== assemble (native → NvS) ==="
+print to_nvs("python", "print(42)")
+print assemble("js", "console.log(1+1)")
+
+print "=== replicate (NvS → native) ==="
+print from_nvs("python", "print 42")
+print replicate("js", "print 2")
+
+print "=== translate cross-language ==="
+print translate("python", "js", "print(1)")
+
+print "=== run_native auto-detect ==="
+print run_native("python", "print('py-bridge')")
+print run_native("print('auto?')")
+
+print "=== round-trip style ==="
+let nvs = to_nvs("python", "print(7)")
+print nvs
+let py = from_nvs("python", nvs)
+print py
+print run_native("python", py)
+
+print "INTEROP OK"
