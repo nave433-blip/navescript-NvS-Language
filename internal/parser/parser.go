@@ -1643,6 +1643,9 @@ func (p *Parser) parseRecordStatement() ast.Statement {
 	if !p.expectPeek(lexer.RPAREN) {
 		return nil
 	}
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
 	return stmt
 }
 
