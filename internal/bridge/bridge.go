@@ -114,6 +114,7 @@ func (s *Session) Envelope(obj object.Object, err error) string {
 // It never panics: any malformed input yields an error envelope.
 //
 //	{"eval": "<nvs source>", "id": <any>}          -> {"ok":true,"result":<json>,"id":<id>}
+//	{"exec": "<nvs source>", "id": <any>}          -> {"ok":true,"result":null,"id":<id>}
 //	{"call": "<name>", "args": [...], "id": <any>} -> same envelope (shares Eval's env)
 //	anything else                                  -> {"ok":false,"error":"..."}
 //
@@ -150,6 +151,19 @@ func (s *Session) handleLineInner(line string) string {
 	if dec.More() {
 		return polyglot.EnvelopeJSON(nil, fmt.Errorf("invalid request: trailing data after JSON object"))
 	}
+	if src, ok := req["exec"]; ok {
+		srcStr, ok := src.(string)
+		if !ok {
+			return polyglot.EnvelopeJSON(nil, fmt.Errorf("invalid request: \"exec\" must be a string"))
+		}
+		// Evaluate for side effects (definitions, imports); discard the
+		// value so sources ending in a class/function/enum declaration —
+		// values with no JSON representation — still load cleanly.
+		if _, err := s.Eval(srcStr); err != nil {
+			return s.Envelope(nil, err)
+		}
+		return s.Envelope(nil, nil)
+	}
 	if src, ok := req["eval"]; ok {
 		srcStr, ok := src.(string)
 		if !ok {
@@ -174,5 +188,5 @@ func (s *Session) handleLineInner(line string) string {
 		obj, err := s.Call(nameStr, args)
 		return s.Envelope(obj, err)
 	}
-	return polyglot.EnvelopeJSON(nil, fmt.Errorf("invalid request: want {\"eval\": \"...\"} or {\"call\": \"...\", \"args\": [...]}"))
+	return polyglot.EnvelopeJSON(nil, fmt.Errorf("invalid request: want {\"eval\": \"...\"}, {\"exec\": \"...\"}, or {\"call\": \"...\", \"args\": [...]}"))
 }

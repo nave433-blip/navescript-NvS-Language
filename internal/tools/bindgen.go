@@ -138,7 +138,7 @@ class _NvsBridge:
             bufsize=1,
         )
         self._next_id = 0
-        self._request({"eval": _NVS_SOURCE}, "init")
+        self._request({"exec": _NVS_SOURCE}, "init")
 
     def _request(self, payload, what):
         self._next_id += 1

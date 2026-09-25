@@ -186,3 +186,25 @@ func TestNoSilentNulls(t *testing.T) {
 	// A function VALUE is not JSON-convertible: honest error, not null.
 	mustErr(t, s.HandleLine(`{"eval": "fn f() { } f"}`), "cannot convert NvS FUNCTION to JSON")
 }
+
+func TestExecDiscardsNonJSONValue(t *testing.T) {
+	s := NewSession()
+	// A source ending in a class declaration: eval would fail converting
+	// the CLASS value to JSON, but exec must succeed and return null.
+	src := `fn add(a, b) { a + b }
+class Dog { fn bark() { return "woof" } }`
+	if got := mustOK(t, s.HandleLine(`{"exec": `+quoteJSON(src)+`}`)); got != nil {
+		t.Errorf("exec result = %v, want null", got)
+	}
+	// Definitions from exec are visible to later calls.
+	if got := mustOK(t, s.HandleLine(`{"call": "add", "args": [20, 22]}`)); got != float64(42) {
+		t.Errorf("result = %v, want 42", got)
+	}
+	// exec propagates runtime errors honestly.
+	mustErr(t, s.HandleLine(`{"exec": "1 + "}`), "error")
+}
+
+func quoteJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

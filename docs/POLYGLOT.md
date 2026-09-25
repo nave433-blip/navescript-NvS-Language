@@ -22,7 +22,8 @@ line-by-line.
 ### Requests
 
 ```jsonc
-{"eval": "<nvs source>", "id": <any>}             // run code in the session env
+{"eval": "<nvs source>", "id": <any>}             // run code, return its value
+{"exec": "<nvs source>", "id": <any>}             // run code, discard value (returns null)
 {"call": "<name>", "args": [<json>...], "id": <any>}  // call a function by name
 ```
 
@@ -33,7 +34,11 @@ line-by-line.
 - `call` resolves user-defined functions **and builtins** (`len`, `str`, …).
   Anything else is an error. Arguments are positional only.
 - One session = one persistent interpreter: bindings defined by one
-  `eval` are visible to later requests. Requests are serialized.
+  `eval`/`exec` are visible to later requests. Requests are serialized.
+- `exec` exists for loading modules: a file whose last statement is a
+  `class`, `fn`, or `enum` declaration evaluates to a value with no JSON
+  representation, so `eval` would error — `exec` evaluates for side
+  effects and always returns `null`.
 
 ### Responses
 
