@@ -926,13 +926,22 @@ func (p *Parser) parseConstStatement() ast.Statement {
 
 func (p *Parser) parseMatchExpression() ast.Expression {
 	expr := &ast.MatchExpression{Token: p.curToken}
-	if !p.expectPeek(lexer.LPAREN) {
-		return nil
-	}
-	p.nextToken()
-	expr.Value = p.parseExpression(LOWEST)
-	if !p.expectPeek(lexer.RPAREN) {
-		return nil
+	// Wave 4: the scrutinee parens are optional — `match x { ... }` works
+	// exactly like `match (x) { ... }`. (`match` required `(` before, so no
+	// previously-valid program changes meaning.)
+	if p.peekTokenIs(lexer.LPAREN) {
+		p.nextToken() // (
+		p.nextToken() // first token of scrutinee
+		expr.Value = p.parseExpression(LOWEST)
+		if !p.expectPeek(lexer.RPAREN) {
+			return nil
+		}
+	} else {
+		p.nextToken() // first token of scrutinee
+		expr.Value = p.parseExpression(LOWEST)
+		if expr.Value == nil {
+			return nil
+		}
 	}
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -944,20 +953,33 @@ func (p *Parser) parseMatchExpression() ast.Expression {
 		if p.curTokenIs(lexer.CASE) {
 			p.nextToken()
 			arm := &ast.MatchArm{}
-			arm.Pattern = p.parseExpression(LOWEST)
+			arm.Pattern = p.parseMatchPattern()
+			if arm.Pattern == nil {
+				return nil
+			}
+			// Wave 4: optional guard — `case <pat> if <expr>:`
+			if p.peekTokenIs(lexer.IF) {
+				p.nextToken() // if
+				p.nextToken() // first token of the guard
+				arm.Guard = p.parseExpression(LOWEST)
+				if arm.Guard == nil {
+					return nil
+				}
+			}
 			// optional colon
 			if p.peekTokenIs(lexer.COLON) {
 				p.nextToken()
 			}
-			if !p.expectPeek(lexer.LBRACE) {
-				// single expression arm: case 1: print x
-				// treat rest as expression statement block
+			if p.peekTokenIs(lexer.LBRACE) {
+				p.nextToken()
+				arm.Body = p.parseBlockStatement()
+			} else {
+				// single-statement arm: case 1: "one" / case 1: print x
+				p.nextToken() // move to the first token of the statement
 				stmt := p.parseStatement()
 				arm.Body = &ast.BlockStatement{
 					Statements: []ast.Statement{stmt},
 				}
-			} else {
-				arm.Body = p.parseBlockStatement()
 			}
 			expr.Arms = append(expr.Arms, arm)
 			p.nextToken()
@@ -965,16 +987,66 @@ func (p *Parser) parseMatchExpression() ast.Expression {
 			if p.peekTokenIs(lexer.COLON) {
 				p.nextToken()
 			}
-			if !p.expectPeek(lexer.LBRACE) {
-				return nil
+			if p.peekTokenIs(lexer.LBRACE) {
+				p.nextToken()
+				expr.Default = p.parseBlockStatement()
+			} else {
+				// single-statement default: default: "other"
+				p.nextToken() // move to the first token of the statement
+				stmt := p.parseStatement()
+				expr.Default = &ast.BlockStatement{
+					Statements: []ast.Statement{stmt},
+				}
 			}
-			expr.Default = p.parseBlockStatement()
 			p.nextToken()
 		} else {
 			p.nextToken()
 		}
 	}
 	return expr
+}
+
+// parseMatchPattern parses a single `case` pattern (curToken is its first
+// token). Most patterns are ordinary expressions — the wave-4 evaluator
+// interprets their AST shape as a pattern (identifiers bind, literals test,
+// array/tuple/hash literals destructure, `Name(...)` against a declared
+// record type is a record pattern, anything else is evaluated and compared).
+// The one exception is `{x, y}` / `{k: v}`: not valid hash literals, so they
+// are parsed with the wave-1 hash-pattern parser. Anything that is not
+// wave-1-shaped (e.g. `{x: 1}`, `{"a": b}`, `{...m}`, `{}`) falls back to a
+// plain hash-literal expression with identical meaning to before.
+func (p *Parser) parseMatchPattern() ast.Expression {
+	if p.curTokenIs(lexer.LBRACE) {
+		if pat := p.tryParseHashPattern(); pat != nil {
+			return pat
+		}
+	}
+	return p.parseExpression(LOWEST)
+}
+
+// tryParseHashPattern speculatively parses a wave-1 `{x, y}` / `{k: v}`
+// hash pattern. On any failure the parser state (lexer, tokens, errors) is
+// rewound and nil is returned so the caller can try a hash literal instead.
+func (p *Parser) tryParseHashPattern() ast.Expression {
+	savedLexer := *p.l
+	savedCur, savedPeek := p.curToken, p.peekToken
+	savedErrors := len(p.errors)
+	pat := p.parseHashPattern()
+	if pat == nil {
+		*p.l = savedLexer
+		p.curToken, p.peekToken = savedCur, savedPeek
+		p.errors = p.errors[:savedErrors]
+		return nil
+	}
+	// `{}` keeps its old meaning (empty hash literal compared by value);
+	// only a non-empty `{...}` becomes a destructuring pattern.
+	if hp, ok := pat.(*ast.HashPattern); ok && len(hp.Entries) == 0 {
+		*p.l = savedLexer
+		p.curToken, p.peekToken = savedCur, savedPeek
+		p.errors = p.errors[:savedErrors]
+		return nil
+	}
+	return pat
 }
 
 func (p *Parser) parseClassStatement() *ast.ClassStatement {

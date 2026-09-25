@@ -25,7 +25,7 @@ nvs info
 | Maps | `{k:v}`, keys, membership, `map_merge`, `map_pick`/`map_omit`, `invert` | Python, JS |
 | Sets | `set()`, `set_add`, `set_has`, `set_remove`, `set_union`/`set_intersect`/`set_diff`, `set_len`, `set_to_array` | Python |
 | Control | if/else, while, for, for-in, break/continue | C family |
-| Pattern | `match` / `switch` / case / default | Rust, C# |
+| Pattern | `match` / `switch` / case / default, guards, destructuring patterns, expression form | Rust, C#, Elixir |
 | Errors | try / catch / **finally** / throw | Java, Python |
 | Functions | closures, defaults, generators, decorators | JS, Python |
 | Defer | `defer expr` (LIFO at function exit) | Go |
@@ -83,6 +83,47 @@ Numeric path segments on hashes mean string keys first, then integer keys.
 `set_to_array` and `invert` sort by key rendering so results are deterministic
 (Go map order is random). `record` is now a keyword. `print (a, b)` prints the
 tuple `(a, b)` — previously that was a parse error.
+
+## Wave 4 — pattern-matching robbery (2.2.0-dev)
+
+| Feature | Syntax | Inspired by |
+|---------|--------|-------------|
+| Guards | `case x if x > 0: { ... }`, `case [a, b] if a != b: ...` — a falsy guard falls through to the next arm (never an error); guards see the arm's bindings, and a failed guard leaks nothing | Rust, Haskell |
+| Destructuring patterns | `case [a, b]:`, `case [h, ...t]:`, `case {x, y}:`, `case {k: renamed}:`, `case (a, b):` (tuple), `case Point(x, y):` / `case Point(x: a, y: _)`: (record, positional or named) — refutable: shape mismatch falls through | Rust, Elixir |
+| Expression form | `let r = match (v) { case 1: "one"; default: "other" }` — arm bodies yield their last value; single-statement arms (`case 1: "one"`) and `default: "other"` without braces now parse (previously a parse error); scrutinee parens optional: `match x { ... }` | Rust |
+
+Pattern semantics (deliberate, documented):
+- **Refutable** (Rust-like): `case [a, b]:` against a 3-element array, `case {x}:`
+  against a non-hash or a hash missing `x`, `case Point(a):` against a 2-field
+  record, all fall through to the next arm. This differs from wave-1 `let`
+  destructuring, which binds missing → `null`.
+- A **bare identifier always binds** (`case n:`); `_` is the wildcard and binds
+  nothing. (Previously `case x:` on an undefined name was a runtime error, and
+  `case _:` errored too — both now work as intended. To compare against an
+  existing variable, use a guard: `case [x] if x == LIMIT:`.)
+- Inside patterns, **identifiers bind, literals test**: `case [1, x]:` requires
+  first element `== 1` and binds `x`; `case Point(0, y):` requires field `x == 0`.
+  Any other expression (e.g. `case 1 + 2:`, `case f(x):`) is evaluated once and
+  compared by value, as before.
+- `{...}` keys in patterns are **field names** (like wave-1 destructuring):
+  `case {x: 1}:` tests field `x`; `case {x, y}:` binds both. `{x: 1}` as a
+  *value* still evaluates `x` (unchanged — quote keys in literals: `{"x": 1}`).
+- Bindings live in the arm's scope only: arm bodies and guards run in a fresh
+  enclosed environment, so bindings never leak into the enclosing scope (no
+  example depended on the old leak, which only triggered for already-defined
+  names anyway). Reads/writes of outer variables still work normally.
+- `[a, b]` and `(a, b)` patterns destructure arrays, tuples, and records
+  positionally (wave-1 `let` already treats them interchangeably); `{x, y}`
+  matches hashes and records by field name. Record patterns match by type name
+  and require every field (use `_` to skip).
+- `case x` followed by an `if` now parses the `if` as a **guard**; write
+  `case x: if ...` (with colon) for an if-statement body.
+
+```bash
+nvs run examples/wave4_guards.ns
+nvs run examples/wave4_patterns.ns
+nvs run examples/wave4_expr.ns
+```
 
 ## Wave 2 — functions robbery (2.2.0-dev)
 

@@ -1,0 +1,69 @@
+// Wave 4: match guards (Rust/Haskell style) — `case <pat> if <expr>:`
+// A falsy guard is NOT an error: matching continues at the next arm.
+
+print "== basic guards =="
+fn classify(n) {
+  return match (n) {
+    case x if x > 0: { "positive" }
+    case x if x < 0: { "negative" }
+    default: { "zero" }
+  }
+}
+print classify(10)
+print classify(-3)
+print classify(0)
+
+print "== guards see pattern bindings =="
+fn pair_kind(pair) {
+  return match (pair) {
+    case [a, b] if a == b: { "pair ${a}" }
+    case [a, b] if a + b > 10: { "big sum" }
+    case [a, b]: { "plain" }
+    default: { "not a pair" }
+  }
+}
+print pair_kind([4, 4])
+print pair_kind([7, 8])
+print pair_kind([1, 2])
+print pair_kind([1, 2, 3])
+
+print "== guard on hash pattern =="
+fn describe(m) {
+  return match (m) {
+    case {x} if x > 100: { "big x" }
+    case {x}: { "small x" }
+    default: { "no x" }
+  }
+}
+print describe({"x": 500})
+print describe({"x": 5})
+print describe({"y": 1})
+
+print "== guard on record pattern =="
+record Point(x, y)
+fn quad(p) {
+  return match (p) {
+    case Point(a, b) if a == 0 and b == 0: { "origin" }
+    case Point(a, b) if a >= 0 and b >= 0: { "q1" }
+    case Point(a, b): { "elsewhere" }
+    default: { "not a point" }
+  }
+}
+print quad(Point(0, 0))
+print quad(Point(3, 4))
+print quad(Point(-1, 2))
+print quad([1, 2])
+
+print "== guard fall-through to default =="
+print match (5) { case n if n > 100: { "huge" } default: { "not huge" } }
+
+print "== guards in switch alias =="
+print switch ("admin") {
+  case r if r == "admin": { "root access" }
+  case r if r == "user": { "limited" }
+  default: { "guest" }
+}
+
+print "== failed guard leaks nothing =="
+match (42) { case tmp if tmp < 0: { "neg" } default: { "done" } }
+print "survived"

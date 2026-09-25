@@ -577,7 +577,8 @@ type MatchExpression struct {
 }
 
 type MatchArm struct {
-	Pattern Expression // literal or identifier (wildcard-ish)
+	Pattern Expression // literal, identifier, or destructuring pattern
+	Guard   Expression // optional `if <expr>` guard (wave 4); nil when absent
 	Body    *BlockStatement
 }
 

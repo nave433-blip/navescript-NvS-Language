@@ -65,3 +65,15 @@ nvs run examples/wave3_freeze.ns
 nvs run examples/wave3_deep.ns
 nvs run examples/wave3_setmap.ns
 ```
+
+### Wave 4 — pattern-matching robbery (in progress)
+- [x] Guards: `case x if x > 0:` / `case [a, b] if a != b:` — falsy guard falls through to next arm (not an error); guard sees arm bindings; failed guards leak nothing
+- [x] Destructuring patterns (refutable, Rust-like): `case [a, b]:`, `case [h, ...t]:`, `case {x, y}:`, `case {k: v}:`, `case (a, b):` (tuple), `case Point(x, y):` / `case Point(x: a):` (record, positional/named/literal fields); shape mismatch falls through (differs from wave-1 `let`, which binds missing→null)
+- [x] Expression form: `let r = match (v) { case 1: "one"; default: "other" }` — arm bodies yield last value; single-statement arms/defaults without braces fixed (were a parse error); scrutinee parens optional (`match x { ... }`); `switch` alias keeps working
+- [x] Bare identifier always binds (`case n:`), `_` is a true wildcard (both previously errored on undefined names); bindings scoped to the arm, no leak into enclosing env
+
+```bash
+nvs run examples/wave4_guards.ns
+nvs run examples/wave4_patterns.ns
+nvs run examples/wave4_expr.ns
+```

@@ -2010,27 +2010,382 @@ func evalMatchExpression(node *ast.MatchExpression, env *object.Environment) obj
 		return val
 	}
 	for _, arm := range node.Arms {
-		pat := Eval(arm.Pattern, env)
-		if isError(pat) {
-			return pat
+		// Wave 4: refutable pattern matching. Bindings are collected in a
+		// throwaway map; only a fully successful arm (pattern matched AND
+		// guard passed) commits them, into a fresh enclosed environment, so
+		// a failed guard or a later arm never sees partial bindings and
+		// nothing leaks into the enclosing scope.
+		bindings := map[string]object.Object{}
+		matched, merr := matchArmPattern(arm.Pattern, val, env, bindings)
+		if merr != nil {
+			return merr
 		}
-		if matchEquals(val, pat) {
-			return Eval(arm.Body, env)
+		if !matched {
+			continue
 		}
-		// identifier pattern binds
-		if ident, ok := arm.Pattern.(*ast.Identifier); ok {
-			if ident.Value == "_" {
-				return Eval(arm.Body, env)
+		armEnv := object.NewEnclosedEnvironment(env)
+		for name, bv := range bindings {
+			armEnv.Set(name, bv)
+		}
+		if arm.Guard != nil {
+			g := Eval(arm.Guard, armEnv)
+			if isError(g) {
+				return g
 			}
-			// bind and match any
-			env.Set(ident.Value, val)
-			return Eval(arm.Body, env)
+			if !isTruthy(g) {
+				continue // guard falsy: fall through to the next arm
+			}
 		}
+		return Eval(arm.Body, armEnv)
 	}
 	if node.Default != nil {
 		return Eval(node.Default, env)
 	}
 	return NULL
+}
+
+// matchArmPattern tests val against a case-arm pattern. On success it fills
+// bindings (identifier → value); on failure bindings may hold partial entries
+// and must be discarded by the caller. Returns (matched, err).
+func matchArmPattern(pat ast.Expression, val object.Object, env *object.Environment, bindings map[string]object.Object) (bool, object.Object) {
+	switch p := pat.(type) {
+	case *ast.Identifier:
+		// A bare identifier always binds (Rust-like); `_` is the wildcard.
+		// (Previously an undefined name was a runtime error here; now it
+		// binds. To compare against an existing variable, use a guard.)
+		if p.Value == "_" {
+			return true, nil
+		}
+		bindings[p.Value] = val
+		return true, nil
+	case *ast.ArrayLiteral:
+		return matchSeqPattern(p.Elements, val, env, bindings)
+	case *ast.TupleLiteral:
+		// Tuple patterns destructure exactly like array patterns (wave-1
+		// `let` already treats tuples/arrays/records interchangeably).
+		return matchSeqPattern(p.Elements, val, env, bindings)
+	case *ast.HashPattern:
+		return matchHashPattern(p, val, bindings)
+	case *ast.HashLiteral:
+		return matchHashLiteralPattern(p, val, env, bindings)
+	case *ast.CallExpression:
+		if isRec, matched, err := matchRecordCallPattern(p, val, env, bindings); isRec {
+			return matched, err
+		}
+	}
+	// Anything else (literals, constants, computed expressions) is evaluated
+	// and compared by value, exactly as before.
+	pv := Eval(pat, env)
+	if isError(pv) {
+		return false, pv
+	}
+	return matchEquals(val, pv), nil
+}
+
+// matchValuePattern matches one value against one sub-pattern inside a
+// sequence or hash pattern: identifiers bind, `_` is wildcard, nested
+// array/tuple/hash/record patterns recurse (refutable), and any other
+// expression is evaluated once and compared by value.
+func matchValuePattern(pat ast.Expression, val object.Object, env *object.Environment, bindings map[string]object.Object) (bool, object.Object) {
+	switch p := pat.(type) {
+	case *ast.Identifier:
+		if p.Value == "_" {
+			return true, nil
+		}
+		bindings[p.Value] = val
+		return true, nil
+	case *ast.ArrayLiteral:
+		return matchSeqPattern(p.Elements, val, env, bindings)
+	case *ast.TupleLiteral:
+		return matchSeqPattern(p.Elements, val, env, bindings)
+	case *ast.HashPattern:
+		return matchHashPattern(p, val, bindings)
+	case *ast.HashLiteral:
+		return matchHashLiteralPattern(p, val, env, bindings)
+	case *ast.CallExpression:
+		if isRec, matched, err := matchRecordCallPattern(p, val, env, bindings); isRec {
+			return matched, err
+		}
+	}
+	ev := Eval(pat, env)
+	if isError(ev) {
+		return false, ev
+	}
+	return matchEquals(val, ev), nil
+}
+
+// matchSeqPattern matches array/tuple/record values positionally against
+// [p0, p1, ...] element patterns. Length must be exact, unless the pattern
+// ends in `...rest`, which binds the remainder (possibly empty). Anything
+// that is not an array, tuple, or record does not match (falls through).
+func matchSeqPattern(elems []ast.Expression, val object.Object, env *object.Environment, bindings map[string]object.Object) (bool, object.Object) {
+	var items []object.Object
+	switch v := val.(type) {
+	case *object.Array:
+		items = v.Elements
+	case *object.Tuple:
+		items = v.Elements
+	case *object.Record:
+		items = v.Values
+	default:
+		return false, nil
+	}
+	restName := ""
+	fixed := elems
+	if n := len(elems); n > 0 {
+		if sp, ok := elems[n-1].(*ast.SpreadExpression); ok {
+			ident, ok := sp.Value.(*ast.Identifier)
+			if !ok {
+				return false, newError("rest pattern ... must bind an identifier")
+			}
+			restName = ident.Value
+			fixed = elems[:n-1]
+		}
+	}
+	for _, e := range fixed {
+		if _, ok := e.(*ast.SpreadExpression); ok {
+			return false, newError("rest ...rest must be last in array pattern")
+		}
+	}
+	if restName == "" {
+		if len(items) != len(fixed) {
+			return false, nil
+		}
+	} else if len(items) < len(fixed) {
+		return false, nil
+	}
+	for i, e := range fixed {
+		ok, err := matchValuePattern(e, items[i], env, bindings)
+		if err != nil || !ok {
+			return ok, err
+		}
+	}
+	if restName != "" && restName != "_" {
+		rest := make([]object.Object, len(items)-len(fixed))
+		copy(rest, items[len(fixed):])
+		bindings[restName] = &object.Array{Elements: rest}
+	}
+	return true, nil
+}
+
+// lookupMatchField reads a named field from a hash or record for pattern
+// matching. Integer keys only apply to hashes.
+func lookupMatchField(val object.Object, name string) (object.Object, bool) {
+	switch v := val.(type) {
+	case *object.Hash:
+		key := &object.String{Value: name}
+		if pair, ok := v.Pairs[key.HashKey()]; ok {
+			return pair.Value, true
+		}
+		return nil, false
+	case *object.Record:
+		return v.Field(name)
+	}
+	return nil, false
+}
+
+// matchHashPattern matches the wave-1 `{x, y}` / `{k: renamed}` pattern
+// shape. Unlike wave-1 `let` destructuring (missing → null), match patterns
+// are refutable: a missing key, or a value that is not a hash/record, falls
+// through to the next arm.
+func matchHashPattern(pat *ast.HashPattern, val object.Object, bindings map[string]object.Object) (bool, object.Object) {
+	for _, e := range pat.Entries {
+		fv, ok := lookupMatchField(val, e.Key.Value)
+		if !ok {
+			return false, nil
+		}
+		if e.Value.Value == "_" {
+			continue
+		}
+		bindings[e.Value.Value] = fv
+	}
+	return true, nil
+}
+
+// matchHashLiteralPattern interprets a `{k: v, ...}` literal in pattern
+// position: string/integer keys look the value up (missing key or non
+// hash/record value falls through); identifier values bind, `_` is wildcard,
+// nested patterns recurse, anything else is evaluated and compared by value.
+// Entries are visited in sorted key order so duplicate keys bind
+// deterministically. Hash literals with spreads or computed keys keep the
+// legacy meaning: the whole literal is evaluated and compared by value.
+func matchHashLiteralPattern(hl *ast.HashLiteral, val object.Object, env *object.Environment, bindings map[string]object.Object) (bool, object.Object) {
+	if len(hl.Spreads) > 0 {
+		return matchLegacyPattern(hl, val, env)
+	}
+	type entry struct {
+		skey   string
+		ikey   int64
+		isInt  bool
+		valPat ast.Expression
+	}
+	entries := []entry{}
+	for k, v := range hl.Pairs {
+		var e entry
+		switch t := k.(type) {
+		case *ast.Identifier:
+			e.skey = t.Value
+		case *ast.StringLiteral:
+			e.skey = t.Value
+		case *ast.IntegerLiteral:
+			e.ikey, e.isInt = t.Value, true
+		default:
+			return matchLegacyPattern(hl, val, env)
+		}
+		e.valPat = v
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].isInt != entries[j].isInt {
+			return !entries[i].isInt
+		}
+		if entries[i].isInt {
+			return entries[i].ikey < entries[j].ikey
+		}
+		return entries[i].skey < entries[j].skey
+	})
+	for _, e := range entries {
+		var fv object.Object
+		var found bool
+		if e.isInt {
+			if h, ok := val.(*object.Hash); ok {
+				key := &object.Integer{Value: e.ikey}
+				if pair, ok := h.Pairs[key.HashKey()]; ok {
+					fv, found = pair.Value, true
+				}
+			}
+		} else {
+			fv, found = lookupMatchField(val, e.skey)
+		}
+		if !found {
+			return false, nil
+		}
+		ok, err := matchValuePattern(e.valPat, fv, env, bindings)
+		if err != nil || !ok {
+			return ok, err
+		}
+	}
+	return true, nil
+}
+
+// matchRecordCallPattern recognizes `Point(x, y)` / `Point(x: a)` in pattern
+// position when Point names a declared record type and every argument is a
+// binding identifier (or a literal value test, e.g. `Point(0, y)`).
+// The value must be a record of that type with exactly
+// the declared field count (use `_` for ignored fields); otherwise the arm
+// does not match. Anything else shaped like a call keeps the legacy meaning:
+// it is evaluated and the result compared by value.
+// Returns (isRecordPattern, matched, err).
+func matchRecordCallPattern(call *ast.CallExpression, val object.Object, env *object.Environment, bindings map[string]object.Object) (bool, bool, object.Object) {
+	name, ok := call.Function.(*ast.Identifier)
+	if !ok {
+		return false, false, nil
+	}
+	defObj, ok := env.Get(name.Value)
+	if !ok {
+		return false, false, nil
+	}
+	def, ok := defObj.(*object.RecordDef)
+	if !ok {
+		return false, false, nil
+	}
+	type fieldBind struct {
+		field string
+		bind  string // "" means `_` (no binding)
+		lit   ast.Expression // non-nil: literal value test instead of binding
+	}
+	var fbs []fieldBind
+	seen := map[string]bool{}
+	bindField := func(field, bind string, lit ast.Expression) object.Object {
+		if seen[field] {
+			return newError("duplicate binding for field %s in record pattern", field)
+		}
+		seen[field] = true
+		fbs = append(fbs, fieldBind{field, bind, lit})
+		return nil
+	}
+	// literalOK reports whether e is a value-testable literal in a pattern.
+	literalOK := func(e ast.Expression) bool {
+		switch e.(type) {
+		case *ast.IntegerLiteral, *ast.FloatLiteral, *ast.StringLiteral, *ast.Boolean, *ast.NullLiteral:
+			return true
+		}
+		return false
+	}
+	for i, a := range call.Arguments {
+		switch arg := a.(type) {
+		case *ast.Identifier:
+			if i >= len(def.Fields) {
+				return true, false, nil // arity mismatch: fall through
+			}
+			if err := bindField(def.Fields[i], arg.Value, nil); err != nil {
+				return true, false, err
+			}
+		case *ast.NamedArgument:
+			idx, ok := def.FieldIndex(arg.Name.Value)
+			if !ok {
+				return true, false, newError("record %s has no field: %s", def.Name, arg.Name.Value)
+			}
+			_ = idx
+			if vident, ok := arg.Value.(*ast.Identifier); ok {
+				if err := bindField(arg.Name.Value, vident.Value, nil); err != nil {
+					return true, false, err
+				}
+			} else if literalOK(arg.Value) {
+				if err := bindField(arg.Name.Value, "", arg.Value); err != nil {
+					return true, false, err
+				}
+			} else {
+				return false, false, nil // not a pattern shape: legacy path
+			}
+		default:
+			if literalOK(a) {
+				if i >= len(def.Fields) {
+					return true, false, nil // arity mismatch: fall through
+				}
+				if err := bindField(def.Fields[i], "", a); err != nil {
+					return true, false, err
+				}
+				continue
+			}
+			return false, false, nil // not a pattern shape: legacy path
+		}
+	}
+	if len(fbs) != len(def.Fields) {
+		return true, false, nil // partial record pattern: fall through
+	}
+	rec, ok := val.(*object.Record)
+	if !ok || rec.Def.Name != def.Name {
+		return true, false, nil
+	}
+	for _, fb := range fbs {
+		fv, _ := rec.Field(fb.field)
+		if fb.lit != nil {
+			lv := Eval(fb.lit, env)
+			if isError(lv) {
+				return true, false, lv
+			}
+			if !matchEquals(fv, lv) {
+				return true, false, nil
+			}
+			continue
+		}
+		if fb.bind == "_" || fb.bind == "" {
+			continue
+		}
+		bindings[fb.bind] = fv
+	}
+	return true, true, nil
+}
+
+// matchLegacyPattern evaluates a pattern as an ordinary expression and
+// compares it to the scrutinee by value (the pre-wave-4 meaning).
+func matchLegacyPattern(pat ast.Expression, val object.Object, env *object.Environment) (bool, object.Object) {
+	pv := Eval(pat, env)
+	if isError(pv) {
+		return false, pv
+	}
+	return matchEquals(val, pv), nil
 }
 
 func matchEquals(a, b object.Object) bool {

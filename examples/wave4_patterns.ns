@@ -1,0 +1,59 @@
+// Wave 4: destructuring patterns in match (Rust/Elixir style).
+// Patterns are REFUTABLE: a shape mismatch falls through to the next arm
+// (unlike wave-1 `let` destructuring, which binds missing -> null).
+
+print "== array patterns =="
+print match ([1, 2]) { case [a, b]: { a + b } default: { "?" } }
+print match ([1, 2, 3]) { case [a, b]: { "two" } case [a, b, c]: { "three" } default: { "?" } }
+print match ([1]) { case [a, b]: { "two" } default: { "fallthrough (length)" } }
+print match ("nope") { case [a, b]: { "two" } default: { "fallthrough (not a seq)" } }
+
+print "== rest patterns =="
+print match ([1, 2, 3, 4]) { case [h, ...t]: { "h=${h} t=${t}" } default: { "?" } }
+print match ([9]) { case [h, ...t]: { "h=${h} t=${t}" } default: { "?" } }
+
+print "== wildcard and literals inside patterns =="
+print match ([1, 99]) { case [_, b]: { b } default: { 0 } }
+print match ([1, 7]) { case [1, x]: { "first-is-1 x=${x}" } default: { "no" } }
+print match ([2, 7]) { case [1, x]: { "first-is-1" } default: { "first-is-not-1" } }
+
+print "== tuple patterns =="
+print match ((10, 20)) { case (a, b): { a * b } default: { "?" } }
+print match ((1, 2, 3)) { case (a, b): { "two" } default: { "fallthrough" } }
+
+print "== hash patterns =="
+print match ({"x": 1, "y": 2}) { case {x, y}: { x + y } default: { 0 } }
+print match ({"k": 42}) { case {k: renamed}: { renamed } default: { 0 } }
+print match ({"y": 1}) { case {x}: { "has x" } default: { "fallthrough (missing key)" } }
+print match (42) { case {x}: { "has x" } default: { "fallthrough (not a hash)" } }
+print match ({"x": 1}) { case {"x": 1}: { "literal hash still matches" } default: { "no" } }
+
+print "== record patterns =="
+record Point(x, y)
+record Circle(r)
+let p = Point(3, 4)
+print match (p) { case Point(a, b): { a + b } default: { "?" } }
+print match (p) { case Point(a): { "one" } default: { "fallthrough (arity)" } }
+print match (p) { case Circle(r): { "circle" } default: { "fallthrough (type)" } }
+print match ([3, 4]) { case Point(a, b): { "point" } default: { "fallthrough (not a record)" } }
+print match (p) { case Point(x: px, y: _): { "px=${px}" } default: { "?" } }
+// non-pattern call: evaluated and compared (legacy meaning)
+print match (p) { case Point(3, 4): { "equal record" } default: { "?" } }
+
+print "== nested patterns =="
+print match ([1, [2, 3]]) { case [a, [b, c]]: { a + b + c } default: { 0 } }
+print match ({"pt": [7, 8]}) { case {"pt": [u, v]}: { u * v } default: { 0 } }
+print match ([Point(1, 2), Point(3, 4)]) {
+  case [Point(a, b), Point(c, d)]: { a + b + c + d }
+  default: { 0 }
+}
+
+print "== bare identifier and wildcard =="
+print match (7) { case n: { n * 2 } }
+print match (7) { case 1: { "one" } case _: { "wild" } }
+
+print "== literals unchanged =="
+print match (1) { case 1: { "one" } default: { "?" } }
+print match ("s") { case "s": { "str" } default: { "?" } }
+print match (null) { case null: { "nil" } default: { "?" } }
+print match (true) { case false: { "F" } case true: { "T" } }
