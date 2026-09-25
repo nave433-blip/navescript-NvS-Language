@@ -237,3 +237,37 @@ python3 examples/wave10_ctypes.py ./libnvs.so
 nvs transpile --to=js examples/wave10_transpile_demo.ns | node
 GOOS=js GOARCH=wasm go build -o nvs.wasm ./cmd/nvs/
 ```
+
+### Reconciliation — 2.2–2.9 track ports (2026-09-25)
+
+Ported the genuinely working pieces of the diverged 2.2–2.9 track onto the
+tree-walking interpreter (which remains the primary engine), in
+`/tmp/nvs-reconcile` on branch `reconcile/robbery-onto-latest`:
+
+- [x] **2.2.0**: low-level quantum API (`qubit`, `qzero`, `qgate`,
+      `qmeasure`, `qprob`, `qtensor`, `qnormalize`, `qinner`),
+      `physics_const`, `self_eval`, physics/Greek globals
+      (`internal/quantum`, `internal/eval/port29.go`, 8 Go tests,
+      `examples/port29_quantum_lowlevel.ns`).
+- [x] **2.9.0**: Nave workflow runner (`internal/nave`, `nvs nave`,
+      direct `.nave` execution, 6 Go tests, `examples/nave/hello.nave`
+      now answers 42 via honest `native_op` arithmetic;
+      `nasm_exec`/`component_call` remain explicit stubs).
+- [x] **2.8.0**: experimental bytecode compiler + stack VM
+      (`internal/bytecode`, `nvs bc [--disasm]`, 5 Go tests; loud errors
+      outside the documented subset).
+- [x] **2.3–2.5**: NvS-written self-hosting subset (`stdlib/selfhost/`:
+      `mini_eval.ns`, `emit_go.ns`, `bootstrap.ns`, `math_mini.ns`;
+      `examples/selfhost_demo.ns`; emitted Go verified to compile/run).
+- [x] Interpreter fixes: `and`/`or` precedence (new `ANDOR` level),
+      string `<`/`>`/`<=`/`>=`, `continue`-signal leak in `while`/`for`
+      (3 regression tests in `internal/eval/reconcile_test.go`).
+- [x] Deliberately excluded: malformed legacy `internal/vm`, incomplete
+      `bindings/go`, cobra-based `nvm` (nothing working to port).
+
+```bash
+nvs run examples/port29_quantum_lowlevel.ns
+nvs run examples/selfhost_demo.ns
+nvs nave examples/nave/hello.nave
+nvs bc 'print 6 * 7' --disasm
+```

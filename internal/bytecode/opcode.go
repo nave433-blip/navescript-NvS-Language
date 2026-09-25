@@ -24,9 +24,9 @@ const (
 	OpFalse
 	OpNull
 	OpPop
-	OpJump         // operand: absolute IP
+	OpJump // operand: absolute IP
 	OpJumpNotTruthy
-	OpSetGlobal    // operand: global index
+	OpSetGlobal // operand: global index
 	OpGetGlobal
 	OpPrint
 	OpHalt

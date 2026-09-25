@@ -566,6 +566,99 @@ GOOS=js GOARCH=wasm go build -o nvs.wasm ./cmd/nvs/
 Build-only: the binary builds (verified 2026-09-25); executing it in a
 browser/Node WASM runtime has not been tested and is not claimed.
 
+## Reconciliation — 2.2–2.9 track ports
+
+The remote 2.2–2.9 track grew a parallel set of features (low-level quantum
+API, self-hosting subset interpreter/emitter, bytecode VM, Nave workflow
+runner). The genuinely working pieces are ported below onto the
+tree-walking interpreter, which remains the primary execution engine.
+Deliberately excluded: the malformed legacy `internal/vm`, the incomplete
+`bindings/go` (illegal package name), and the cobra-based `nvm` (would add
+an external dependency for no working feature).
+
+### Low-level quantum API (2.2.0)
+
+Alongside the wave-8 circuit API (`qalloc`, `q_h`, …), a lower-level raw
+state-vector API exists. **Both are local CPU simulators** — the wave-8 API
+uses `crypto/rand` for measurement; this one inherits the 2.9 package's
+`math/rand` measurement. States are plain arrays of `[re, im]` pairs.
+
+| Builtin | Meaning |
+|---------|---------|
+| `qzero(n)` | Zero state for n qubits: array of 2^n `[0,0]` pairs with `[1,0]` first. |
+| `qubit(a, b)` | Single-qubit state from amplitudes `a`, `b` (ints/floats). |
+| `qgate(state, matrix, targets...)` | Apply a gate matrix (array of `[re,im]` rows) to target qubit(s). |
+| `qmeasure(state)` | Collapse; returns `{"outcome": bits, "state": new_state}`. |
+| `qprob(state)` | Array of outcome probabilities. |
+| `qtensor(a, b)` | Kronecker product of two states. |
+| `qnormalize(state)` | Normalize; errors on zero vector. |
+| `qinner(a, b)` | Inner product `[re, im]`. |
+| `physics_const(name)` | SI constants: `"hbar"`, `"c"`, `"G"`, `"kB"`, `"e"`, `"me"`, `"mp"`, `"NA"`, `"h"`. |
+| `self_eval(src)` | Evaluate NvS source in the current environment (the 2.3 track's reflective hook). |
+
+Physics/Greek globals are also injected: `pi`, `tau`, `phi`, `hbar`,
+`h_planck`, `c_light`, `G_grav`, `k_B`, `e_charge`, `m_e`, `m_p`, `N_A`,
+plus `π`, `τ`, `φ`, `ℏ`, `α`.
+
+```bash
+nvs run examples/port29_quantum_lowlevel.ns
+```
+
+### Self-hosting subset (2.3–2.5)
+
+`stdlib/selfhost/` contains NvS-written tools for a documented
+**mini-language subset** (integers, `+ - * / %`, comparisons, parentheses,
+`let`/`print`/`if`/`while`):
+
+- `mini_eval.ns` — `mini_eval(src)` interprets the subset (a real
+  tokenizer/parser/evaluator in ~450 lines of NvS, not a stub).
+- `emit_go.ns` — `emit_go_program(src)` emits equivalent Go source
+  (verified: the output compiles and runs under the Go toolchain).
+- `bootstrap.ns`, `math_mini.ns` — supporting modules.
+
+Subset means subset: full NvS (functions-as-values, records, pattern
+matching, concurrency, …) is out of scope and rejected or left as a
+comment, never faked.
+
+```bash
+nvs run examples/selfhost_demo.ns
+```
+
+### Experimental bytecode VM (2.8.0)
+
+`nvs bc <file>` compiles a **small subset** (numeric/string literals,
+arithmetic, comparisons, `let`/`const`, assignment, `if`/`else`, `print`)
+to bytecode and runs it on a real stack VM (`internal/bytecode`).
+`--disasm` prints the opcodes. Anything outside the subset is a loud
+compile error naming the construct. This is an experiment, not a
+replacement for the interpreter.
+
+```bash
+nvs bc 'print 6 * 7'
+nvs bc examples/port29_quantum_lowlevel.ns   # fails honestly: subset only
+```
+
+### Nave workflow runner (2.9.0)
+
+`nvs nave <file.nave` (or `nvs <file>.nave` directly) executes JSON
+workflow documents: `log`, `set`, `answer`, non-interactive `input`,
+`polyglot_eval` (Python/JS), `http_get`, `file_read`/`file_write`, minimal
+`if`/`try`, `assert_eq`, and basic `native_op` arithmetic (`add`, `sub`,
+`mul`, `div`, `eq`). `nasm_exec` and `component_call` are logged as
+explicit stubs, not faked.
+
+```bash
+nvs nave examples/nave/hello.nave
+```
+
+### Interpreter fixes made during reconciliation
+
+- `and`/`or` now bind looser than `==` (new `ANDOR` precedence level):
+  `c == "+" or c == "-"` is `(c == "+") or (c == "-")`.
+- String `<`, `>`, `<=`, `>=` comparisons (lexicographic).
+- A `while`/`for` loop whose final iteration hit `continue` no longer leaks
+  the `Continue` signal object as the loop's value (it yields `NULL`).
+
 ## Not full ports (by design)
 - Static Hindley–Milner type inference
 - Preemptive threading / shared-memory parallelism (the wave-6 model is
