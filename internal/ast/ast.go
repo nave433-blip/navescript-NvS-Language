@@ -697,6 +697,23 @@ func (se *SpreadExpression) expressionNode()      {}
 func (se *SpreadExpression) TokenLiteral() string { return se.Token.Literal }
 func (se *SpreadExpression) String() string       { return "..." + se.Value.String() }
 
+// ---- Wave 2: named arguments ----
+
+// NamedArgument: `name: value` inside a call's argument list.
+// Only produced by parseCallArguments; evaluated to *object.NamedArg and
+// consumed by call application (applyFunctionNamed / applyMethod).
+type NamedArgument struct {
+	Token lexer.Token // the name identifier token
+	Name  *Identifier
+	Value Expression
+}
+
+func (na *NamedArgument) expressionNode()      {}
+func (na *NamedArgument) TokenLiteral() string { return na.Token.Literal }
+func (na *NamedArgument) String() string {
+	return na.Name.String() + ": " + na.Value.String()
+}
+
 // ---- Wave 1: destructuring ----
 
 // ArrayPattern: [a, b, ...rest] — only valid as a let/const pattern.

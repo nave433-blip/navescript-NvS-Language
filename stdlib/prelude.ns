@@ -10,9 +10,10 @@ fn assert(cond, msg) {
 
 fn identity(x) { return x }
 
-fn compose(f, g) {
-  return fn(x) { return f(g(x)) }
-}
+// NOTE (wave 2): compose lives in the interpreter now as a variadic builtin
+// compose(f, g) / compose(f, g, h) -> f(g(h(x))), right-to-left like
+// Haskell's (.). It also accepts partials and curried functions. The old
+// two-arg NvS-level definition was removed so it can't shadow the builtin.
 
 fn range_list(n) {
   let out = []

@@ -1,0 +1,51 @@
+// Wave 2: named arguments — f(x: 1, y: 2), Python/Kotlin/Swift style.
+// `f(x=1)` stays an assignment expression (backward compat); `name:`
+// is the named-argument spelling.
+print "== basic named =="
+fn greet(name, punct = "!") { return "hi " + name + punct }
+print greet(name: "bob")
+print greet(punct: "?", name: "al")
+print greet("zo", punct: ".")
+
+print "== reordered + mixed =="
+fn point(x, y, z = 0) { return [x, y, z] }
+print point(z: 3, x: 1, y: 2)
+print point(1, 2, z: 9)
+print point(1, y: 5)
+
+print "== defaults fill the rest =="
+fn mul(a, b = 10) { return a * b }
+print mul(a: 3)
+print mul(3)
+fn combo(a, b = 2, c = 3) { return a + b + c }
+print combo(a: 1)
+
+print "== methods =="
+class Rect {
+  init(w, h) { this.w = w; this.h = h }
+  area() { return this.w * this.h }
+  scaled(factor) { return this.w * this.h * factor }
+}
+let r = new Rect(w: 3, h: 4)
+print r.area()
+print r.scaled(factor: 2)
+
+print "== named in expressions =="
+fn pick(flag) { return flag ? "yes" : "no" }
+print pick(flag: true)
+let x = 0
+fn ident(v) { return v }
+// `x = 5` is still an assignment expression, not a named arg
+print ident(x = 5)
+print x
+
+print "== errors (caught) =="
+fn req(a, b) { return a + b }
+try { req(a: 1) } catch (e) { print "missing: " + e }
+try { req(a: 1, b: 2, c: 3) } catch (e) { print "unknown: " + e }
+try { req(1, a: 2) } catch (e) { print "dup-pos: " + e }
+try { req(a: 1, a: 2) } catch (e) { print "dup-named: " + e }
+try { req(x: 1, y: 2) } catch (e) { print "unknown2: " + e }
+try { len(x: "abc") } catch (e) { print "builtin: " + e }
+try { r.scaled(factor: 2, bogus: 1) } catch (e) { print "method-unknown: " + e }
+print "done"

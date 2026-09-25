@@ -215,7 +215,8 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if len(args) == 1 && isError(args[0]) {
 			return args[0]
 		}
-		return applyFunction(function, args)
+		// Wave 2: args may contain *object.NamedArg (`name: value`).
+		return applyCallArgs(node, function, args)
 	case *ast.ArrayLiteral:
 		elements := evalExpressions(node.Elements, env)
 		if len(elements) == 1 && isError(elements[0]) {
@@ -289,6 +290,14 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalDestructureLet(node, env)
 	case *ast.SpreadExpression:
 		return newError("spread (...) is only valid in array literals, call arguments, and object literals")
+	case *ast.NamedArgument:
+		// Wave 2: `name: value` in call arguments. Evaluates to a transient
+		// *object.NamedArg consumed by applyCallArgs / applyMethod.
+		val := Eval(node.Value, env)
+		if isError(val) {
+			return val
+		}
+		return &object.NamedArg{Name: node.Name.Value, Value: val}
 	case *ast.OptionalChainExpression:
 		return evalOptionalChain(node, env)
 	case *ast.InterpolatedString:
@@ -805,6 +814,141 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 	}
 }
 
+// ---- Wave 2: named arguments ----
+
+// splitArgs separates evaluated positional arguments from *object.NamedArg
+// values produced by `name: value` call syntax.
+func splitArgs(args []object.Object) ([]object.Object, []*object.NamedArg) {
+	var positional []object.Object
+	var named []*object.NamedArg
+	for _, a := range args {
+		if na, ok := a.(*object.NamedArg); ok {
+			named = append(named, na)
+		} else {
+			positional = append(positional, a)
+		}
+	}
+	return positional, named
+}
+
+// applyCallArgs routes a call whose argument list may contain named
+// arguments. Plain positional calls keep the exact old path (applyFunction).
+func applyCallArgs(node *ast.CallExpression, function object.Object, args []object.Object) object.Object {
+	name := string(function.Type())
+	if ident, ok := node.Function.(*ast.Identifier); ok {
+		name = ident.Value
+	}
+	return applyCallArgsNamed(function, args, name)
+}
+
+// applyCallArgsNamed is applyCallArgs with an explicit display name (used by
+// `?.` chains, which have no CallExpression node).
+func applyCallArgsNamed(function object.Object, args []object.Object, name string) object.Object {
+	positional, named := splitArgs(args)
+	if len(named) == 0 {
+		return applyFunction(function, args)
+	}
+	switch fn := function.(type) {
+	case *object.Function:
+		return applyFunctionNamed(fn, positional, named)
+	case *object.Builtin:
+		// Honest: builtins take fixed positional args; we don't fake
+		// keyword binding for them.
+		return newError("builtin %s does not accept named arguments", name)
+	default:
+		return newError("not a function: %s", function.Type())
+	}
+}
+
+// applyFunctionNamed applies a user function with Python-style binding:
+// positionals fill parameters in order, named args fill by parameter name,
+// defaults fill the rest, and a missing required parameter is an error.
+func applyFunctionNamed(fn *object.Function, positional []object.Object, named []*object.NamedArg) object.Object {
+	extendedEnv := object.NewEnclosedEnvironment(fn.Env)
+	if errObj := bindNamedParams(fn, extendedEnv, positional, named); errObj != nil {
+		return errObj
+	}
+	values, isGen, result := evalCollectingYields(fn.Body, extendedEnv)
+	runDefers(extendedEnv)
+	if isGen {
+		return &object.Generator{Values: values}
+	}
+	return unwrapReturnValue(result)
+}
+
+// bindNamedParams binds positional + named arguments to fn's parameters in
+// env. Unknown parameter names, duplicates (positional + named, or named +
+// named), and missing required parameters are runtime errors. Defaults are
+// evaluated in the call env so they may reference earlier parameters,
+// matching extendFunctionEnv. Returns nil on success.
+func bindNamedParams(fn *object.Function, env *object.Environment, positional []object.Object, named []*object.NamedArg) object.Object {
+	filled := make([]bool, len(fn.Parameters))
+	for i, param := range fn.Parameters {
+		if i < len(positional) {
+			env.Set(param.Value, positional[i])
+			filled[i] = true
+		}
+	}
+	for _, na := range named {
+		idx := -1
+		for i, param := range fn.Parameters {
+			if param.Value == na.Name {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return newError("unknown parameter '%s'", na.Name)
+		}
+		if filled[idx] {
+			return newError("duplicate value for parameter '%s'", na.Name)
+		}
+		env.Set(fn.Parameters[idx].Value, na.Value)
+		filled[idx] = true
+	}
+	for i, param := range fn.Parameters {
+		if filled[i] {
+			continue
+		}
+		if i < len(fn.Defaults) && fn.Defaults[i] != nil {
+			val := Eval(fn.Defaults[i], env)
+			if isError(val) {
+				return val
+			}
+			env.Set(param.Value, val)
+			continue
+		}
+		return newError("missing required argument '%s'", param.Value)
+	}
+	return nil
+}
+
+// isCallableObject reports whether obj can be invoked via applyFunction
+// (user functions and builtins, including partial/curry/compose results).
+func isCallableObject(obj object.Object) bool {
+	switch obj.(type) {
+	case *object.Function, *object.Builtin:
+		return true
+	}
+	return false
+}
+
+// callableLabel gives a short honest label for a callable, used in the
+// Inspect() names of partial/curry/compose results.
+func callableLabel(obj object.Object) string {
+	switch o := obj.(type) {
+	case *object.Builtin:
+		if o.Name != "" {
+			return o.Name
+		}
+		return "builtin"
+	case *object.Function:
+		return "fn"
+	default:
+		return string(obj.Type())
+	}
+}
+
 func evalCollectingYields(body *ast.BlockStatement, env *object.Environment) ([]object.Object, bool, object.Object) {
 	var yields []object.Object
 	var last object.Object = NULL
@@ -1177,7 +1321,12 @@ func evalOptionalChain(node *ast.OptionalChainExpression, env *object.Environmen
 				// Same semantics as obj.method(args): binds `this` for instances.
 				current = evalMethodCall(memberRecv, memberName, args, env)
 			} else {
-				current = applyFunction(current, args)
+				// Wave 2: chain calls accept `name: value` too.
+				name := string(current.Type())
+				if b, ok := current.(*object.Builtin); ok && b.Name != "" {
+					name = b.Name
+				}
+				current = applyCallArgsNamed(current, args, name)
 			}
 			lastWasMember = false
 		default:
@@ -1484,9 +1633,18 @@ func evalMethodCall(obj object.Object, name string, args []object.Object, env *o
 func applyMethod(fn *object.Function, inst *object.Instance, args []object.Object) object.Object {
 	extended := object.NewEnclosedEnvironment(fn.Env)
 	extended.Set("this", inst)
-	for i, param := range fn.Parameters {
-		if i < len(args) {
-			extended.Set(param.Value, args[i])
+	// Wave 2: method calls accept `name: value` arguments too
+	// (obj.m(x: 1), new C(x: 1)).
+	positional, named := splitArgs(args)
+	if len(named) > 0 {
+		if errObj := bindNamedParams(fn, extended, positional, named); errObj != nil {
+			return errObj
+		}
+	} else {
+		for i, param := range fn.Parameters {
+			if i < len(args) {
+				extended.Set(param.Value, args[i])
+			}
 		}
 	}
 	result := Eval(fn.Body, extended)
@@ -3942,6 +4100,105 @@ func initBuiltins() {
 				acc = res
 			}
 			return acc
+		},
+	},
+	// ---- Wave 2: function combinators (JS/Python functools, Haskell) ----
+	"partial": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) < 1 {
+				return newError("partial: want at least 1 argument (a function)")
+			}
+			if !isCallableObject(args[0]) {
+				return newError("partial: first argument must be a function, got %s", args[0].Type())
+			}
+			fn := args[0]
+			bound := append([]object.Object{}, args[1:]...)
+			// Positional-only: bound args are prepended to each later call.
+			// A partial of a partial composes — the inner partial's own
+			// bound args stay leftmost.
+			return &object.Builtin{
+				Name: "partial(" + callableLabel(fn) + ")",
+				Fn: func(more ...object.Object) object.Object {
+					all := make([]object.Object, 0, len(bound)+len(more))
+					all = append(all, bound...)
+					all = append(all, more...)
+					return applyFunction(fn, all)
+				},
+			}
+		},
+	},
+	"curry": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("curry: want exactly 1 argument (a function)")
+			}
+			fn, ok := args[0].(*object.Function)
+			if !ok {
+				// Honest: a built-in's arity is not knowable from the
+				// outside, so we refuse rather than guess.
+				return newError("curry: can only curry user-defined functions, got %s (arity unknown)", args[0].Type())
+			}
+			// Arity = required parameters (total minus defaulted ones).
+			arity := 0
+			for i := range fn.Parameters {
+				if i >= len(fn.Defaults) || fn.Defaults[i] == nil {
+					arity++
+				}
+			}
+			var collect func(collected []object.Object) *object.Builtin
+			collect = func(collected []object.Object) *object.Builtin {
+				return &object.Builtin{
+					Name: "curried(" + callableLabel(fn) + ")",
+					Fn: func(more ...object.Object) object.Object {
+						all := make([]object.Object, 0, len(collected)+len(more))
+						all = append(all, collected...)
+						all = append(all, more...)
+						if len(all) >= arity {
+							// Arity satisfied: apply. Extra args pass
+							// through, matching normal call semantics
+							// (extendFunctionEnv ignores extras).
+							return applyFunction(fn, all)
+						}
+						return collect(all)
+					},
+				}
+			}
+			return collect(nil)
+		},
+	},
+	"compose": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) < 2 {
+				return newError("compose: want at least 2 functions")
+			}
+			for _, a := range args {
+				if !isCallableObject(a) {
+					return newError("compose: all arguments must be functions, got %s", a.Type())
+				}
+			}
+			fns := append([]object.Object{}, args...)
+			labels := make([]string, len(fns))
+			for i, f := range fns {
+				labels[i] = callableLabel(f)
+			}
+			// Right-to-left like Haskell's (.): compose(f, g, h)(x) = f(g(h(x))).
+			// Composes with partials and curried functions — anything callable.
+			return &object.Builtin{
+				Name: "compose(" + strings.Join(labels, ", ") + ")",
+				Fn: func(more ...object.Object) object.Object {
+					result := applyFunction(fns[len(fns)-1], more)
+					if isError(result) {
+						return result
+					}
+					for i := len(fns) - 2; i >= 0; i-- {
+						result = applyFunction(fns[i], []object.Object{result})
+						if isError(result) {
+							return result
+						}
+					}
+					return result
+				},
+			}
 		},
 	},
 	"zip": {

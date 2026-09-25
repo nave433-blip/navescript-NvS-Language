@@ -1105,13 +1105,39 @@ func (p *Parser) parseCallArguments() []ast.Expression {
 		return args
 	}
 
+	// Wave 2: named arguments `name: value` (Python/Kotlin/Swift style).
+	// `f(x=1)` stays an assignment expression (backward compat); `name:`
+	// is free because COLON is not an infix operator, and a ternary
+	// `f(a ? b : c)` consumes its own `:` inside parseTernaryExpression,
+	// so a bare trailing Identifier + COLON is unambiguous.
+	seenNamed := false
 	p.nextToken()
-	args = append(args, p.parseExpression(LOWEST))
-
-	for p.peekTokenIs(lexer.COMMA) {
-		p.nextToken()
-		p.nextToken()
-		args = append(args, p.parseExpression(LOWEST))
+	for {
+		arg := p.parseExpression(LOWEST)
+		if arg == nil {
+			return nil
+		}
+		if ident, ok := arg.(*ast.Identifier); ok && p.peekTokenIs(lexer.COLON) {
+			nameTok := p.curToken
+			p.nextToken() // move to COLON
+			p.nextToken() // move to first token of the value
+			val := p.parseExpression(LOWEST)
+			if val == nil {
+				return nil
+			}
+			arg = &ast.NamedArgument{Token: nameTok, Name: ident, Value: val}
+			seenNamed = true
+		} else if seenNamed {
+			// Python rule: positionals first, then named.
+			p.errors = append(p.errors, "positional argument follows named argument")
+			return nil
+		}
+		args = append(args, arg)
+		if !p.peekTokenIs(lexer.COMMA) {
+			break
+		}
+		p.nextToken() // comma
+		p.nextToken() // next argument
 	}
 
 	if !p.expectPeek(lexer.RPAREN) {

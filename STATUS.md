@@ -37,3 +37,16 @@ nvs run examples/wave1_ranges.ns
 nvs run examples/wave1_for_else.ns
 nvs run examples/wave1_labels.ns
 ```
+
+### Wave 2 — functions robbery (in progress)
+- [x] Named arguments `f(x: 1, y: 2)` — positionals first, then named (parse error otherwise); unknown/duplicate/missing-required are runtime errors; defaults fill the rest; works for plain calls, `obj.m(x: 1)`, `new C(x: 1)`, and `?.` chains; builtins honestly reject named args
+- [x] `partial(f, args...)` — real closure with leading args pre-bound, positional-only; partial-of-partial composes
+- [x] `curry(f)` — collects positional args until required arity (params minus defaulted) is met; refuses builtins/non-functions rather than guessing arity; extras pass through like normal calls
+- [x] `compose(f, g, ...)` — right-to-left `f(g(h(x)))`, variadic; composes with partials/curried functions (supersedes the old 2-arg prelude `compose`, removed from `stdlib/prelude.ns`)
+- [x] `?.` call chains — extended coverage with args and named args (`examples/wave2_chains.ns`)
+
+```bash
+nvs run examples/wave2_named_args.ns
+nvs run examples/wave2_partial_curry_compose.ns
+nvs run examples/wave2_chains.ns
+```

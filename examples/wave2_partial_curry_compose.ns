@@ -1,0 +1,59 @@
+// Wave 2: partial application, curry, compose.
+// partial/curry/compose are positional-only by design.
+print "== partial =="
+fn add(a, b) { return a + b }
+let add5 = partial(add, 5)
+print add5(3)
+print type(add5)
+print add5
+
+print "== partial of partial composes =="
+let add5then2 = partial(add5, 2)
+print add5then2(10)
+let addAll = partial(add, 1, 2)
+print addAll()
+
+print "== partial with methods of builtins =="
+let shout = partial(str, "hi")
+print shout()
+
+print "== curry =="
+let cadd = curry(add)
+print cadd(1)(2)
+print cadd(1, 2)
+fn add3(a, b, c) { return a + b + c }
+let c3 = curry(add3)
+print c3(1)(2)(3)
+print c3(1, 2)(3)
+print c3(1)(2, 3)
+
+print "== curry arity = required params (defaults excluded) =="
+fn mul(a, b = 10) { return a * b }
+let cm = curry(mul)
+print cm(3)
+print cm(3, 4, 999)
+fn z() { return 7 }
+print curry(z)()
+
+print "== curry errors (caught, honest) =="
+try { curry(len) } catch (e) { print "curry-builtin: " + e }
+try { curry(42) } catch (e) { print "curry-nonfn: " + e }
+try { partial(42) } catch (e) { print "partial-nonfn: " + e }
+
+print "== compose (right-to-left, like Haskell .) =="
+fn inc(x) { return x + 1 }
+fn dbl(x) { return x * 2 }
+print compose(inc, dbl)(5)
+print compose(inc, dbl, inc)(5)
+print type(compose(inc, dbl))
+print compose(inc, dbl)
+
+print "== compose with partials and curried fns =="
+let h = compose(add5, cadd(100))
+print h(23)
+print compose(inc, add5)(10)
+try { compose(inc) } catch (e) { print "compose-arity: " + e }
+try { compose(inc, 42) } catch (e) { print "compose-nonfn: " + e }
+fn boom(x) { throw "kaboom" }
+try { compose(inc, boom)(1) } catch (e) { print "compose-err: " + e }
+print "done"

@@ -28,6 +28,7 @@ const (
 	INSTANCE_OBJ     = "INSTANCE"
 	GENERATOR_OBJ    = "GENERATOR"
 	YIELD_OBJ        = "YIELD"
+	NAMED_ARG_OBJ    = "NAMED_ARG"
 )
 
 type Object interface {
@@ -116,10 +117,32 @@ type BuiltinFunction func(args ...Object) Object
 
 type Builtin struct {
 	Fn BuiltinFunction
+	// Name is an optional display label (e.g. "partial(add)"). Inspect()
+	// stays honest: it is still a builtin function object either way.
+	Name string
 }
 
 func (b *Builtin) Type() ObjectType { return BUILTIN_OBJ }
-func (b *Builtin) Inspect() string  { return "builtin function" }
+func (b *Builtin) Inspect() string {
+	if b.Name != "" {
+		return "builtin function " + b.Name
+	}
+	return "builtin function"
+}
+
+// ---- Wave 2: named arguments ----
+
+// NamedArg is the evaluated form of ast.NamedArgument: one `name: value`
+// call argument. It only ever exists transiently inside evaluated argument
+// lists; call application (applyFunctionNamed / applyMethod / applyCallArgs)
+// splits it back out before invoking anything.
+type NamedArg struct {
+	Name  string
+	Value Object
+}
+
+func (na *NamedArg) Type() ObjectType { return NAMED_ARG_OBJ }
+func (na *NamedArg) Inspect() string  { return na.Name + ": " + na.Value.Inspect() }
 
 
 type Array struct {

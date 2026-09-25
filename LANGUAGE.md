@@ -63,6 +63,27 @@ Limitations (honest): destructuring patterns are one level (identifiers + `...re
 `{k: 0, ...m}` an explicit key beats a later spread (spreads apply first, then
 explicit pairs).
 
+## Wave 2 — functions robbery (2.2.0-dev)
+
+| Feature | Syntax | Inspired by |
+|---------|--------|-------------|
+| Named arguments | `f(x: 1, y: 2)` — positionals first, then named; unknown name / duplicate / missing required param are runtime errors; defaults fill the rest | Python, Kotlin, Swift |
+| Partial application | `partial(f, a, b)` → callable with leading args pre-bound; positional-only; partial of a partial composes | JS, Python functools, Haskell |
+| Currying | `curry(f)` → collects positional args one-or-more at a time until required arity is met; arity = params minus defaulted ones | Haskell, OCaml |
+| Composition | `compose(f, g)` → `f(g(x))`; `compose(f, g, h)` → `f(g(h(x)))` — right-to-left; composes with partials and curried fns | Haskell, F# |
+| `?.` call chains | `f?.(x: 1)`, `obj?.m(x: 1)` — named args work in chains too; null still short-circuits with no call | — |
+
+Notes: `f(x=1)` still parses as an *assignment* expression (backward compat) —
+named arguments use `name:` because `:` is free in call args and can't collide
+with the ternary (which consumes its own `:`). Calling a builtin with named
+args is an honest error (`builtin len does not accept named arguments`).
+Class methods don't support default parameter values (pre-existing), so named
+method calls must supply every parameter. `curry` refuses builtins and
+non-functions instead of guessing an arity; extra args at the final curried
+call pass through exactly like a normal call. The old two-arg NvS-level
+`compose` in `stdlib/prelude.ns` was removed — the variadic builtin
+supersedes it.
+
 ## Not full ports (by design)
 - Static Hindley–Milner type inference
 - True OS threads / async runtime
