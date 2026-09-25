@@ -1,0 +1,13 @@
+// Wave 7: env + path utilities.
+// (set_env and args() already existed; env() gained an optional default.)
+set_env("NVS_DEMO", "wave7")
+print env("NVS_DEMO")                       // wave7
+print env("NVS_DEMO", "fallback")           // wave7 (a set var wins)
+print env("NVS_DEFINITELY_UNSET_VAR", "fb") // fb (the default)
+print args()   // [] — try: nvs run examples/wave7_env_path.ns a b c
+
+print extname("archive.tar.gz")  // .gz
+print extname("Makefile")        // (empty string)
+print abs_path(".")              // absolute path of the working directory
+print basename("/tmp/x.ns")      // (pre-existing) x.ns
+print join_path("a", "b", "c")   // (pre-existing) a/b/c

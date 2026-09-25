@@ -1,0 +1,16 @@
+// Wave 7: datetime stdlib.
+// now() (unix seconds) and date([ts[, layout]]) already existed;
+// these fill the gaps.
+print now_iso()                        // UTC RFC3339, e.g. 2026-09-25T13:52:00Z
+print unixtime_ms() > now() * 1000     // true: millis line up with now()'s seconds
+
+let ts = parse_date("2026-01-02T00:00:00Z")
+print ts == 1767312000                        // true: fixed point in time
+print date_add(ts, 1, "days") == parse_date("2026-01-03T00:00:00Z")  // true
+print date_add(0, 2, "weeks") == 1209600       // true
+print date_add(ts, -30, "minutes") == ts - 1800  // true
+print date_format(ts, "2006")                 // 2026 in every timezone (Jan 2 UTC)
+
+// parse_date also takes bare dates (local midnight) and RFC1123:
+print parse_date("2026-03-04") > 0             // true
+// print parse_date("not a date")  // ERROR: unrecognized date format

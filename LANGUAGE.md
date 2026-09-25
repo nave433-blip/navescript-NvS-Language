@@ -38,7 +38,7 @@ nvs info
 | Random | random, rand_int | Python |
 | Regex | regex_match/find/replace | Perl, Python |
 | FS / JSON | read/write, json_*, csv_parse | Node, Python |
-| HTTP | http_get/post/serve | JS |
+| HTTP | http_get/post/serve, http_request | JS |
 | Polyglot | python, js, ruby, rust, go, c, cpp, java, css | FFI |
 | Interop | detect_lang, to_nvs, from_nvs, translate, corrections DB | — |
 | DX | highlight, fuzzy_*, nvs_info | editors / shells |
@@ -275,6 +275,52 @@ Honest edges, documented:
   to completion; `join` returns the generator.
 - `pmap` over an empty array returns `[]` without spawning anything.
 
+## Wave 7 — stdlib robbery (2.2.0-dev)
+
+Baked-in standard library, filling genuine gaps — stdlib-only Go packages,
+no new mandatory dependencies. Everything is additive: no existing builtin
+changed shape (the only edit is `env` gaining an optional default).
+
+| Area | New builtins | Notes |
+|------|--------------|-------|
+| Datetime | `now_iso()`, `unixtime_ms()`, `date_format(ts, layout)`, `parse_date(str)`, `date_add(ts, n, unit)` | `now()` (unix seconds) and `date([ts[, layout]])` already existed. `parse_date` tries RFC3339, `2006-01-02[ 15:04:05]`, RFC1123/822, Kitchen; zoneless layouts use local time, like `date()`. Units: `s`/`m`/`h`/`d`/`w` plus long names (`"days"`, …). |
+| HTTP | `http_request(method, url, opts?)` → `{status, headers, body}` | `http_get`/`http_post` keep their body-string return shape (backward compat). `opts`: `{"headers": {...}, "body": "...", "timeout": seconds}`. Response `headers` maps name → array of values (lossless — HTTP allows repeats). Unknown opts are an error, not silently ignored. |
+| Hashing | `sha1(str)`, `hmac_sha256(key, msg)` | `md5`/`sha256` already existed. **md5/sha1 are fingerprinting hashes, not security primitives** — checksums and cache keys yes, passwords no. |
+| Base64 | `base64url_encode`, `base64url_decode` | Raw URL-safe alphabet, no padding (`+`/`/` → `-`/`_`). `base64_encode`/`decode` already existed; `uuid()` already existed (v4, so no `uuid4()`). |
+| Subprocess | `exec(cmd, args...)` → `{code, stdout, stderr}`, `sh(cmd)` → `{code, stdout, stderr}` | Real OS processes — the caller's responsibility. `exec` takes argv directly (no shell, no glob expansion); `sh` runs through `sh -c`. Non-zero exits are data (`r["code"]`), not NvS errors; only failure to *start* (e.g. command not found) is an error. `system()` already existed but merges stderr into stdout and hides the exit code. |
+| Env/args | `env(name, default)` | 1-arg form unchanged (`""` when unset). `set_env` is process-local. `args()` already returned script argv (`nvs run f.ns a b c` → `["a","b","c"]`). |
+| Path | `extname(path)`, `abs_path(path)` | `basename`/`dirname`/`join_path`/`exists` already existed (`file_exists` was never missing — it's `exists()`). |
+| TOML | `toml_parse(str)` → hash | **Documented subset, not full TOML** — see below. |
+| Compression | `gzip_compress(str)` → str, `gzip_decompress(str)` → str | Go strings are byte-safe, so raw gzip bytes round-trip through NvS strings untouched. |
+
+### `toml_parse` subset (honest, by design)
+
+Supported: `[table]` / `[table.sub]` headers, `key = value`, dotted keys,
+bare + quoted keys, basic strings (with `\b \t \n \f \r \" \\ \uXXXX \UXXXXXXXX`
+escapes), literal strings, ints (decimal, `0x`/`0o`/`0b`, underscores),
+floats, bools, single-line arrays (nested ok, trailing comma ok), `#`
+comments and blank lines. NOT supported — loud parse errors, never silent
+wrong answers: multi-line strings/arrays, inline tables `{k = v}`, datetimes
+(quote them as strings), `[[array-of-tables]]`, `inf`/`nan`. Duplicate keys
+and redefined tables are errors.
+
+### Deliberately not added
+
+- **YAML**: a correct YAML parser is genuinely hard (anchors, aliases,
+  multi-document streams, duplicate-key semantics). We will not ship a lying
+  subset; `toml_parse` covers the config-file use case honestly.
+- **`uuid4()`**: `uuid()` already exists and already returns a v4 UUID.
+- **`file_exists`**: `exists()` already covers it.
+
+```bash
+nvs run examples/wave7_datetime.ns
+nvs run examples/wave7_crypto.ns
+nvs run examples/wave7_subprocess.ns
+nvs run examples/wave7_env_path.ns
+nvs run examples/wave7_toml.ns
+nvs run examples/wave7_gzip.ns
+```
+
 ## Not full ports (by design)
 - Static Hindley–Milner type inference
 - Preemptive threading / shared-memory parallelism (the wave-6 model is
@@ -282,6 +328,8 @@ Honest edges, documented:
   bug, not a feature)
 - Native GPU / USB drivers
 - Full macro system / compiler backend
+- Full YAML parser (`toml_parse` covers configs honestly; YAML's edge cases
+  aren't worth a lying subset)
 
 ## Example
 ```ns

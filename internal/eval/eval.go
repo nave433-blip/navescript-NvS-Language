@@ -4840,14 +4840,26 @@ func initBuiltins() {
 		},
 		"env": {
 			Fn: func(args ...object.Object) object.Object {
-				if len(args) != 1 {
-					return newError("env: want name")
+				if len(args) < 1 || len(args) > 2 {
+					return newError("env: want name [, default]")
 				}
 				name := args[0].Inspect()
 				if s, ok := args[0].(*object.String); ok {
 					name = s.Value
 				}
-				return &object.String{Value: os.Getenv(name)}
+				// Wave 7: optional default when the variable is unset.
+				// (The 1-arg form keeps its historical ""-when-unset behavior.)
+				if val, ok := os.LookupEnv(name); ok {
+					return &object.String{Value: val}
+				}
+				if len(args) == 2 {
+					def, ok := args[1].(*object.String)
+					if !ok {
+						return newError("env: default must be string")
+					}
+					return def
+				}
+				return &object.String{Value: ""}
 			},
 		},
 		"args": {
@@ -6230,6 +6242,9 @@ func initBuiltins() {
 	registerWave5Builtins()
 	// Wave 6: cooperative tasks and channels.
 	registerWave6Builtins()
+	// Wave 7: standard library robbery — datetime, http, crypto, base64,
+	// subprocess, path, toml, compression.
+	registerWave7Builtins()
 }
 
 func ensureBuiltins() {

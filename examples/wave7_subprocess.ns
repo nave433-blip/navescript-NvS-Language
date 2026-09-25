@@ -1,0 +1,16 @@
+// Wave 7: honest subprocesses. exec/sh run REAL OS processes —
+// the caller's responsibility, like any shell.
+let r = exec("echo", "hello")
+print r["code"]     // 0
+print r["stdout"]   // hello (+ newline)
+print r["stderr"]   // (empty)
+
+let s = sh("printf '%s' hello | tr a-z A-Z")
+print s["stdout"]   // HELLO
+print s["code"]     // 0
+
+// Non-zero exits are DATA (r["code"]), not NvS errors:
+print exec("false")["code"]   // 1
+
+// exec() takes argv directly: no shell, so no glob expansion:
+print exec("echo", "*.ns")["stdout"]   // *.ns (literal)

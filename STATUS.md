@@ -114,3 +114,24 @@ nvs run examples/wave6_sleep_yield.ns
 nvs run examples/wave6_join_values.ns
 nvs run examples/wave6_closed_channel.ns
 ```
+
+### Wave 7 — stdlib robbery (in progress)
+- [x] **Additive only**: no existing builtin changed shape; `env` gained an optional default (`env(name, default)` — 1-arg form keeps `""`-when-unset); everything else is new
+- [x] Datetime gaps: `now_iso()` (UTC RFC3339), `unixtime_ms()`, `date_format(ts, layout)`, `parse_date(str)` (RFC3339 / `2006-01-02[ 15:04:05]` / RFC1123/822 / Kitchen; zoneless = local time), `date_add(ts, n, unit)` (`s`/`m`/`h`/`d`/`w` + long names)
+- [x] Fuller HTTP: `http_request(method, url, opts?)` → `{status, headers, body}` (headers name → array of values; unknown opts are errors); `http_get`/`http_post` return shapes untouched
+- [x] Crypto gaps: `sha1`, `hmac_sha256` (md5/sha1 documented as fingerprinting hashes, not security primitives); `base64url_encode`/`base64url_decode` (raw URL-safe, no padding)
+- [x] Honest subprocess: `exec(cmd, args...)` (argv, no shell) and `sh(cmd)` (`sh -c`) → `{code, stdout, stderr}`; non-zero exit is data, only failure-to-start is an error
+- [x] Path gaps: `extname`, `abs_path` (`basename`/`dirname`/`join_path`/`exists` already existed)
+- [x] `toml_parse`: documented pure-Go TOML *subset* (tables, dotted keys, strings/ints/floats/bools/single-line arrays, comments); multi-line strings/arrays, inline tables, datetimes, `[[array-of-tables]]` are loud errors
+- [x] `gzip_compress`/`gzip_decompress`: lossless string round-trip (Go strings are byte-safe)
+- [x] Deliberately skipped: YAML (genuinely hard — no lying subset), `uuid4()` (`uuid()` already v4), `file_exists` (`exists()` already covers it)
+- [x] 44 new Go tests (httptest-backed for HTTP, known vectors for hashes); examples for every offline area
+
+```bash
+nvs run examples/wave7_datetime.ns
+nvs run examples/wave7_crypto.ns
+nvs run examples/wave7_subprocess.ns
+nvs run examples/wave7_env_path.ns
+nvs run examples/wave7_toml.ns
+nvs run examples/wave7_gzip.ns
+```
