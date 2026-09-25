@@ -1,0 +1,24 @@
+import "stdlib/selfhost/mini_eval.ns"
+import "stdlib/selfhost/emit_go.ns"
+
+print "--- mini strings ---"
+print mini_eval("let s = \"hi\" print s")
+
+print "--- while emit ---"
+let src1 = "let i = 0\nlet s = 0\nwhile (i < 5) {\ns = s + i\ni = i + 1\n}\nprint s"
+print mini_eval(src1)
+let g1 = emit_go_program(src1)
+print g1
+write_file("/tmp/nvs_while.go", g1)
+print system("go run /tmp/nvs_while.go")
+
+print "--- fn emit ---"
+let src2 = "fn double(n) {\nreturn n * 2\n}\nprint double(21)"
+// mini still runs this:
+print mini_eval(src2)
+let g2 = emit_go_program(src2)
+print g2
+write_file("/tmp/nvs_fn.go", g2)
+print system("go run /tmp/nvs_fn.go")
+
+print "SELFHOST5 OK"

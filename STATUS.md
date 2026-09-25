@@ -1,13 +1,18 @@
-# Status — NvS 2.6.0
+# Status — NvS 2.7.0
 
-## Self-host stage 4
-- [x] `import "path.ns"` inside mini_eval (shared env/funcs)
-- [x] `stdlib/selfhost/math_mini.ns` sample module
-- [x] `examples/selfhost4.ns` → SELFHOST4 OK
-- [x] Go emit + `go run` of emitted program
-- [x] Python `nvs_mini.py`: maps, for-in, import
+## Self-host stage 5
+- [x] Go emit: **while** loops → `for cond { }`
+- [x] Go emit: **fn** → Go closures + calls
+- [x] mini_eval strings (`"hi"`)
+- [x] `examples/selfhost5.ns` → SELFHOST5 OK (while=10, fn=42)
 
 ```bash
-nvs run examples/selfhost4.ns
-python3 bootstrap/nvs_mini.py 'import "stdlib/selfhost/math_mini.ns" print square(6)'
+nvs run examples/selfhost5.ns
 ```
+
+## Ladder
+| Stage | Capability |
+|-------|------------|
+| 1–4 | mini_eval core + import |
+| **5** | **richer Go emit (while/fn)** |
+| Next | for-in emit; maps in Go emit; bytecode VM sketch |
