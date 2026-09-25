@@ -1,4 +1,4 @@
-// mini_eval.ns — NvS-in-NvS interpreter (subset, stage 2)
+// mini_eval.ns — NvS-in-NvS interpreter (subset, stage 3)
 // Supports: ints/strings, arithmetic, compares, let, print, if/else,
 // while, arrays [...], index [], fn name(args) { ... }, return, calls
 
@@ -25,7 +25,7 @@ fn tokenize(src) {
       while (j < n and (is_alpha(src[j]) or is_digit(src[j]))) { j = j + 1 }
       let word = src[i:j]
       let tt = "IDENT"
-      if (word == "let" or word == "print" or word == "if" or word == "else" or word == "while" or word == "fn" or word == "return" or word == "true" or word == "false" or word == "null") {
+      if (word == "let" or word == "print" or word == "if" or word == "else" or word == "while" or word == "for" or word == "in" or word == "fn" or word == "return" or word == "true" or word == "false" or word == "null") {
         tt = "KW"
       }
       tokens = push(tokens, {"t": tt, "v": word})
@@ -103,6 +103,37 @@ fn mini_eval(src) {
       }
       match_op("]")
       return arr
+    }
+    if (match_op("{")) {
+      let m = {}
+      if (!(peek()["t"] == "OP" and peek()["v"] == "}")) {
+        // key: value — key may be IDENT or STR
+        let kt = peek()
+        let key = ""
+        if (kt["t"] == "STR" or kt["t"] == "IDENT" or kt["t"] == "KW") {
+          advance()
+          key = kt["v"]
+        } else {
+          key = str(parse_expr())
+        }
+        match_op(":")
+        let val = parse_expr()
+        m[key] = val
+        while (match_op(",")) {
+          kt = peek()
+          if (kt["t"] == "STR" or kt["t"] == "IDENT" or kt["t"] == "KW") {
+            advance()
+            key = kt["v"]
+          } else {
+            key = str(parse_expr())
+          }
+          match_op(":")
+          val = parse_expr()
+          m[key] = val
+        }
+      }
+      match_op("}")
+      return m
     }
     if (t["t"] == "IDENT") {
       advance()
@@ -258,6 +289,31 @@ fn mini_eval(src) {
       print val
       return val
     }
+    if (match_kw("for")) {
+      match_op("(")
+      // for (ident in expr)
+      let it = advance()
+      let iname = it["v"]
+      match_kw("in")
+      let iterable = parse_expr()
+      match_op(")")
+      let body_start = pos
+      let items = iterable
+      if (items == null) { items = [] }
+      let idx = 0
+      while (idx < len(items)) {
+        env[iname] = items[idx]
+        pos = body_start
+        parse_block_exec()
+        idx = idx + 1
+      }
+      pos = body_start
+      if (peek()["t"] == "OP" and peek()["v"] == "{") {
+        advance()
+        skip_block()
+      }
+      return null
+    }
     if (match_kw("while")) {
       match_op("(")
       let cond_pos = pos
@@ -353,4 +409,4 @@ fn mini_eval(src) {
   return last
 }
 
-print "mini_eval stage2 loaded"
+print "mini_eval stage3 loaded"

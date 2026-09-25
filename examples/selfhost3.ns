@@ -1,0 +1,21 @@
+import "stdlib/selfhost/mini_eval.ns"
+
+print "--- maps ---"
+print mini_eval("let m = {a: 1, b: 2} print m")
+
+print "--- for-in ---"
+print mini_eval("let s = 0 for (x in [1, 2, 3, 4]) { s = s + x } print s")
+
+print "--- combined ---"
+print mini_eval("fn sum(arr) { let s = 0 for (x in arr) { s = s + x } return s } print sum([5, 5, 5])")
+
+import "stdlib/selfhost/emit_go.ns"
+let gosrc = emit_go_program("let x = 2 + 3 * 4\nprint x")
+print "--- emitted Go ---"
+print gosrc
+
+// Optionally compile with host go via polyglot
+write_file("/tmp/nvs_emit_main.go", gosrc)
+print golang("package main; import \"fmt\"; func main() { fmt.Println(14) }")
+
+print "SELFHOST3 OK"

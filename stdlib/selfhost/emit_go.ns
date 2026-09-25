@@ -1,13 +1,74 @@
-// emit_go.ns — emit a tiny Go main from a restricted expression form
-// Usage: emit_go_program("print 1+2") -> Go source string
+// emit_go.ns — translate a tiny NvS expression program into runnable Go
+// Supports: let x = <arith>; print <arith>; integers and + - * / ( )
 
-fn emit_go_program(body_ns) {
-  let go = "package main\nimport \"fmt\"\nfunc main() {\n"
-  // naive: wrap as comment + rely on host for real compile
-  go = go + "  // NvS source:\n"
-  go = go + "  // " + body_ns + "\n"
-  go = go + "  fmt.Println(\"nvs-emit-placeholder\")\n}\n"
+fn emit_go_expr_tokens(tokens, pos) {
+  // returns {code, pos}
+  return {"code": "0", "pos": pos}
+}
+
+fn emit_go_program(src) {
+  // Use host tokenizer via mini path: emit wrapper that runs arithmetic only
+  let go = "package main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n"
+  // Split naive statements by scanning with mini_eval's tokenize if available
+  // Fallback: embed source as data and compute known pattern let x = N print x
+  go = go + "\tenv := map[string]int{}\n"
+  // Hand-rolled line split
+  let lines = split(src, "\n")
+  let li = 0
+  while (li < len(lines)) {
+    let line = lines[li]
+    // trim spaces simple
+    if (len(line) > 0) {
+      // detect print
+      if (len(line) >= 5 and line[0:5] == "print") {
+        let expr = line[5:len(line)]
+        go = go + "\tfmt.Println(" + emit_go_arith(expr) + ")\n"
+      } else if (len(line) >= 3 and line[0:3] == "let") {
+        // let name = expr
+        let rest = line[3:len(line)]
+        // find =
+        let eq = index_of(rest, "=")
+        if (eq >= 0) {
+          let name = rest[0:eq]
+          let expr = rest[(eq + 1):len(rest)]
+          // strip spaces from name roughly
+          name = replace(name, " ", "")
+          go = go + "\tenv[\"" + name + "\"] = " + emit_go_arith(expr) + "\n"
+        }
+      }
+    }
+    li = li + 1
+  }
+  go = go + "}\n"
   return go
 }
 
-print "emit_go loaded"
+fn emit_go_arith(expr) {
+  // map identifiers to env["id"] and keep digits/ops
+  let out = ""
+  let i = 0
+  let n = len(expr)
+  while (i < n) {
+    let c = expr[i]
+    if (c == " ") { i = i + 1 }
+    else if (c >= "0" and c <= "9") {
+      let j = i
+      while (j < n and expr[j] >= "0" and expr[j] <= "9") { j = j + 1 }
+      out = out + expr[i:j]
+      i = j
+    } else if ((c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_") {
+      let j = i
+      while (j < n and ((expr[j] >= "a" and expr[j] <= "z") or (expr[j] >= "A" and expr[j] <= "Z") or (expr[j] >= "0" and expr[j] <= "9") or expr[j] == "_")) { j = j + 1 }
+      let id = expr[i:j]
+      out = out + "env[\"" + id + "\"]"
+      i = j
+    } else if (c == "+" or c == "-" or c == "*" or c == "/" or c == "%" or c == "(" or c == ")") {
+      out = out + c
+      i = i + 1
+    } else {
+      i = i + 1
+    }
+  }
+  if (out == "") { return "0" }
+  return out
+}
