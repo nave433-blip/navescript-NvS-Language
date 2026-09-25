@@ -544,6 +544,14 @@ func evalStringInfixExpression(operator string, left, right object.Object) objec
 		return nativeBoolToBooleanObject(leftVal == rightVal)
 	case "!=":
 		return nativeBoolToBooleanObject(leftVal != rightVal)
+	case "<":
+		return nativeBoolToBooleanObject(leftVal < rightVal)
+	case ">":
+		return nativeBoolToBooleanObject(leftVal > rightVal)
+	case "<=":
+		return nativeBoolToBooleanObject(leftVal <= rightVal)
+	case ">=":
+		return nativeBoolToBooleanObject(leftVal >= rightVal)
 	default:
 		return newError("unknown operator: %s %s %s", left.Type(), operator, right.Type())
 	}
@@ -2438,7 +2446,7 @@ func initBuiltins() {
 	
 	"nvs_version": {
 		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "2.2.0"}
+			return &object.String{Value: "2.3.0"}
 		},
 	},
 	"nvs_language": {
@@ -2456,7 +2464,7 @@ func initBuiltins() {
 			}
 			put("name", "NvS")
 			put("full", "Navescript")
-			put("version", "2.2.0")
+			put("version", "2.3.0")
 			put("impl", "tree-walker")
 			put("host", "go")
 			return &object.Hash{Pairs: pairs}
@@ -2764,6 +2772,72 @@ func initBuiltins() {
 				return &object.Float{Value: v}
 			}
 			return newError("physics_const: unknown %s", name.Value)
+		},
+	},
+	
+	"ord": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("ord: want string")
+			}
+			s, ok := args[0].(*object.String)
+			if !ok || len(s.Value) == 0 {
+				return newError("ord: want non-empty string")
+			}
+			r := []rune(s.Value)[0]
+			return &object.Integer{Value: int64(r)}
+		},
+	},
+	"chr": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("chr: want int")
+			}
+			n, ok := args[0].(*object.Integer)
+			if !ok {
+				return newError("chr: want int")
+			}
+			return &object.String{Value: string(rune(n.Value))}
+		},
+	},
+	"self_eval": {
+		// Prefer host path: evaluate src with the Go NvS interpreter (full language).
+		// For pure-NvS subset, use mini_eval from stdlib/selfhost.
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("self_eval: want source string")
+			}
+			src, ok := args[0].(*object.String)
+			if !ok {
+				return newError("self_eval: want string")
+			}
+			env := object.NewEnvironment()
+			LoadPrelude(env)
+			l := lexer.New(src.Value)
+			p := parser.New(l)
+			program := p.ParseProgram()
+			if len(p.Errors()) > 0 {
+				return newError("self_eval parse: %s", p.Errors()[0])
+			}
+			return Eval(program, env)
+		},
+	},
+	"build_nvs": {
+		Fn: func(args ...object.Object) object.Object {
+			// build_nvs([out_path]) — compile host binary via go
+			out := "bin/nvs"
+			if len(args) >= 1 {
+				if s, ok := args[0].(*object.String); ok {
+					out = s.Value
+				}
+			}
+			cmd := exec.Command("go", "build", "-o", out, "./cmd/nvs/")
+			cmd.Env = os.Environ()
+			b, err := cmd.CombinedOutput()
+			if err != nil {
+				return newError("build_nvs: %v: %s", err, string(b))
+			}
+			return &object.String{Value: out}
 		},
 	},
 	"plugins": {

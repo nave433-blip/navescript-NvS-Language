@@ -15,7 +15,7 @@ import (
 
 // NvS — Navescript custom language
 const (
-	VERSION      = "2.2.0"
+	VERSION      = "2.3.0"
 	LANGUAGE     = "NvS"
 	LANGUAGEFull = "Navescript"
 )
@@ -47,6 +47,33 @@ func main() {
 		startREPL()
 	case "init":
 		initProject(".")
+	case "selfhost":
+		// Run pure-NvS subset interpreter on code or file
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: nvs selfhost <file.ns|'code'>")
+			os.Exit(1)
+		}
+		arg := os.Args[2]
+		code := arg
+		if strings.HasSuffix(arg, ".ns") || strings.HasSuffix(arg, ".nave") {
+			data, err := os.ReadFile(arg)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			code = string(data)
+		}
+		// Load mini_eval and call it
+		wrap := "import \"stdlib/selfhost/mini_eval.ns\"\nprint mini_eval(" + fmt.Sprintf("%q", code) + ")\n"
+		runCode(wrap, true)
+	case "bootstrap":
+		// go build + baseline + selfhost
+		fmt.Println("NvS bootstrap: building host...")
+		runCode(`print build_nvs("bin/nvs")`, true)
+		fmt.Println("running selfhost suite...")
+		runFile("examples/selfhost.ns", true)
+		runFile("examples/baseline_all.ns", true)
+		fmt.Println("BOOTSTRAP OK")
 	case "version", "-v", "--version":
 		fmt.Printf("%s (%s) %s\n", LANGUAGE, LANGUAGEFull, VERSION)
 	case "info":
@@ -72,6 +99,8 @@ Usage:
   nvs run <file.ns>       Run a program
   nvs eval '<code>'       Evaluate a snippet
   nvs init                Scaffold a new NvS project
+  nvs selfhost <src>       Run pure-NvS mini interpreter
+  nvs bootstrap            Build host + run selfhost/baseline
   nvs info                Language identity & capabilities
   nvs version             Show version
   nvs help                Show this help

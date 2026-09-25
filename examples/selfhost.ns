@@ -1,0 +1,14 @@
+import "stdlib/selfhost/mini_eval.ns"
+
+// NvS interpreting NvS (subset)
+let result = mini_eval("let x = 2 + 3 * 4 print x")
+print "selfhost result:"
+print result
+
+let r2 = mini_eval("let a = 10 let b = 20 print a + b")
+print r2
+
+let r3 = mini_eval("if (1 < 2) { print 42 }")
+print "done branch"
+
+print "SELFHOST OK"
