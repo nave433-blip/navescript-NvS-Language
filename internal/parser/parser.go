@@ -12,6 +12,7 @@ const (
 	_ int = iota
 	LOWEST
 	ASSIGN_PREC // =
+	ANDOR       // && || (looser than == so a==1 && b==2 works)
 	EQUALS      // ==
 	LESSGREATER // > or <
 	SUM         // +
@@ -39,6 +40,7 @@ var precedences = map[lexer.TokenType]int{
 	lexer.PLUS:     SUM,
 	lexer.MINUS:    SUM,
 	lexer.SLASH:    PRODUCT,
+	lexer.POWER:    PRODUCT + 1,
 	lexer.ASTERISK: PRODUCT,
 	lexer.MOD:      PRODUCT,
 	lexer.BIT_AND:  PRODUCT,
@@ -49,8 +51,8 @@ var precedences = map[lexer.TokenType]int{
 	lexer.LPAREN:   CALL,
 	lexer.LBRACKET: INDEX,
 	lexer.DOT:     INDEX,
-	lexer.AND:      EQUALS,
-	lexer.OR:       EQUALS,
+	lexer.AND:      ANDOR,
+	lexer.OR:       ANDOR,
 }
 
 type (
@@ -99,6 +101,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(lexer.MINUS, p.parseInfixExpression)
 	p.registerInfix(lexer.SLASH, p.parseInfixExpression)
 	p.registerInfix(lexer.ASTERISK, p.parseInfixExpression)
+	p.registerInfix(lexer.POWER, p.parseInfixExpression)
 	p.registerInfix(lexer.MOD, p.parseInfixExpression)
 	p.registerInfix(lexer.BIT_AND, p.parseInfixExpression)
 	p.registerInfix(lexer.BIT_OR, p.parseInfixExpression)

@@ -445,6 +445,8 @@ func evalIntegerInfixExpression(operator string, left, right object.Object) obje
 		return &object.Integer{Value: leftVal + rightVal}
 	case "-":
 		return &object.Integer{Value: leftVal - rightVal}
+	case "**":
+		return &object.Integer{Value: intPow(leftVal, rightVal)}
 	case "*":
 		return &object.Integer{Value: leftVal * rightVal}
 	case "/":
@@ -504,6 +506,8 @@ func evalFloatInfixExpression(operator string, left, right object.Object) object
 		return &object.Float{Value: leftVal + rightVal}
 	case "-":
 		return &object.Float{Value: leftVal - rightVal}
+	case "**":
+		return &object.Float{Value: math.Pow(leftVal, rightVal)}
 	case "*":
 		return &object.Float{Value: leftVal * rightVal}
 	case "/":
@@ -699,6 +703,17 @@ func deepEqual(a, b object.Object) bool {
 	default:
 		return a.Inspect() == b.Inspect()
 	}
+}
+
+func intPow(a, b int64) int64 {
+	if b < 0 {
+		return 0
+	}
+	var r int64 = 1
+	for i := int64(0); i < b; i++ {
+		r *= a
+	}
+	return r
 }
 
 func newError(format string, a ...interface{}) *object.Error {
