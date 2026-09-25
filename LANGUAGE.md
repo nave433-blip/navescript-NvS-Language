@@ -44,6 +44,25 @@ nvs info
 | DX | highlight, fuzzy_*, nvs_info | editors / shells |
 | Meta | nvs_version, nvs_language, plugins, applets | — |
 
+## Wave 1 — ergonomics robbery (2.2.0-dev)
+
+| Feature | Syntax | Inspired by |
+|---------|--------|-------------|
+| Destructuring | `let [a, b] = [1,2,3]`, `let [a, ...rest] = arr`, `let {x, y} = {x:1,y:2}`, `let {k: renamed} = m` (also `const`); missing → `null` | JS, Python, Rust |
+| Spread / rest | `[...a, 0]`, `f(...args)`, `{...m, k: 1}` (later keys win); non-array/map spread is a runtime error | JS, Python |
+| Optional chaining | `a?.b`, `a?.b()`, `a?.[i]`, `a?.b.c?.d` — null short-circuits the whole chain, no calls made | JS, C#, Swift |
+| String interpolation | `"hello ${name}, ${age + 1}"` — balanced `${...}`, nesting works | JS, Ruby, Kotlin |
+| Pipeline | `x \|> f \|> g` → `g(f(x))`; `x \|> f(a, b)` → `f(x, a, b)` | Elixir, F# |
+| Ranges | `1..10` → `[1..10]` inclusive; `1...5` → `[1..4]` exclusive; int endpoints only | Ruby, Rust, Kotlin |
+| Loop else | `for (x in xs) {...} else {...}`, `while (c) {...} else {...}` — else runs only if no `break` | Python |
+| Labeled break/continue | `outer: for (...) {...}` + `break outer` / `continue outer` | Java, JS, Rust |
+
+Limitations (honest): destructuring patterns are one level (identifiers + `...rest` /
+`{x}` / `{k: v}` — no nested patterns); no escape for a literal `${` in strings
+(use `"$" + "{x}"`); `break <label>` needs the label on the same line; in
+`{k: 0, ...m}` an explicit key beats a later spread (spreads apply first, then
+explicit pairs).
+
 ## Not full ports (by design)
 - Static Hindley–Milner type inference
 - True OS threads / async runtime

@@ -192,13 +192,23 @@ func (h *Hash) Inspect() string {
 	return out.String()
 }
 
-type Break struct{}
+type Break struct{ Label string }
 func (b *Break) Type() ObjectType { return BREAK_OBJ }
-func (b *Break) Inspect() string  { return "break" }
+func (b *Break) Inspect() string {
+	if b.Label != "" {
+		return "break " + b.Label
+	}
+	return "break"
+}
 
-type Continue struct{}
+type Continue struct{ Label string }
 func (c *Continue) Type() ObjectType { return CONTINUE_OBJ }
-func (c *Continue) Inspect() string  { return "continue" }
+func (c *Continue) Inspect() string {
+	if c.Label != "" {
+		return "continue " + c.Label
+	}
+	return "continue"
+}
 
 
 type Class struct {

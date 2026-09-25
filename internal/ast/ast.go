@@ -222,6 +222,8 @@ type WhileStatement struct {
 	Token     lexer.Token
 	Condition Expression
 	Body      *BlockStatement
+	OrElse    *BlockStatement // optional else: runs only if the loop didn't break
+	Label     string          // optional loop label for break/continue
 }
 
 func (ws *WhileStatement) statementNode()       {}
@@ -342,6 +344,8 @@ type ForStatement struct {
 	Condition Expression
 	Post      Expression  // typically assignment or call
 	Body      *BlockStatement
+	OrElse    *BlockStatement // optional else: runs only if the loop didn't break
+	Label     string          // optional loop label for break/continue
 }
 
 func (fs *ForStatement) statementNode()       {}
@@ -368,25 +372,38 @@ func (fs *ForStatement) String() string {
 // BreakStatement
 type BreakStatement struct {
 	Token lexer.Token
+	Label string // optional: break label
 }
 
 func (bs *BreakStatement) statementNode()       {}
 func (bs *BreakStatement) TokenLiteral() string { return bs.Token.Literal }
-func (bs *BreakStatement) String() string       { return "break;" }
+func (bs *BreakStatement) String() string {
+	if bs.Label != "" {
+		return "break " + bs.Label + ";"
+	}
+	return "break;"
+}
 
 // ContinueStatement
 type ContinueStatement struct {
 	Token lexer.Token
+	Label string // optional: continue label
 }
 
 func (cs *ContinueStatement) statementNode()       {}
 func (cs *ContinueStatement) TokenLiteral() string { return cs.Token.Literal }
-func (cs *ContinueStatement) String() string       { return "continue;" }
+func (cs *ContinueStatement) String() string {
+	if cs.Label != "" {
+		return "continue " + cs.Label + ";"
+	}
+	return "continue;"
+}
 
-// HashLiteral: { "key": value, ... }
+// HashLiteral: { "key": value, ... } — Spreads holds {...m} entries in source order.
 type HashLiteral struct {
-	Token lexer.Token
-	Pairs map[Expression]Expression
+	Token   lexer.Token
+	Pairs   map[Expression]Expression
+	Spreads []Expression
 }
 
 func (hl *HashLiteral) expressionNode()      {}
@@ -409,6 +426,8 @@ type ForInStatement struct {
 	Name     *Identifier
 	Iterable Expression
 	Body     *BlockStatement
+	OrElse   *BlockStatement // optional else: runs only if the loop didn't break
+	Label    string          // optional loop label for break/continue
 }
 
 func (fs *ForInStatement) statementNode()       {}
@@ -677,3 +696,170 @@ type SpreadExpression struct {
 func (se *SpreadExpression) expressionNode()      {}
 func (se *SpreadExpression) TokenLiteral() string { return se.Token.Literal }
 func (se *SpreadExpression) String() string       { return "..." + se.Value.String() }
+
+// ---- Wave 1: destructuring ----
+
+// ArrayPattern: [a, b, ...rest] — only valid as a let/const pattern.
+type ArrayPattern struct {
+	Token    lexer.Token
+	Elements []*Identifier // positional bindings; missing elements bind null
+	Rest     *Identifier   // optional ...rest binding (must be last)
+}
+
+func (ap *ArrayPattern) expressionNode()      {}
+func (ap *ArrayPattern) TokenLiteral() string { return ap.Token.Literal }
+func (ap *ArrayPattern) String() string {
+	var out bytes.Buffer
+	parts := []string{}
+	for _, e := range ap.Elements {
+		parts = append(parts, e.String())
+	}
+	if ap.Rest != nil {
+		parts = append(parts, "..."+ap.Rest.String())
+	}
+	out.WriteString("[")
+	out.WriteString(strings.Join(parts, ", "))
+	out.WriteString("]")
+	return out.String()
+}
+
+// HashPatternEntry: {x} binds name x from key "x"; {k: v} binds v from key "k".
+type HashPatternEntry struct {
+	Key   *Identifier
+	Value *Identifier
+}
+
+// HashPattern: {x, y} or {k: renamed} — only valid as a let/const pattern.
+type HashPattern struct {
+	Token   lexer.Token
+	Entries []HashPatternEntry
+}
+
+func (hp *HashPattern) expressionNode()      {}
+func (hp *HashPattern) TokenLiteral() string { return hp.Token.Literal }
+func (hp *HashPattern) String() string {
+	var out bytes.Buffer
+	parts := []string{}
+	for _, e := range hp.Entries {
+		if e.Key.Value == e.Value.Value {
+			parts = append(parts, e.Key.String())
+		} else {
+			parts = append(parts, e.Key.String()+": "+e.Value.String())
+		}
+	}
+	out.WriteString("{")
+	out.WriteString(strings.Join(parts, ", "))
+	out.WriteString("}")
+	return out.String()
+}
+
+// DestructureLetStatement: let [a, b] = expr / const {x, y} = expr
+type DestructureLetStatement struct {
+	Token   lexer.Token // the let or const token
+	IsConst bool
+	Pattern Expression // *ArrayPattern or *HashPattern
+	Value   Expression
+}
+
+func (ds *DestructureLetStatement) statementNode()       {}
+func (ds *DestructureLetStatement) TokenLiteral() string { return ds.Token.Literal }
+func (ds *DestructureLetStatement) String() string {
+	kw := "let "
+	if ds.IsConst {
+		kw = "const "
+	}
+	return kw + ds.Pattern.String() + " = " + ds.Value.String() + ";"
+}
+
+// ---- Wave 1: optional chaining ----
+
+// ChainLinkKind identifies one link of an optional chain.
+type ChainLinkKind string
+
+const (
+	ChainMember ChainLinkKind = "member"
+	ChainIndex  ChainLinkKind = "index"
+	ChainCall   ChainLinkKind = "call"
+)
+
+// ChainLink is one step after `?.`: `.name`, `[expr]`, or `(args)`.
+type ChainLink struct {
+	Kind      ChainLinkKind
+	Property  *Identifier  // member
+	Index     Expression   // index
+	Arguments []Expression // call
+}
+
+// OptionalChainExpression: a?.b.c?.[i]() — one node per `?.` group;
+// plain `.`/`[`/`(` links after the first `?.` are folded in so the
+// whole chain short-circuits to null.
+type OptionalChainExpression struct {
+	Token lexer.Token // the ?. token
+	Base  Expression
+	Links []ChainLink
+}
+
+func (oc *OptionalChainExpression) expressionNode()      {}
+func (oc *OptionalChainExpression) TokenLiteral() string { return oc.Token.Literal }
+func (oc *OptionalChainExpression) String() string {
+	var out bytes.Buffer
+	out.WriteString(oc.Base.String())
+	out.WriteString("?.")
+	for i, l := range oc.Links {
+		if i > 0 {
+			out.WriteString(".")
+		}
+		switch l.Kind {
+		case ChainMember:
+			out.WriteString(l.Property.String())
+		case ChainIndex:
+			out.WriteString("[" + l.Index.String() + "]")
+		case ChainCall:
+			args := []string{}
+			for _, a := range l.Arguments {
+				args = append(args, a.String())
+			}
+			out.WriteString("(" + strings.Join(args, ", ") + ")")
+		}
+	}
+	return out.String()
+}
+
+// ---- Wave 1: string interpolation ----
+
+// InterpolatedString: "hello ${name}" — parts are string literals and
+// sub-expressions, concatenated with Inspect-style coercion at eval.
+type InterpolatedString struct {
+	Token lexer.Token
+	Parts []Expression
+}
+
+func (is *InterpolatedString) expressionNode()      {}
+func (is *InterpolatedString) TokenLiteral() string { return is.Token.Literal }
+func (is *InterpolatedString) String() string {
+	parts := []string{}
+	for _, p := range is.Parts {
+		parts = append(parts, p.String())
+	}
+	return "`" + strings.Join(parts, "${...}") + "`"
+}
+
+// ---- Wave 1: ranges ----
+
+// RangeExpression: 1..10 (inclusive) or 1...5 (exclusive) → array of ints.
+type RangeExpression struct {
+	Token     lexer.Token
+	Start     Expression
+	End       Expression
+	Inclusive bool
+}
+
+func (re *RangeExpression) expressionNode()      {}
+func (re *RangeExpression) TokenLiteral() string { return re.Token.Literal }
+func (re *RangeExpression) String() string {
+	op := ".."
+	if !re.Inclusive {
+		op = "..."
+	}
+	return "(" + re.Start.String() + op + re.End.String() + ")"
+}

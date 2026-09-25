@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/navescript/nvs/internal/ast"
 	"github.com/navescript/nvs/internal/lexer"
@@ -12,7 +13,9 @@ const (
 	_ int = iota
 	LOWEST
 	ASSIGN_PREC // =
+	PIPELINE    // |>
 	EQUALS      // ==
+	RANGE       // .. ...
 	LESSGREATER // > or <
 	SUM         // +
 	PRODUCT     // *
@@ -29,9 +32,11 @@ var precedences = map[lexer.TokenType]int{
 	lexer.SLASH_ASSIGN: ASSIGN_PREC,
 	lexer.QUESTION:  ASSIGN_PREC,
 	lexer.NULL_COAL: ASSIGN_PREC,
+	lexer.PIPE:      PIPELINE,
 	lexer.IN:        EQUALS,
 	lexer.EQ:       EQUALS,
 	lexer.NOT_EQ:   EQUALS,
+	lexer.ELLIPSIS: RANGE,
 	lexer.LT:       LESSGREATER,
 	lexer.GT:       LESSGREATER,
 	lexer.LTE:      LESSGREATER,
@@ -49,6 +54,7 @@ var precedences = map[lexer.TokenType]int{
 	lexer.LPAREN:   CALL,
 	lexer.LBRACKET: INDEX,
 	lexer.DOT:     INDEX,
+	lexer.OPTIONAL_CHAIN: INDEX,
 	lexer.AND:      EQUALS,
 	lexer.OR:       EQUALS,
 }
@@ -93,6 +99,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.NEW, p.parseNewExpression)
 	p.registerPrefix(lexer.THIS, p.parseThisExpression)
 	p.registerPrefix(lexer.MATCH, p.parseMatchExpression)
+	p.registerPrefix(lexer.ELLIPSIS, p.parseSpreadExpression)
 
 	p.infixParseFns = make(map[lexer.TokenType]infixParseFn)
 	p.registerInfix(lexer.PLUS, p.parseInfixExpression)
@@ -123,7 +130,10 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(lexer.QUESTION, p.parseTernaryExpression)
 	p.registerInfix(lexer.NULL_COAL, p.parseInfixExpression)
 	p.registerInfix(lexer.IN, p.parseInfixExpression)
-	p.registerInfix(lexer.DOT, p.parseMemberExpression)
+	p.registerInfix(lexer.DOT, p.parseDotInfix)
+	p.registerInfix(lexer.OPTIONAL_CHAIN, p.parseOptionalChainExpression)
+	p.registerInfix(lexer.PIPE, p.parsePipelineExpression)
+	p.registerInfix(lexer.ELLIPSIS, p.parseExclusiveRangeExpression)
 
 	// Read two tokens so curToken and peekToken are set
 	p.nextToken()
@@ -193,12 +203,44 @@ func (p *Parser) parseStatement() ast.Statement {
 	case lexer.TRY:
 		return p.parseTryStatement()
 	default:
+		// `name:` at statement level is a loop label (a syntax error before wave 1).
+		if p.curTokenIs(lexer.IDENT) && p.peekTokenIs(lexer.COLON) {
+			return p.parseLabeledStatement()
+		}
 		return p.parseExpressionStatement()
 	}
 }
 
+// parseLabeledStatement: label: for (...) { ... }  (labels only apply to loops)
+func (p *Parser) parseLabeledStatement() ast.Statement {
+	label := p.curToken.Literal
+	p.nextToken() // consume label
+	p.nextToken() // move to the labeled statement
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	switch s := stmt.(type) {
+	case *ast.ForStatement:
+		s.Label = label
+	case *ast.ForInStatement:
+		s.Label = label
+	case *ast.WhileStatement:
+		s.Label = label
+	default:
+		p.errors = append(p.errors, "label \""+label+"\" can only be applied to a loop")
+		return nil
+	}
+	return stmt
+}
+
 func (p *Parser) parseLetStatement() ast.Statement {
 	tok := p.curToken
+
+	// Destructuring: let [a, b] = ... / let {x, y} = ...
+	if p.peekTokenIs(lexer.LBRACKET) || p.peekTokenIs(lexer.LBRACE) {
+		return p.parseDestructureLet(tok, false)
+	}
 
 	if !p.expectPeek(lexer.IDENT) {
 		return nil
@@ -271,9 +313,9 @@ func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 	}
 
 	stmt.Body = p.parseBlockStatement()
+	stmt.OrElse = p.parseLoopElse()
 	return stmt
 }
-
 
 func (p *Parser) parseFunctionStatement() ast.Statement {
 	// Supports: fn name(params) { body }
@@ -389,10 +431,6 @@ func (p *Parser) parseFloatLiteral() ast.Expression {
 	}
 	lit.Value = value
 	return lit
-}
-
-func (p *Parser) parseStringLiteral() ast.Expression {
-	return &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
 }
 
 func (p *Parser) parseBoolean() ast.Expression {
@@ -696,12 +734,14 @@ func (p *Parser) parseForStatement() ast.Statement {
 				return nil
 			}
 			body := p.parseBlockStatement()
-			return &ast.ForInStatement{
+			stmt := &ast.ForInStatement{
 				Token:    tok,
 				Name:     name,
 				Iterable: iterable,
 				Body:     body,
 			}
+			stmt.OrElse = p.parseLoopElse()
+			return stmt
 		}
 		// Not for-in — fall into C-style. curToken is already first token of init.
 		return p.parseCStyleFor(tok, true)
@@ -755,6 +795,7 @@ func (p *Parser) parseCStyleFor(tok lexer.Token, alreadyConsumed bool) *ast.ForS
 		return nil
 	}
 	stmt.Body = p.parseBlockStatement()
+	stmt.OrElse = p.parseLoopElse()
 	return stmt
 }
 
@@ -833,8 +874,15 @@ func (p *Parser) parseThrowStatement() *ast.ThrowStatement {
 	return stmt
 }
 
-func (p *Parser) parseConstStatement() *ast.ConstStatement {
-	stmt := &ast.ConstStatement{Token: p.curToken}
+func (p *Parser) parseConstStatement() ast.Statement {
+	tok := p.curToken
+
+	// Destructuring: const [a, b] = ... / const {x, y} = ...
+	if p.peekTokenIs(lexer.LBRACKET) || p.peekTokenIs(lexer.LBRACE) {
+		return p.parseDestructureLet(tok, true)
+	}
+
+	stmt := &ast.ConstStatement{Token: tok}
 	if !p.expectPeek(lexer.IDENT) {
 		return nil
 	}
@@ -977,6 +1025,12 @@ func (p *Parser) parseMemberExpression(left ast.Expression) ast.Expression {
 
 func (p *Parser) parseBreakStatement() *ast.BreakStatement {
 	stmt := &ast.BreakStatement{Token: p.curToken}
+	// `break label` — the label must be on the same line, so a `break`
+	// followed by a newline and a new statement is never misread.
+	if p.peekTokenIs(lexer.IDENT) && p.peekToken.Line == p.curToken.Line {
+		p.nextToken()
+		stmt.Label = p.curToken.Literal
+	}
 	if p.peekTokenIs(lexer.SEMICOLON) {
 		p.nextToken()
 	}
@@ -985,6 +1039,10 @@ func (p *Parser) parseBreakStatement() *ast.BreakStatement {
 
 func (p *Parser) parseContinueStatement() *ast.ContinueStatement {
 	stmt := &ast.ContinueStatement{Token: p.curToken}
+	if p.peekTokenIs(lexer.IDENT) && p.peekToken.Line == p.curToken.Line {
+		p.nextToken()
+		stmt.Label = p.curToken.Literal
+	}
 	if p.peekTokenIs(lexer.SEMICOLON) {
 		p.nextToken()
 	}
@@ -1008,6 +1066,18 @@ func (p *Parser) parseHashLiteral() ast.Expression {
 	hash.Pairs = make(map[ast.Expression]ast.Expression)
 
 	for !p.peekTokenIs(lexer.RBRACE) {
+		// Spread entry: {...m}
+		if p.peekTokenIs(lexer.ELLIPSIS) {
+			p.nextToken() // ...
+			spread := &ast.SpreadExpression{Token: p.curToken}
+			p.nextToken()
+			spread.Value = p.parseExpression(LOWEST)
+			hash.Spreads = append(hash.Spreads, spread)
+			if !p.peekTokenIs(lexer.RBRACE) && !p.expectPeek(lexer.COMMA) {
+				return nil
+			}
+			continue
+		}
 		p.nextToken()
 		key := p.parseExpression(LOWEST)
 		if !p.expectPeek(lexer.COLON) {
@@ -1049,6 +1119,355 @@ func (p *Parser) parseCallArguments() []ast.Expression {
 	}
 
 	return args
+}
+
+// ---- Wave 1: destructuring ----
+
+// parseDestructureLet: let|const <pattern> = <expr>
+// curToken is the let/const token; peek is [ or {.
+func (p *Parser) parseDestructureLet(tok lexer.Token, isConst bool) ast.Statement {
+	p.nextToken() // move to [ or {
+	var pattern ast.Expression
+	if p.curTokenIs(lexer.LBRACKET) {
+		pattern = p.parseArrayPattern()
+	} else {
+		pattern = p.parseHashPattern()
+	}
+	if pattern == nil {
+		return nil
+	}
+	if !p.expectPeek(lexer.ASSIGN) {
+		return nil
+	}
+	p.nextToken()
+	value := p.parseExpression(LOWEST)
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
+	return &ast.DestructureLetStatement{Token: tok, IsConst: isConst, Pattern: pattern, Value: value}
+}
+
+// parseArrayPattern: [a, b, ...rest] — curToken is `[`.
+func (p *Parser) parseArrayPattern() ast.Expression {
+	pat := &ast.ArrayPattern{Token: p.curToken}
+	if p.peekTokenIs(lexer.RBRACKET) {
+		p.nextToken() // empty []
+		return pat
+	}
+	p.nextToken() // first element
+	for !p.curTokenIs(lexer.RBRACKET) && !p.curTokenIs(lexer.EOF) {
+		if p.curTokenIs(lexer.ELLIPSIS) {
+			if !p.expectPeek(lexer.IDENT) {
+				return nil
+			}
+			pat.Rest = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+			if !p.peekTokenIs(lexer.RBRACKET) {
+				p.errors = append(p.errors, "rest element ..."+pat.Rest.Value+" must be last in array pattern")
+				return nil
+			}
+			p.nextToken() // consume ]
+			return pat
+		}
+		if !p.curTokenIs(lexer.IDENT) {
+			p.errors = append(p.errors, "array destructure pattern expects an identifier")
+			return nil
+		}
+		pat.Elements = append(pat.Elements, &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal})
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	if !p.expectPeek(lexer.RBRACKET) {
+		return nil
+	}
+	return pat
+}
+
+// parseHashPattern: {x, y} or {k: renamed} — curToken is `{`.
+func (p *Parser) parseHashPattern() ast.Expression {
+	pat := &ast.HashPattern{Token: p.curToken}
+	if p.peekTokenIs(lexer.RBRACE) {
+		p.nextToken() // empty {}
+		return pat
+	}
+	p.nextToken() // first key
+	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		if !p.curTokenIs(lexer.IDENT) {
+			p.errors = append(p.errors, "object destructure pattern expects an identifier key")
+			return nil
+		}
+		key := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		value := key
+		if p.peekTokenIs(lexer.COLON) {
+			p.nextToken() // :
+			if !p.expectPeek(lexer.IDENT) {
+				return nil
+			}
+			value = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		}
+		pat.Entries = append(pat.Entries, ast.HashPatternEntry{Key: key, Value: value})
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	if !p.expectPeek(lexer.RBRACE) {
+		return nil
+	}
+	return pat
+}
+
+// ---- Wave 1: spread ----
+
+// parseSpreadExpression: ...expr — curToken is `...`.
+func (p *Parser) parseSpreadExpression() ast.Expression {
+	expr := &ast.SpreadExpression{Token: p.curToken}
+	p.nextToken()
+	expr.Value = p.parseExpression(LOWEST)
+	return expr
+}
+
+// ---- Wave 1: optional chaining ----
+
+// parseOptionalChainExpression: a?.b — curToken is `?.`.
+// Greedily folds following .ident / [expr] / (args) / ?. links into one node.
+func (p *Parser) parseOptionalChainExpression(left ast.Expression) ast.Expression {
+	expr := &ast.OptionalChainExpression{Token: p.curToken, Base: left}
+	p.nextToken() // move to first link
+	for {
+		link := p.parseChainLink()
+		if link == nil {
+			return nil
+		}
+		expr.Links = append(expr.Links, *link)
+		switch {
+		case p.peekTokenIs(lexer.DOT):
+			p.nextToken() // .
+			p.nextToken() // link start
+		case p.peekTokenIs(lexer.LBRACKET):
+			p.nextToken() // [
+		case p.peekTokenIs(lexer.LPAREN):
+			p.nextToken() // (
+		case p.peekTokenIs(lexer.OPTIONAL_CHAIN):
+			p.nextToken() // ?.
+			p.nextToken() // link start
+		default:
+			return expr
+		}
+	}
+}
+
+// parseChainLink parses one link; curToken is the link's first token.
+func (p *Parser) parseChainLink() *ast.ChainLink {
+	switch {
+	case p.curTokenIs(lexer.IDENT):
+		return &ast.ChainLink{
+			Kind:     ast.ChainMember,
+			Property: &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
+		}
+	case p.curTokenIs(lexer.LBRACKET):
+		p.nextToken()
+		idx := p.parseExpression(LOWEST)
+		if !p.expectPeek(lexer.RBRACKET) {
+			return nil
+		}
+		return &ast.ChainLink{Kind: ast.ChainIndex, Index: idx}
+	case p.curTokenIs(lexer.LPAREN):
+		args := p.parseCallArguments()
+		return &ast.ChainLink{Kind: ast.ChainCall, Arguments: args}
+	default:
+		p.errors = append(p.errors, "expected property, [index], or (args) after ?.")
+		return nil
+	}
+}
+
+// ---- Wave 1: pipeline ----
+
+// parsePipelineExpression: x |> f |> g — desugars to nested CallExpressions.
+// curToken is `|>`.
+func (p *Parser) parsePipelineExpression(left ast.Expression) ast.Expression {
+	tok := p.curToken
+	p.nextToken()
+	fn := p.parseExpression(PIPELINE)
+	if fn == nil {
+		return nil
+	}
+	if call, ok := fn.(*ast.CallExpression); ok {
+		call.Arguments = append([]ast.Expression{left}, call.Arguments...)
+		return call
+	}
+	return &ast.CallExpression{Token: tok, Function: fn, Arguments: []ast.Expression{left}}
+}
+
+// ---- Wave 1: ranges ----
+
+// parseDotInfix handles both member access (a.b) and inclusive ranges (1..10).
+func (p *Parser) parseDotInfix(left ast.Expression) ast.Expression {
+	if p.peekTokenIs(lexer.DOT) {
+		return p.parseInclusiveRangeExpression(left)
+	}
+	return p.parseMemberExpression(left)
+}
+
+// parseInclusiveRangeExpression: 1..10 — curToken is the first DOT.
+func (p *Parser) parseInclusiveRangeExpression(left ast.Expression) ast.Expression {
+	tok := p.curToken
+	p.nextToken() // consume second DOT
+	p.nextToken() // move to start of end expression
+	end := p.parseExpression(RANGE)
+	return &ast.RangeExpression{Token: tok, Start: left, End: end, Inclusive: true}
+}
+
+// parseExclusiveRangeExpression: 1...5 — curToken is `...`.
+func (p *Parser) parseExclusiveRangeExpression(left ast.Expression) ast.Expression {
+	tok := p.curToken
+	p.nextToken() // move to start of end expression
+	end := p.parseExpression(RANGE)
+	return &ast.RangeExpression{Token: tok, Start: left, End: end, Inclusive: false}
+}
+
+// ---- Wave 1: loop else ----
+
+// parseLoopElse parses a trailing `else { ... }` after a loop body block.
+// curToken is the loop body's closing `}`.
+func (p *Parser) parseLoopElse() *ast.BlockStatement {
+	if !p.peekTokenIs(lexer.ELSE) {
+		return nil
+	}
+	p.nextToken() // else
+	if !p.expectPeek(lexer.LBRACE) {
+		return nil
+	}
+	return p.parseBlockStatement()
+}
+
+// ---- Wave 1: string interpolation ----
+
+// parseStringLiteral with ${...} interpolation support.
+func (p *Parser) parseStringLiteral() ast.Expression {
+	tok := p.curToken
+	parts, err := splitInterpolation(tok.Literal)
+	if err != nil {
+		p.errors = append(p.errors, err.Error())
+		return nil
+	}
+	// Fast path: no interpolation.
+	if len(parts) == 1 && !parts[0].isExpr {
+		return &ast.StringLiteral{Token: tok, Value: parts[0].text}
+	}
+	node := &ast.InterpolatedString{Token: tok}
+	for _, part := range parts {
+		if !part.isExpr {
+			node.Parts = append(node.Parts, &ast.StringLiteral{Token: tok, Value: part.text})
+			continue
+		}
+		sub, err := parseInterpSubExpression(part.text)
+		if err != nil {
+			p.errors = append(p.errors, "bad ${...}: "+err.Error())
+			return nil
+		}
+		node.Parts = append(node.Parts, sub)
+	}
+	return node
+}
+
+type interpPart struct {
+	isExpr bool
+	text   string
+}
+
+// splitInterpolation splits s on ${...} with balanced-brace matching.
+// String literals inside the braces are respected so `${m["}"]}` works.
+func splitInterpolation(s string) ([]interpPart, error) {
+	var parts []interpPart
+	var lit strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '{' {
+			end, err := findInterpEnd(s, i+2)
+			if err != nil {
+				return nil, err
+			}
+			if lit.Len() > 0 {
+				parts = append(parts, interpPart{isExpr: false, text: lit.String()})
+				lit.Reset()
+			}
+			parts = append(parts, interpPart{isExpr: true, text: s[i+2 : end]})
+			i = end + 1
+		} else {
+			lit.WriteByte(s[i])
+			i++
+		}
+	}
+	if lit.Len() > 0 {
+		parts = append(parts, interpPart{isExpr: false, text: lit.String()})
+	}
+	if len(parts) == 0 {
+		parts = append(parts, interpPart{isExpr: false, text: ""})
+	}
+	return parts, nil
+}
+
+// findInterpEnd finds the index of the `}` closing the `${` at start-2.
+func findInterpEnd(s string, start int) (int, error) {
+	depth := 1
+	var quote byte
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("unterminated ${ in string")
+}
+
+// parseInterpSubExpression parses the text inside ${...} with a fresh parser.
+func parseInterpSubExpression(text string) (ast.Expression, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("empty expression")
+	}
+	l := lexer.New(text)
+	sub := New(l)
+	prog := sub.ParseProgram()
+	if len(sub.Errors()) > 0 {
+		return nil, fmt.Errorf("%s", strings.Join(sub.Errors(), "; "))
+	}
+	if len(prog.Statements) != 1 {
+		return nil, fmt.Errorf("expected a single expression")
+	}
+	es, ok := prog.Statements[0].(*ast.ExpressionStatement)
+	if !ok || es.Expression == nil {
+		return nil, fmt.Errorf("expected a single expression")
+	}
+	return es.Expression, nil
 }
 
 // Helpers

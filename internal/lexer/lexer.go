@@ -52,6 +52,19 @@ func (l *Lexer) peekChar() rune {
 	return r
 }
 
+// peekChar2 returns the character after peekChar (two runes ahead of current).
+func (l *Lexer) peekChar2() rune {
+	if l.readPosition >= len(l.input) {
+		return 0
+	}
+	_, size := utf8.DecodeRuneInString(l.input[l.readPosition:])
+	if l.readPosition+size >= len(l.input) {
+		return 0
+	}
+	r, _ := utf8.DecodeRuneInString(l.input[l.readPosition+size:])
+	return r
+}
+
 func (l *Lexer) skipWhitespace() {
 	for l.ch == ' ' || l.ch == '\t' || l.ch == '\n' || l.ch == '\r' {
 		l.readChar()
@@ -201,6 +214,11 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 			tok.Type = OR
 			tok.Literal = string(ch) + string(l.ch)
+		} else if l.peekChar() == '>' {
+			ch := l.ch
+			l.readChar()
+			tok.Type = PIPE
+			tok.Literal = string(ch) + string(l.ch)
 		} else {
 			tok.Type = BIT_OR
 			tok.Literal = string(l.ch)
@@ -223,6 +241,12 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 			tok.Type = NULL_COAL
 			tok.Literal = string(ch) + string(l.ch)
+		} else if l.peekChar() == '.' && !isDigit(l.peekChar2()) {
+			// `?.` optional chaining. The digit guard keeps `a?.5:b`
+			// lexing as `?` `.` `5` exactly like before.
+			l.readChar()
+			tok.Type = OPTIONAL_CHAIN
+			tok.Literal = "?."
 		} else {
 			tok.Type = QUESTION
 			tok.Literal = string(l.ch)
@@ -246,19 +270,17 @@ func (l *Lexer) NextToken() Token {
 		tok.Type = RBRACKET
 		tok.Literal = string(l.ch)
 	case '.':
-		if l.peekChar() == '.' {
+		if l.peekChar() == '.' && l.peekChar2() == '.' {
 			l.readChar()
-			if l.peekChar() == '.' {
-				l.readChar()
-				tok.Type = ELLIPSIS
-				tok.Literal = "..."
-			} else {
-				tok.Type = ILLEGAL
-				tok.Literal = ".."
-			}
+			l.readChar()
+			tok.Type = ELLIPSIS
+			tok.Literal = "..."
 		} else {
+			// `..` lexes as two DOT tokens (ranges like 1..10); the parser
+			// distinguishes member access from ranges. Only the first dot
+			// is consumed here; the second lexes on the next call.
 			tok.Type = DOT
-			tok.Literal = string(l.ch)
+			tok.Literal = "."
 		}
 	case '@':
 		tok.Type = AT
@@ -332,8 +354,14 @@ func (l *Lexer) readNumber() Token {
 func (l *Lexer) readString(quote rune) string {
 	l.readChar() // consume opening quote
 	var b []rune
-	for l.ch != quote && l.ch != 0 {
-		if l.ch == '\\' {
+	interpDepth := 0 // >0 while inside a ${...} interpolation
+	for l.ch != 0 {
+		if interpDepth == 0 && l.ch == quote {
+			break
+		}
+		// Escapes are processed at the top level only; inside ${...} the
+		// text is kept raw so the interpolation sub-parser sees faithful source.
+		if l.ch == '\\' && interpDepth == 0 {
 			l.readChar()
 			switch l.ch {
 			case 'n':
@@ -352,10 +380,51 @@ func (l *Lexer) readString(quote rune) string {
 				b = append(b, l.ch)
 			}
 			l.readChar()
-		} else {
-			b = append(b, l.ch)
-			l.readChar()
+			continue
 		}
+		// `${` suspends the closing quote until braces balance.
+		if l.ch == '$' && l.peekChar() == '{' {
+			interpDepth++
+			b = append(b, '$', '{')
+			l.readChar()
+			l.readChar()
+			continue
+		}
+		if interpDepth > 0 {
+			switch l.ch {
+			case '{':
+				interpDepth++
+			case '}':
+				interpDepth--
+			case '"', '\'':
+				// Nested string inside interpolation: consume it raw
+				// (escapes kept) so its quotes/braces don't confuse
+				// depth tracking and the sub-parser sees real source.
+				q := l.ch
+				b = append(b, q)
+				l.readChar()
+				for l.ch != 0 && l.ch != q {
+					if l.ch == '\\' {
+						b = append(b, l.ch)
+						l.readChar()
+						if l.ch != 0 {
+							b = append(b, l.ch)
+							l.readChar()
+						}
+						continue
+					}
+					b = append(b, l.ch)
+					l.readChar()
+				}
+				if l.ch == q {
+					b = append(b, q)
+					l.readChar()
+				}
+				continue
+			}
+		}
+		b = append(b, l.ch)
+		l.readChar()
 	}
 	if l.ch == quote {
 		l.readChar() // consume closing quote

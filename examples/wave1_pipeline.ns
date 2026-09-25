@@ -1,0 +1,13 @@
+// Wave 1: pipeline operator |> — x |> f |> g  ==  g(f(x))
+fn double(x) { return x * 2 }
+fn add1(x) { return x + 1 }
+print 5 |> double
+print 5 |> double |> add1
+print 1 + 2 |> double
+fn add3(x, a, b) { return x + a + b }
+print 10 |> add3(1, 2)
+let shout = fn(s) { return s + "!" }
+print "hey" |> shout
+fn apply(x, f) { return f(x) }
+print 3 |> apply(double)
+print [1, 2, 3] |> len

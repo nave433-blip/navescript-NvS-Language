@@ -1,0 +1,21 @@
+// Wave 1: spread / rest — [...a], f(...args), {...m}
+print "== array spread =="
+let a = [1, 2]
+print [...a, 0]
+print [0, ...a]
+print [...a, ...[3, 4]]
+let empty = []
+print [1, ...empty, 2]
+print "== call spread =="
+fn sum3(x, y, z) { return x + y + z }
+print sum3(...a, 10)
+print sum3(...[1, 2, 3])
+fn first(x) { return x }
+print first(...[99, 100])
+print "== object spread =="
+let m = {"k": 1, "j": 2}
+print {...m, "k": 9}
+print {"n": 0, ...m}
+let m2 = {...m, ...{"z": 26}}
+print m2["z"]
+print m2["k"]

@@ -46,6 +46,8 @@ const (
 	COLON     TokenType = ":"
 	QUESTION  TokenType = "?"
 	NULL_COAL TokenType = "??"
+	OPTIONAL_CHAIN TokenType = "?."
+	PIPE      TokenType = "|>"
 	LPAREN    TokenType = "("
 	RPAREN    TokenType = ")"
 	LBRACE    TokenType = "{"

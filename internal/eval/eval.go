@@ -246,9 +246,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.ForInStatement:
 		return evalForInStatement(node, env)
 	case *ast.BreakStatement:
-		return &object.Break{}
+		return &object.Break{Label: node.Label}
 	case *ast.ContinueStatement:
-		return &object.Continue{}
+		return &object.Continue{Label: node.Label}
 	case *ast.HashLiteral:
 		return evalHashLiteral(node, env)
 	case *ast.IndexAssignExpression:
@@ -285,6 +285,16 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalTypedLetStatement(node, env)
 	case *ast.TernaryExpression:
 		return evalTernaryExpression(node, env)
+	case *ast.DestructureLetStatement:
+		return evalDestructureLet(node, env)
+	case *ast.SpreadExpression:
+		return newError("spread (...) is only valid in array literals, call arguments, and object literals")
+	case *ast.OptionalChainExpression:
+		return evalOptionalChain(node, env)
+	case *ast.InterpolatedString:
+		return evalInterpolatedString(node, env)
+	case *ast.RangeExpression:
+		return evalRangeExpression(node, env)
 	}
 
 	return NULL
@@ -321,6 +331,8 @@ func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) obje
 
 func evalWhile(ws *ast.WhileStatement, env *object.Environment) object.Object {
 	var result object.Object = NULL
+	broke := false
+loop:
 	for {
 		cond := Eval(ws.Condition, env)
 		if isError(cond) {
@@ -330,20 +342,58 @@ func evalWhile(ws *ast.WhileStatement, env *object.Environment) object.Object {
 			break
 		}
 		result = Eval(ws.Body, env)
-		if result != nil {
-			rt := result.Type()
-			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
-				return result
-			}
-			if rt == object.BREAK_OBJ {
-				return NULL
-			}
-			if rt == object.CONTINUE_OBJ {
-				continue
-			}
+		sig, prop := handleLoopResult(result, ws.Label)
+		switch sig {
+		case sigPropagate:
+			return prop
+		case sigBreakMatched:
+			broke = true
+			break loop
+		case sigContinueMatched:
+			continue
 		}
 	}
+	if broke {
+		return NULL
+	}
+	if ws.OrElse != nil {
+		return Eval(ws.OrElse, env)
+	}
 	return result
+}
+
+// loopSignal classifies a loop-body result for break/continue handling.
+type loopSignal int
+
+const (
+	sigNone loopSignal = iota
+	sigBreakMatched    // break targets this loop
+	sigContinueMatched // continue targets this loop
+	sigPropagate       // return value, error, or break/continue for an outer labeled loop
+)
+
+// handleLoopResult inspects a loop body result against the loop's label.
+// An unlabeled break/continue (or one matching the loop's label) stops this
+// loop; a break/continue naming a different label propagates outward.
+func handleLoopResult(result object.Object, label string) (loopSignal, object.Object) {
+	if result == nil {
+		return sigNone, nil
+	}
+	switch result.Type() {
+	case object.RETURN_VALUE_OBJ, object.ERROR_OBJ:
+		return sigPropagate, result
+	case object.BREAK_OBJ:
+		if l := result.(*object.Break).Label; l == "" || l == label {
+			return sigBreakMatched, nil
+		}
+		return sigPropagate, result
+	case object.CONTINUE_OBJ:
+		if l := result.(*object.Continue).Label; l == "" || l == label {
+			return sigContinueMatched, nil
+		}
+		return sigPropagate, result
+	}
+	return sigNone, nil
 }
 
 func nativeBoolToBooleanObject(input bool) *object.Boolean {
@@ -715,6 +765,19 @@ func isError(obj object.Object) bool {
 func evalExpressions(exps []ast.Expression, env *object.Environment) []object.Object {
 	var result []object.Object
 	for _, e := range exps {
+		// Spread: ...arr expands an array's elements in place.
+		if spread, ok := e.(*ast.SpreadExpression); ok {
+			val := Eval(spread.Value, env)
+			if isError(val) {
+				return []object.Object{val}
+			}
+			arr, ok := val.(*object.Array)
+			if !ok {
+				return []object.Object{newError("cannot spread %s (only arrays can be spread)", val.Type())}
+			}
+			result = append(result, arr.Elements...)
+			continue
+		}
 		evaluated := Eval(e, env)
 		if isError(evaluated) {
 			return []object.Object{evaluated}
@@ -917,6 +980,8 @@ func evalForStatement(fs *ast.ForStatement, env *object.Environment) object.Obje
 	}
 
 	var result object.Object = NULL
+	broke := false
+loop:
 	for {
 		if fs.Condition != nil {
 			cond := Eval(fs.Condition, env)
@@ -929,24 +994,22 @@ func evalForStatement(fs *ast.ForStatement, env *object.Environment) object.Obje
 		}
 
 		result = Eval(fs.Body, env)
-		if result != nil {
-			rt := result.Type()
-			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
-				return result
-			}
-			if rt == object.BREAK_OBJ {
-				return NULL
-			}
-			if rt == object.CONTINUE_OBJ {
-				// still run post
-				if fs.Post != nil {
-					post := Eval(fs.Post, env)
-					if isError(post) {
-						return post
-					}
+		sig, prop := handleLoopResult(result, fs.Label)
+		switch sig {
+		case sigPropagate:
+			return prop
+		case sigBreakMatched:
+			broke = true
+			break loop
+		case sigContinueMatched:
+			// still run post
+			if fs.Post != nil {
+				post := Eval(fs.Post, env)
+				if isError(post) {
+					return post
 				}
-				continue
 			}
+			continue
 		}
 
 		if fs.Post != nil {
@@ -960,12 +1023,36 @@ func evalForStatement(fs *ast.ForStatement, env *object.Environment) object.Obje
 			break
 		}
 	}
+	if broke {
+		return NULL
+	}
+	if fs.OrElse != nil {
+		return Eval(fs.OrElse, env)
+	}
 	return result
 }
 
 
 func evalHashLiteral(node *ast.HashLiteral, env *object.Environment) object.Object {
 	pairs := make(map[object.HashKey]object.HashPair)
+	// Spreads apply first, in source order; explicit pairs below win on collision.
+	for _, spread := range node.Spreads {
+		spreadExpr, ok := spread.(*ast.SpreadExpression)
+		if !ok {
+			return newError("internal error: non-spread in spread list")
+		}
+		val := Eval(spreadExpr.Value, env)
+		if isError(val) {
+			return val
+		}
+		h, ok := val.(*object.Hash)
+		if !ok {
+			return newError("cannot spread %s in object literal (only objects can be spread)", val.Type())
+		}
+		for k, pair := range h.Pairs {
+			pairs[k] = pair
+		}
+	}
 	for keyNode, valueNode := range node.Pairs {
 		key := Eval(keyNode, env)
 		if isError(key) {
@@ -983,6 +1070,172 @@ func evalHashLiteral(node *ast.HashLiteral, env *object.Environment) object.Obje
 		pairs[hashed] = object.HashPair{Key: key, Value: value}
 	}
 	return &object.Hash{Pairs: pairs}
+}
+
+// ---- Wave 1: destructuring ----
+
+func evalDestructureLet(node *ast.DestructureLetStatement, env *object.Environment) object.Object {
+	val := Eval(node.Value, env)
+	if isError(val) {
+		return val
+	}
+	bind := func(name string, v object.Object) {
+		if node.IsConst {
+			env.SetConst(name, v)
+		} else {
+			env.Set(name, v)
+		}
+	}
+	switch pat := node.Pattern.(type) {
+	case *ast.ArrayPattern:
+		arr, ok := val.(*object.Array)
+		if !ok {
+			return newError("cannot destructure %s as array", val.Type())
+		}
+		for i, ident := range pat.Elements {
+			var el object.Object = NULL
+			if i < len(arr.Elements) {
+				el = arr.Elements[i]
+			}
+			bind(ident.Value, el)
+		}
+		if pat.Rest != nil {
+			rest := []object.Object{}
+			if len(arr.Elements) > len(pat.Elements) {
+				rest = append(rest, arr.Elements[len(pat.Elements):]...)
+			}
+			bind(pat.Rest.Value, &object.Array{Elements: rest})
+		}
+	case *ast.HashPattern:
+		hash, ok := val.(*object.Hash)
+		if !ok {
+			return newError("cannot destructure %s as object", val.Type())
+		}
+		for _, e := range pat.Entries {
+			key := &object.String{Value: e.Key.Value}
+			var v object.Object = NULL
+			if pair, ok := hash.Pairs[key.HashKey()]; ok {
+				v = pair.Value
+			}
+			bind(e.Value.Value, v)
+		}
+	default:
+		return newError("invalid destructure pattern")
+	}
+	return NULL
+}
+
+// ---- Wave 1: optional chaining ----
+
+// evalMemberAccess is the shared core of `.` member access (extracted from
+// evalMemberExpression so optional chains reuse identical semantics).
+func evalMemberAccess(obj object.Object, name string) object.Object {
+	if inst, ok := obj.(*object.Instance); ok {
+		if val, ok := inst.Get(name); ok {
+			return val
+		}
+		return newError("property not found: %s", name)
+	}
+	if hash, ok := obj.(*object.Hash); ok {
+		// allow obj.key as sugar for obj["key"]
+		key := &object.String{Value: name}
+		return evalHashIndexExpression(hash, key)
+	}
+	return newError("member access on non-instance: %s", obj.Type())
+}
+
+func evalOptionalChain(node *ast.OptionalChainExpression, env *object.Environment) object.Object {
+	current := Eval(node.Base, env)
+	if isError(current) {
+		return current
+	}
+	if current.Type() == object.NULL_OBJ {
+		return NULL
+	}
+	var memberRecv object.Object
+	var memberName string
+	lastWasMember := false
+	for _, link := range node.Links {
+		switch link.Kind {
+		case ast.ChainMember:
+			memberRecv, memberName = current, link.Property.Value
+			current = evalMemberAccess(current, link.Property.Value)
+			lastWasMember = true
+		case ast.ChainIndex:
+			idx := Eval(link.Index, env)
+			if isError(idx) {
+				return idx
+			}
+			current = evalIndexExpression(current, idx)
+			lastWasMember = false
+		case ast.ChainCall:
+			args := evalExpressions(link.Arguments, env)
+			if len(args) == 1 && isError(args[0]) {
+				return args[0]
+			}
+			if lastWasMember {
+				// Same semantics as obj.method(args): binds `this` for instances.
+				current = evalMethodCall(memberRecv, memberName, args, env)
+			} else {
+				current = applyFunction(current, args)
+			}
+			lastWasMember = false
+		default:
+			return newError("unknown chain link")
+		}
+		if isError(current) {
+			return current
+		}
+		// Short-circuit: a null link makes the whole chain null without
+		// evaluating any remaining links (no calls, no index exprs).
+		if current.Type() == object.NULL_OBJ {
+			return NULL
+		}
+	}
+	return current
+}
+
+// ---- Wave 1: string interpolation ----
+
+func evalInterpolatedString(node *ast.InterpolatedString, env *object.Environment) object.Object {
+	var sb strings.Builder
+	for _, part := range node.Parts {
+		val := Eval(part, env)
+		if isError(val) {
+			return val
+		}
+		sb.WriteString(val.Inspect())
+	}
+	return &object.String{Value: sb.String()}
+}
+
+// ---- Wave 1: ranges ----
+
+func evalRangeExpression(node *ast.RangeExpression, env *object.Environment) object.Object {
+	start := Eval(node.Start, env)
+	if isError(start) {
+		return start
+	}
+	end := Eval(node.End, env)
+	if isError(end) {
+		return end
+	}
+	s, ok1 := start.(*object.Integer)
+	e, ok2 := end.(*object.Integer)
+	if !ok1 || !ok2 {
+		return newError("range endpoints must be integers, got %s and %s", start.Type(), end.Type())
+	}
+	elements := []object.Object{}
+	if node.Inclusive {
+		for i := s.Value; i <= e.Value; i++ {
+			elements = append(elements, &object.Integer{Value: i})
+		}
+	} else {
+		for i := s.Value; i < e.Value; i++ {
+			elements = append(elements, &object.Integer{Value: i})
+		}
+	}
+	return &object.Array{Elements: elements}
 }
 
 func evalIndexAssignExpression(node *ast.IndexAssignExpression, env *object.Environment) object.Object {
@@ -1028,61 +1281,65 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 	}
 
 	var result object.Object = NULL
+	broke := false
 
 	switch it := iterable.(type) {
 	case *object.Array:
+	loopArr:
 		for _, el := range it.Elements {
 			env.Set(fs.Name.Value, el)
 			result = Eval(fs.Body, env)
-			if result != nil {
-				rt := result.Type()
-				if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
-					return result
-				}
-				if rt == object.BREAK_OBJ {
-					return NULL
-				}
-				if rt == object.CONTINUE_OBJ {
-					continue
-				}
+			sig, prop := handleLoopResult(result, fs.Label)
+			switch sig {
+			case sigPropagate:
+				return prop
+			case sigBreakMatched:
+				broke = true
+				break loopArr
+			case sigContinueMatched:
+				continue
 			}
 		}
 	case *object.String:
+	loopStr:
 		for _, ch := range it.Value {
 			env.Set(fs.Name.Value, &object.String{Value: string(ch)})
 			result = Eval(fs.Body, env)
-			if result != nil {
-				rt := result.Type()
-				if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
-					return result
-				}
-				if rt == object.BREAK_OBJ {
-					return NULL
-				}
-				if rt == object.CONTINUE_OBJ {
-					continue
-				}
+			sig, prop := handleLoopResult(result, fs.Label)
+			switch sig {
+			case sigPropagate:
+				return prop
+			case sigBreakMatched:
+				broke = true
+				break loopStr
+			case sigContinueMatched:
+				continue
 			}
 		}
 	case *object.Hash:
+	loopHash:
 		for _, pair := range it.Pairs {
 			env.Set(fs.Name.Value, pair.Key)
 			result = Eval(fs.Body, env)
-			if result != nil {
-				rt := result.Type()
-				if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
-					return result
-				}
-				if rt == object.BREAK_OBJ {
-					return NULL
-				}
-				if rt == object.CONTINUE_OBJ {
-					continue
-				}
+			sig, prop := handleLoopResult(result, fs.Label)
+			switch sig {
+			case sigPropagate:
+				return prop
+			case sigBreakMatched:
+				broke = true
+				break loopHash
+			case sigContinueMatched:
+				continue
 			}
 		}
 	default:
 		return newError("for-in not supported on %s", iterable.Type())
+	}
+	if broke {
+		return NULL
+	}
+	if fs.OrElse != nil {
+		return Eval(fs.OrElse, env)
 	}
 	return result
 }
@@ -1187,18 +1444,7 @@ func evalMemberExpression(node *ast.MemberExpression, env *object.Environment) o
 	if isError(obj) {
 		return obj
 	}
-	if inst, ok := obj.(*object.Instance); ok {
-		if val, ok := inst.Get(node.Property.Value); ok {
-			return val
-		}
-		return newError("property not found: %s", node.Property.Value)
-	}
-	if hash, ok := obj.(*object.Hash); ok {
-		// allow obj.key as sugar for obj["key"]
-		key := &object.String{Value: node.Property.Value}
-		return evalHashIndexExpression(hash, key)
-	}
-	return newError("member access on non-instance: %s", obj.Type())
+	return evalMemberAccess(obj, node.Property.Value)
 }
 
 func evalMemberAssignExpression(node *ast.MemberAssignExpression, env *object.Environment) object.Object {

@@ -1,0 +1,16 @@
+// Wave 1: ranges — 1..10 inclusive, 1...5 exclusive
+print 1..5
+print 1...5
+print 0..0
+print 3..1
+print "== for-in over ranges =="
+let total = 0
+for (x in 1..5) { total = total + x }
+print total
+for (i in 0...3) { print i }
+print "== ranges are arrays =="
+let r = 2..4
+print r[0]
+print r[2]
+print len(r)
+print r[0:2]

@@ -62,7 +62,8 @@ func styleFor(t lexer.TokenType) string {
 	case lexer.ASSIGN, lexer.PLUS_ASSIGN, lexer.MINUS_ASSIGN, lexer.STAR_ASSIGN, lexer.SLASH_ASSIGN,
 		lexer.PLUS, lexer.MINUS, lexer.BANG, lexer.ASTERISK, lexer.SLASH, lexer.MOD,
 		lexer.LT, lexer.GT, lexer.EQ, lexer.NOT_EQ, lexer.LTE, lexer.GTE,
-		lexer.AND, lexer.OR, lexer.NULL_COAL, lexer.QUESTION:
+		lexer.AND, lexer.OR, lexer.NULL_COAL, lexer.QUESTION,
+		lexer.OPTIONAL_CHAIN, lexer.PIPE, lexer.ELLIPSIS:
 		return yellow
 	case lexer.ILLEGAL:
 		return bold + red
