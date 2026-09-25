@@ -1,4 +1,4 @@
-# NvS (Navescript) 2.1.0 — Language Overview
+# NvS (Navescript) 2.2.0 — Language Overview
 
 NvS is a custom multi-paradigm scripting language drawing features from
 Python, JavaScript, Go, Ruby, Rust, Java, C#, and others — implemented

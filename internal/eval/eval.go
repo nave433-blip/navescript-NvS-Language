@@ -28,6 +28,7 @@ import (
 	"github.com/navescript/nvs/internal/fuzzy"
 	"github.com/navescript/nvs/internal/highlight"
 	"github.com/navescript/nvs/internal/polyglot"
+	"github.com/navescript/nvs/internal/quantum"
 	"github.com/navescript/nvs/internal/sqlite"
 )
 
@@ -44,6 +45,7 @@ var PreludePaths = []string{
 func LoadPrelude(env *object.Environment) {
 	// Always inject language identity builtins first via ensureBuiltins
 	ensureBuiltins()
+	injectPhysicsSymbols(env)
 	for _, path := range PreludePaths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -714,6 +716,68 @@ func intPow(a, b int64) int64 {
 		r *= a
 	}
 	return r
+}
+
+
+func injectPhysicsSymbols(env *object.Environment) {
+	putF := func(name string, v float64) {
+		env.Set(name, &object.Float{Value: v})
+	}
+	putF("π", quantum.Pi)
+	putF("pi", quantum.Pi)
+	putF("τ", quantum.Pi*2)
+	putF("tau", quantum.Pi*2)
+	putF("φ", (1+math.Sqrt(5))/2)
+	putF("phi", (1+math.Sqrt(5))/2)
+	putF("ℏ", quantum.Hbar)
+	putF("hbar", quantum.Hbar)
+	putF("h_planck", quantum.H)
+	putF("c_light", quantum.C)
+	putF("G_grav", quantum.G)
+	putF("k_B", quantum.K_B)
+	putF("e_charge", quantum.E_CHARGE)
+	putF("m_e", quantum.M_E)
+	putF("m_p", quantum.M_P)
+	putF("N_A", quantum.NA)
+	putF("α", quantum.ALPHA)
+	putF("alpha_fs", quantum.ALPHA)
+	// remaining greek as 0.0 placeholders users can reassign
+	for glyph, val := range quantum.GreekLetters {
+		if _, ok := env.Get(glyph); !ok {
+			putF(glyph, val)
+		}
+	}
+}
+
+
+
+func stateToArray(s quantum.State) *object.Array {
+	els := make([]object.Object, len(s))
+	for i, a := range s {
+		els[i] = &object.Array{Elements: []object.Object{
+			&object.Float{Value: real(a)},
+			&object.Float{Value: imag(a)},
+		}}
+	}
+	return &object.Array{Elements: els}
+}
+
+func arrayToState(obj object.Object) (quantum.State, error) {
+	arr, ok := obj.(*object.Array)
+	if !ok {
+		return nil, fmt.Errorf("state must be array of [re,im] pairs")
+	}
+	pairs := make([][2]float64, len(arr.Elements))
+	for i, el := range arr.Elements {
+		pair, ok := el.(*object.Array)
+		if !ok || len(pair.Elements) < 2 {
+			return nil, fmt.Errorf("state[%d] must be [re,im]", i)
+		}
+		re, _ := toFloat(pair.Elements[0])
+		im, _ := toFloat(pair.Elements[1])
+		pairs[i] = [2]float64{re, im}
+	}
+	return quantum.FromPairs(pairs), nil
 }
 
 func newError(format string, a ...interface{}) *object.Error {
@@ -2374,7 +2438,7 @@ func initBuiltins() {
 	
 	"nvs_version": {
 		Fn: func(args ...object.Object) object.Object {
-			return &object.String{Value: "2.1.0"}
+			return &object.String{Value: "2.2.0"}
 		},
 	},
 	"nvs_language": {
@@ -2392,7 +2456,7 @@ func initBuiltins() {
 			}
 			put("name", "NvS")
 			put("full", "Navescript")
-			put("version", "2.1.0")
+			put("version", "2.2.0")
 			put("impl", "tree-walker")
 			put("host", "go")
 			return &object.Hash{Pairs: pairs}
@@ -2536,6 +2600,170 @@ func initBuiltins() {
 			}
 			h.Pairs[key.HashKey()] = object.HashPair{Key: args[1], Value: TRUE}
 			return h
+		},
+	},
+	
+	"qubit": {
+		Fn: func(args ...object.Object) object.Object {
+			bit := 0
+			if len(args) >= 1 {
+				if i, ok := args[0].(*object.Integer); ok {
+					bit = int(i.Value)
+				}
+			}
+			s := quantum.NewQubit(bit)
+			return stateToArray(s)
+		},
+	},
+	"qzero": {
+		Fn: func(args ...object.Object) object.Object {
+			n := 1
+			if len(args) >= 1 {
+				if i, ok := args[0].(*object.Integer); ok {
+					n = int(i.Value)
+				}
+			}
+			if n < 1 {
+				n = 1
+			}
+			if n > 8 {
+				return newError("qzero: max 8 qubits in this build")
+			}
+			return stateToArray(quantum.NewZero(n))
+		},
+	},
+	"qgate": {
+		Fn: func(args ...object.Object) object.Object {
+			// qgate(state, "H"|"X"|"Y"|"Z"|"S"|"T"|"RX"|"RY"|"RZ"|"CNOT", [angle])
+			if len(args) < 2 {
+				return newError("qgate: want state, name, [angle]")
+			}
+			s, err := arrayToState(args[0])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			name, ok := args[1].(*object.String)
+			if !ok {
+				return newError("qgate: name must be string")
+			}
+			angle := 0.0
+			if len(args) >= 3 {
+				angle, _ = toFloat(args[2])
+			}
+			out, err := quantum.ApplyNamedGate(s, name.Value, angle)
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			return stateToArray(out)
+		},
+	},
+	"qmeasure": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) < 1 {
+				return newError("qmeasure: want state")
+			}
+			s, err := arrayToState(args[0])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			out, ns := quantum.Measure(s)
+			// return {outcome, state}
+			pairs := map[object.HashKey]object.HashPair{}
+			k1 := &object.String{Value: "outcome"}
+			v1 := &object.Integer{Value: int64(out)}
+			pairs[k1.HashKey()] = object.HashPair{Key: k1, Value: v1}
+			k2 := &object.String{Value: "state"}
+			v2 := stateToArray(ns)
+			pairs[k2.HashKey()] = object.HashPair{Key: k2, Value: v2}
+			return &object.Hash{Pairs: pairs}
+		},
+	},
+	"qprob": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) < 1 {
+				return newError("qprob: want state")
+			}
+			s, err := arrayToState(args[0])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			p := quantum.Probabilities(s)
+			els := make([]object.Object, len(p))
+			for i, v := range p {
+				els[i] = &object.Float{Value: v}
+			}
+			return &object.Array{Elements: els}
+		},
+	},
+	"qtensor": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("qtensor: want state_a, state_b")
+			}
+			a, err := arrayToState(args[0])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			b, err := arrayToState(args[1])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			return stateToArray(quantum.Tensor(a, b))
+		},
+	},
+	"qnormalize": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("qnormalize: want state")
+			}
+			s, err := arrayToState(args[0])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			return stateToArray(quantum.Normalize(s))
+		},
+	},
+	"qinner": {
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("qinner: want state_a, state_b")
+			}
+			a, err := arrayToState(args[0])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			b, err := arrayToState(args[1])
+			if err != nil {
+				return newError("%s", err.Error())
+			}
+			c := quantum.Inner(a, b)
+			// return [re, im]
+			return &object.Array{Elements: []object.Object{
+				&object.Float{Value: real(c)},
+				&object.Float{Value: imag(c)},
+			}}
+		},
+	},
+	"physics_const": {
+		Fn: func(args ...object.Object) object.Object {
+			// physics_const("hbar"|"pi"|"c"|...) or list all
+			if len(args) == 0 {
+				pairs := map[object.HashKey]object.HashPair{}
+				for k, v := range quantum.GreekLetters {
+					ks := &object.String{Value: k}
+					vs := &object.Float{Value: v}
+					pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
+				}
+				return &object.Hash{Pairs: pairs}
+			}
+			name, ok := args[0].(*object.String)
+			if !ok {
+				return newError("physics_const: want string name")
+			}
+			if v, ok := quantum.GreekLetters[name.Value]; ok {
+				return &object.Float{Value: v}
+			}
+			return newError("physics_const: unknown %s", name.Value)
 		},
 	},
 	"plugins": {

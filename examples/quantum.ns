@@ -1,0 +1,37 @@
+// Quantum + Greek / physics symbols (classical simulation)
+print "π = " + str(π)
+print "ℏ = " + str(ℏ)
+print "φ (golden) = " + str(φ)
+print "α fine-structure = " + str(α)
+print "c_light = " + str(c_light)
+
+// Single qubit |0>, apply Hadamard → equal superposition
+let q = qubit(0)
+print "q0 = " + str(q)
+let h = qgate(q, "H")
+print "H|0> probs = " + str(qprob(h))
+
+// Pauli-X flips |0> → |1>
+let x = qgate(qubit(0), "X")
+print "X|0> probs = " + str(qprob(x))
+
+// Bell-ish: |0>⊗|0>, H on first via tensor of H|0> with |0>
+let epr = qtensor(qgate(qubit(0), "H"), qubit(0))
+print "EPR-prep probs = " + str(qprob(epr))
+
+// Measure
+let m = qmeasure(h)
+print "measure outcome = " + str(m["outcome"])
+
+// Rotation
+let r = qgate(qubit(0), "RY", π / 2)
+print "RY(π/2)|0> probs = " + str(qprob(r))
+
+// Inner product <0|1> ~ 0
+let ip = qinner(qubit(0), qubit(1))
+print "inner |0>|1> = " + str(ip)
+
+// physics_const lookup
+print "physics_const hbar = " + str(physics_const("hbar"))
+
+print "QUANTUM OK"
