@@ -1127,26 +1127,29 @@ func callableLabel(obj object.Object) string {
 func evalCollectingYields(body *ast.BlockStatement, env *object.Environment) ([]object.Object, bool, object.Object) {
 	var yields []object.Object
 	var last object.Object = NULL
-	hasYield := false
+	// Wave 11: install a yield sink on the call's own environment. Yields
+	// anywhere in the body — including inside loops, ifs, and try blocks,
+	// which evaluate in enclosed scopes — append to it via
+	// evalYieldStatement (nearest-sink rule keeps nested function calls
+	// collecting into their own sink instead of this one).
+	var sink []object.Object
+	env.YieldSink = &sink
+	defer func() { env.YieldSink = nil }()
 	for _, stmt := range body.Statements {
 		last = Eval(stmt, env)
 		if last == nil {
 			continue
 		}
-		if yv, ok := last.(*object.YieldValue); ok {
-			hasYield = true
-			yields = append(yields, yv.Value)
-			continue
-		}
 		rt := last.Type()
 		if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
-			return yields, hasYield, last
+			break
 		}
 		if rt == object.BREAK_OBJ || rt == object.CONTINUE_OBJ {
-			return yields, hasYield, last
+			break
 		}
 	}
-	return yields, hasYield, last
+	yields = append(yields, sink...)
+	return yields, len(yields) > 0, last
 }
 
 // extendFunctionEnv binds args to params. Missing arguments without defaults
@@ -1788,6 +1791,28 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 			case sigBreakMatched:
 				broke = true
 				break loopHash
+			case sigContinueMatched:
+				continue
+			}
+		}
+	case *object.Generator:
+		// Wave 11: iterate a generator's remaining values via Next(), so a
+		// partially-consumed generator yields only what is left.
+	loopGen:
+		for {
+			el := it.Next()
+			if it.Exhausted {
+				break
+			}
+			env.Set(fs.Name.Value, el)
+			result = Eval(fs.Body, env)
+			sig, prop := handleLoopResult(result, fs.Label)
+			switch sig {
+			case sigPropagate:
+				return prop
+			case sigBreakMatched:
+				broke = true
+				break loopGen
 			case sigContinueMatched:
 				continue
 			}
@@ -2518,6 +2543,11 @@ func evalYieldStatement(node *ast.YieldStatement, env *object.Environment) objec
 		if isError(val) {
 			return val
 		}
+	}
+	// Wave 11: collect into the nearest enclosing generator's sink, so
+	// yields inside loops/if/try blocks are not swallowed.
+	if sink := env.NearestYieldSink(); sink != nil {
+		*sink = append(*sink, val)
 	}
 	return &object.YieldValue{Value: val}
 }
@@ -5392,6 +5422,26 @@ func initBuiltins() {
 					return newError("map_fn: want array")
 				}
 				var out []object.Object
+				for _, el := range arr.Elements {
+					res := applyFunction(args[1], []object.Object{el})
+					if isError(res) {
+						return res
+					}
+					out = append(out, res)
+				}
+				return &object.Array{Elements: out}
+			},
+		},
+		"map": {
+			Fn: func(args ...object.Object) object.Object {
+				if len(args) != 2 {
+					return newError("map: want array, function")
+				}
+				arr, ok := args[0].(*object.Array)
+				if !ok {
+					return newError("map: want array")
+				}
+				out := make([]object.Object, 0, len(arr.Elements))
 				for _, el := range arr.Elements {
 					res := applyFunction(args[1], []object.Object{el})
 					if isError(res) {

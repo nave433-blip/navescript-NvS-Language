@@ -437,6 +437,25 @@ type Environment struct {
 	// is checked by the evaluator before assigning).
 	declaredTypes map[string]*ast.TypeAnnotation
 	outer         *Environment
+	// Wave 11: yield collection for generator functions. When a function
+	// body is evaluated by evalCollectingYields, it installs a sink on the
+	// call's own environment; evalYieldStatement appends to the NEAREST
+	// sink up the scope chain, so yields inside loops/if/try blocks (which
+	// evaluate in enclosed environments) are collected instead of being
+	// swallowed. Each function call installs its own sink, so a yield in a
+	// nested function call belongs to the inner function, never the outer.
+	YieldSink *[]Object
+}
+
+// NearestYieldSink walks the scope chain outward and returns the closest
+// installed yield sink, or nil if no enclosing function is collecting.
+func (e *Environment) NearestYieldSink() *[]Object {
+	for env := e; env != nil; env = env.outer {
+		if env.YieldSink != nil {
+			return env.YieldSink
+		}
+	}
+	return nil
 }
 
 func NewEnvironment() *Environment {

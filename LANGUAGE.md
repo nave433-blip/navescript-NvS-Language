@@ -671,6 +671,32 @@ nvs nave examples/nave/hello.nave
 - Full YAML parser (`toml_parse` covers configs honestly; YAML's edge cases
   aren't worth a lying subset)
 
+## Wave 11 — polyglot tooling + generator/map
+
+**Polyglot** (see `docs/POLYGLOT.md` for the full protocol reference):
+
+- `nvs exports <file.ns>` — static description of a file's public surface
+  (functions with arity/params/defaults/return types, classes with methods,
+  enums, constants) as JSON, without executing it.
+- `nvs bindgen --to=python <file.ns> -o <module>.py` — generates a Python
+  module exposing every top-level function as a callable, routed through
+  the JSON bridge; NvS errors raise `NvSError`.
+- `nvs bridge --once` — process a single request line and exit.
+- Bridge requests may carry an `"id"`, echoed verbatim in the response.
+- Tested live: Python ctypes (C ABI), Python bindgen round-trip, Python and
+  Node.js bridge clients (`examples/wave11_node_bridge.mjs`).
+
+**Language:**
+
+- `for (x in gen())` — for-in now iterates generators (remaining values if
+  partially consumed via `next()`); `break`/`continue`/labels work.
+- `map(array, fn)` — the missing third of the map/filter/reduce trio.
+- **Bug fix:** `yield` inside `while`/`for`/`if`/`try` blocks was silently
+  swallowed — the function returned a non-generator value instead of
+  collecting the yields. Yields are now collected through a per-call sink
+  on the scope chain (nearest-sink rule keeps nested function calls
+  collecting into their own generator).
+
 ## Example
 ```ns
 enum Status { Ok, Err }

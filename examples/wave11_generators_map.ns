@@ -1,0 +1,42 @@
+// Wave 11 language additions: for-in over generators, and the map() builtin
+// (completing the map/filter/reduce trio).
+
+// --- for-in over generators ---
+fn squares(n) {
+  i = 0
+  while (i < n) {
+    yield i * i
+    i = i + 1
+  }
+}
+
+print "for-in over a generator:"
+for (s in squares(5)) {
+  print s
+}
+
+// A partially-consumed generator yields only its remainder.
+g = squares(10)
+print "next(g) = " + str(next(g))
+print "next(g) = " + str(next(g))
+print "remainder via for-in:"
+for (s in g) {
+  print s
+}
+
+// break works inside generator loops
+print "break at 16:"
+for (s in squares(100)) {
+  if (s > 10) { break }
+  print s
+}
+
+// --- map() ---
+print map([1, 2, 3, 4], fn(x) { return x * 2 })
+print map(["a", "bb"], fn(s) { return len(s) })
+
+// map + filter + reduce pipeline
+nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+evens_doubled = map(filter(nums, fn(x) { return x % 2 == 0 }), fn(x) { return x * 2 })
+print evens_doubled
+print reduce(evens_doubled, fn(a, b) { return a + b }, 0)
