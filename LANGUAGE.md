@@ -486,7 +486,9 @@ so these are the standard FFI spellings; verify against your toolchain):
 | Language | FFI route | Sketch |
 |----------|-----------|--------|
 | Python | ctypes (tested) / cffi | `examples/wave10_ctypes.py` |
-| Node.js | ffi-napi | `const lib = ffi.Library('./libnvs', {nvs_eval: ['string', ['string']], nvs_call: ['string', ['string', 'string']], nvs_free: ['void', ['string']]}); const p = lib.nvs_eval('1+2'); …` — note: route the raw pointer through `nvs_free`; do not let ffi-napi free it |
+| Python | JSON bridge + `nvs bindgen` (tested) | `nvs bindgen --to=python calc.ns -o calc.py`, then `Calc().add(2, 3)` |
+| Node.js | JSON bridge (tested) | `examples/wave11_node_bridge.mjs` — spawn `nvs bridge`, exchange line-delimited JSON |
+| Node.js | ffi-napi (untested sketch) | `const lib = ffi.Library('./libnvs', {nvs_eval: ['string', ['string']], nvs_call: ['string', ['string', 'string']], nvs_free: ['void', ['string']]}); const p = lib.nvs_eval('1+2'); …` — note: route the raw pointer through `nvs_free`; do not let ffi-napi free it. Requires an npm build step; not covered by tests. |
 | Ruby | fiddle / ffi gem | `Fiddle::Function.new(handle['nvs_eval'], [Fiddle::TYPE_VOIDP], Fiddle::TYPE_VOIDP)` — same ownership rule |
 | Rust | `extern "C"` | `extern "C" { fn nvs_eval(src: *const c_char) -> *mut c_char; fn nvs_free(s: *mut c_char); }` + `CStr::from_ptr` + `nvs_free` |
 | C# | P/Invoke | `[DllImport("libnvs")] static extern IntPtr nvs_eval(string src);` — marshal as `IntPtr`, call `nvs_free`, never `Marshal.FreeHGlobal` |

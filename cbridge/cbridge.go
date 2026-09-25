@@ -37,7 +37,9 @@ Threading / lifetime contract (also documented in LANGUAGE.md):
 Anything with a C FFI can load this: Python (ctypes/cffi), Ruby
 (fiddle/ffi), Node (ffi-napi), Rust (extern "C"), C# (P/Invoke), Java
 (JNA), LuaJIT, etc. See examples/wave10_ctypes.py for a working Python
-client, and LANGUAGE.md for sketches of the other languages.
+client. LANGUAGE.md sketches the other languages, but only the Python
+ctypes path and the JSON bridge have live test coverage — treat the rest
+as untested sketches until someone runs them.
 */
 package main
 
