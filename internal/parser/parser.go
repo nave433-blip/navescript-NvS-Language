@@ -1204,6 +1204,9 @@ func (p *Parser) parseInterfaceStatement() *ast.InterfaceDecl {
 		}
 		p.nextToken()
 	}
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
 	return stmt
 }
 
