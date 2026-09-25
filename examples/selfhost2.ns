@@ -1,0 +1,18 @@
+import "stdlib/selfhost/mini_eval.ns"
+
+print "--- arithmetic ---"
+print mini_eval("let x = 2 + 3 * 4 print x")
+
+print "--- while ---"
+print mini_eval("let i = 0 let s = 0 while (i < 5) { s = s + i i = i + 1 } print s")
+
+print "--- array ---"
+print mini_eval("let a = [10, 20, 30] print a[1]")
+
+print "--- function ---"
+print mini_eval("fn double(n) { return n * 2 } print double(21)")
+
+print "--- if/else ---"
+print mini_eval("if (1 > 2) { print 0 } else { print 1 }")
+
+print "SELFHOST2 OK"

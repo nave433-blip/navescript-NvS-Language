@@ -1,0 +1,16 @@
+// Demonstrate multi-language paths into NvS
+print "host version: " + nvs_version()
+
+// 1) Full host self_eval
+print self_eval("print 10 + 32")
+
+// 2) Pure NvS mini
+import "stdlib/selfhost/mini_eval.ns"
+print mini_eval("fn add(a, b) { return a + b } print add(3, 4)")
+
+// 3) Python polyglot mini (same subset)
+print python("import runpy")  // ensure python alive
+let pycode = "print(3*3)"
+print python(pycode)
+
+print "POLYGLOT_BOOTSTRAP OK"

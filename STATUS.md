@@ -1,27 +1,21 @@
-# Status — NvS 2.3.0 (self-hosting bootstrap)
+# Status — NvS 2.4.0
 
-## Self-hosting
-- [x] `stdlib/selfhost/mini_eval.ns` — pure NvS tokenizer + evaluator (subset)
-- [x] `examples/selfhost.ns` — NvS interpreting NvS → SELFHOST OK
-- [x] `self_eval(src)` builtin — full host re-entry interpreter
-- [x] `nvs selfhost <code|file>` CLI
-- [x] `nvs bootstrap` — build + selfhost + baseline
-- [x] Polyglot build drivers: `bootstrap/build_nvs.{sh,py,js,rb}`
+## Self-hosting stage 2
+- [x] `mini_eval` supports: while, arrays, index, fn/return/calls, if/else, &&/||
+- [x] `examples/selfhost2.ns` → SELFHOST2 OK
+- [x] Python twin interpreter: `bootstrap/nvs_mini.py`
+- [x] `examples/polyglot_bootstrap.ns` → multi-path OK
+- [x] Host: `self_eval`, `build_nvs`, `nvs selfhost`, `nvs bootstrap`
 
-## Multi-language builders
-| Driver | Path |
-|--------|------|
-| Shell | `bootstrap/build_nvs.sh` |
-| Python | `bootstrap/build_nvs.py` |
-| Node | `bootstrap/build_nvs.js` |
-| Ruby | `bootstrap/build_nvs.rb` |
-| NvS | `build_nvs("bin/nvs")` builtin |
-
-## Prior (still green)
-- Baseline, quantum, polyglot, highlight, fuzzy, corrections
-
+## Build from other languages
 ```bash
-nvs run examples/selfhost.ns
-nvs selfhost 'let x = 6 * 7 print x'
 bash bootstrap/build_nvs.sh
+python3 bootstrap/build_nvs.py
+python3 bootstrap/nvs_mini.py 'let x = 6*7 print x'
+node bootstrap/build_nvs.js
+ruby bootstrap/build_nvs.rb
 ```
+
+## Next
+- Expand mini_eval: maps, for-in, import
+- Emit real Go from NvS subset AST

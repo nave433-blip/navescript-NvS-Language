@@ -1,0 +1,13 @@
+// emit_go.ns — emit a tiny Go main from a restricted expression form
+// Usage: emit_go_program("print 1+2") -> Go source string
+
+fn emit_go_program(body_ns) {
+  let go = "package main\nimport \"fmt\"\nfunc main() {\n"
+  // naive: wrap as comment + rely on host for real compile
+  go = go + "  // NvS source:\n"
+  go = go + "  // " + body_ns + "\n"
+  go = go + "  fmt.Println(\"nvs-emit-placeholder\")\n}\n"
+  return go
+}
+
+print "emit_go loaded"
