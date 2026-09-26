@@ -3258,7 +3258,7 @@ func initBuiltins() {
 				if !ok {
 					return newError("python: code must be string")
 				}
-				cmd := exec.Command("python3", "-c", code.Value)
+				cmd := exec.Command(polyglot.PythonBinary(), "-c", code.Value)
 				out, err := cmd.CombinedOutput()
 				if err != nil {
 					return newError("python: %s\n%s", err.Error(), string(out))

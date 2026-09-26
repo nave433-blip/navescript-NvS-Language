@@ -86,7 +86,7 @@ func ValidateOutput(lang, code string) []string {
 }
 
 func runPythonSyntax(code string) Result {
-	cmd := exec.Command("python3", "-c", "import ast,sys; ast.parse(sys.argv[1])", code)
+	cmd := exec.Command(PythonBinary(), "-c", "import ast,sys; ast.parse(sys.argv[1])", code)
 	out, err := cmd.CombinedOutput()
 	return Result{Output: string(out), Err: err}
 }

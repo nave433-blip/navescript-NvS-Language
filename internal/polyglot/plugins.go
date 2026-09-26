@@ -39,11 +39,15 @@ func writeFile(path, content string) error {
 // Python runs python3 -c, falling back to python (stock Windows installs
 // provide python.exe, not python3.exe).
 func Python(code string) Result {
-	bin := "python3"
-	if _, err := exec.LookPath(bin); err != nil {
-		bin = "python"
+	return runCmd(PythonBinary(), "-c", code)
+}
+
+// PythonBinary resolves the Python interpreter binary for this host.
+func PythonBinary() string {
+	if _, err := exec.LookPath("python3"); err == nil {
+		return "python3"
 	}
-	return runCmd(bin, "-c", code)
+	return "python"
 }
 
 // JS runs node -e
