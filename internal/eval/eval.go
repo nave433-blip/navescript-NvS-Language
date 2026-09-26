@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -4949,6 +4950,42 @@ func initBuiltins() {
 					el[i] = &object.String{Value: a}
 				}
 				return &object.Array{Elements: el}
+			},
+		},
+		// Wave 16 — kernel/OS introspection builtins. NvS programs use these
+		// (usually via stdlib/os.nvs) to detect their kernel and adapt:
+		// NT ("nt") vs Unix ("unix") behavior differences.
+		"os_name": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: runtime.GOOS}
+			},
+		},
+		"os_kernel": {
+			Fn: func(args ...object.Object) object.Object {
+				if runtime.GOOS == "windows" {
+					return &object.String{Value: "nt"}
+				}
+				return &object.String{Value: "unix"}
+			},
+		},
+		"os_sep": {
+			Fn: func(args ...object.Object) object.Object {
+				return &object.String{Value: string(os.PathSeparator)}
+			},
+		},
+		"os_eol": {
+			Fn: func(args ...object.Object) object.Object {
+				if runtime.GOOS == "windows" {
+					return &object.String{Value: "\r\n"}
+				}
+				return &object.String{Value: "\n"}
+			},
+		},
+		"os_shell": {
+			Fn: func(args ...object.Object) object.Object {
+				// Which shell the sh()/system() builtins invoke:
+				// "cmd" on NT, "sh" on Unix. See shell_unix.go/shell_windows.go.
+				return &object.String{Value: shellName()}
 			},
 		},
 		"int": {

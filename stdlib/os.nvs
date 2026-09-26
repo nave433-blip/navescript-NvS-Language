@@ -1,0 +1,105 @@
+// NvS standard library: os — kernel/OS portability helpers in pure NvS.
+//
+// The Go builtins os_name(), os_kernel(), os_sep(), os_eol(), os_shell()
+// report runtime facts; this module builds the adaptation layer NvS programs
+// use to run unmodified on NT (Windows) and Unix (Linux/macOS) kernels.
+//
+// Already covered by Go builtins (not duplicated here): env(), set_env(),
+// args(), join_path(), basename(), dirname(), exists(), abs_path(), extname().
+//
+// Import with:   import "stdlib/os.nvs"
+
+/// True when running on an NT kernel (Windows).
+fn os_is_windows() {
+  return os_kernel() == "nt"
+}
+
+/// True when running on a Unix kernel (Linux, macOS, *BSD, ...).
+fn os_is_unix() {
+  return os_kernel() == "unix"
+}
+
+/// Executable suffix for the current kernel: ".exe" on NT, "" on Unix.
+fn os_exe_suffix() {
+  if (os_is_windows()) { return ".exe" }
+  return ""
+}
+
+/// Normalize a path string using an explicit separator: converts the other
+/// separator, collapses duplicates, resolves "." and ".." segments.
+/// Understands drive letters ("C:\\a\\..\\b" -> "C:\\b") for any sep.
+/// Known simplification: a UNC prefix "\\\\server\\share" collapses to a
+/// single leading separator (Go's filepath keeps the double prefix).
+fn os_path_norm_with(sep, p) {
+  let other = "/"
+  if (sep == "/") { other = "\\" }
+  let s = replace(p, other, sep)
+  // Split off a Windows drive letter ("C:") if present.
+  let drive = ""
+  let rest = s
+  if (len(s) >= 2 and s[1] == ":") {
+    drive = substr(s, 0, 2)
+    rest = substr(s, 2, len(s) - 2)
+  }
+  let absolute = starts_with(rest, sep)
+  let out = []
+  for (seg in split(rest, sep)) {
+    if (seg == "" or seg == ".") { continue }
+    if (seg == "..") {
+      if (len(out) > 0) { out = slice(out, 0, len(out) - 1) }
+      continue
+    }
+    out = push(out, seg)
+  }
+  let joined = join(out, sep)
+  if (absolute) { joined = sep + joined }
+  if (joined == "" and drive != "") { return drive + sep }
+  return drive + joined
+}
+
+/// Normalize a path using the current kernel's separator.
+fn os_path_norm(p) {
+  return os_path_norm_with(os_sep(), p)
+}
+
+/// True when p is absolute under an explicit separator: "/x" (unix) or
+/// "C:\\x", "C:/x", "\\\\server\\x" (windows).
+fn os_is_abs_with(sep, p) {
+  if (sep == "/") {
+    return starts_with(p, "/")
+  }
+  if (len(p) >= 2 and p[1] == ":") { return true }
+  return starts_with(p, "\\\\") or starts_with(p, "//")
+}
+
+/// True when p is absolute under the current kernel's conventions.
+fn os_is_abs(p) {
+  return os_is_abs_with(os_sep(), p)
+}
+
+/// Join path parts with an explicit separator (parts is an array).
+/// Unlike the join_path() builtin (native-separator only), this handles
+/// foreign-format paths — e.g. building Windows paths while on Unix.
+fn os_path_join_with(sep, parts) {
+  let cleaned = []
+  for (part in parts) {
+    let s = str(part)
+    // Strip leading/trailing separators except: keep one leading sep on the
+    // first part (preserves absoluteness) and a drive letter intact.
+    if (len(cleaned) > 0) {
+      while (starts_with(s, sep) or starts_with(s, "/") or starts_with(s, "\\")) {
+        s = substr(s, 1, len(s) - 1)
+      }
+    }
+    while ((ends_with(s, sep) or ends_with(s, "/") or ends_with(s, "\\")) and len(s) > 1) {
+      s = substr(s, 0, len(s) - 1)
+    }
+    cleaned = push(cleaned, s)
+  }
+  return os_path_norm_with(sep, join(cleaned, sep))
+}
+
+/// Join path parts (array) with the current kernel's separator.
+fn os_path_join(parts) {
+  return os_path_join_with(os_sep(), parts)
+}
