@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/navescript/nvs/internal/debug"
 	"github.com/navescript/nvs/internal/eval"
 	"github.com/navescript/nvs/internal/lsp"
-	"github.com/navescript/nvs/internal/debug"
 	"github.com/navescript/nvs/internal/pkg"
 	"github.com/navescript/nvs/internal/tools"
 )
@@ -42,8 +42,14 @@ func runPkgCmd(args []string) {
 		fmt.Printf("initialized NvS package %q in %s\n", m.Name, dir)
 	case "install", "add":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: nvs pkg install <user/repo[@tag]|./path|/abs/path>")
-			os.Exit(1)
+			// No spec: replay the lockfile, like the docs promise.
+			if err := pkg.InstallFromLock("."); err != nil {
+				fmt.Fprintf(os.Stderr, "nvs pkg install: %v\n", err)
+				fmt.Fprintln(os.Stderr, "usage: nvs pkg install <user/repo[@tag]|./path|/abs/path>")
+				os.Exit(1)
+			}
+			fmt.Println("installed all packages from nvs.lock")
+			break
 		}
 		for _, spec := range args[1:] {
 			inst, err := pkg.Install(spec, pkg.InstallOptions{})
@@ -160,6 +166,7 @@ func runDebugCmd(args []string) {
 		os.Exit(1)
 	}
 }
+
 // changes. Polling-based: no new dependencies, works everywhere.
 func runWatch(path string) {
 	dir := filepath.Dir(path)

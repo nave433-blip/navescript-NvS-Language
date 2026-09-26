@@ -11,11 +11,14 @@ import (
 
 // Manifest is the parsed contents of nvs.json.
 type Manifest struct {
-	Name        string            `json:"name"`
-	Version     string            `json:"version"`
-	Description string            `json:"description,omitempty"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// Wave 17: description and deps are always serialized (never
+	// omitted), so `nvs pkg init` scaffolds them explicitly and every
+	// manifest states its dependencies up front — even when empty.
+	Description string            `json:"description"`
 	Main        string            `json:"main,omitempty"`
-	Deps        map[string]string `json:"deps,omitempty"`
+	Deps        map[string]string `json:"deps"`
 }
 
 var (
