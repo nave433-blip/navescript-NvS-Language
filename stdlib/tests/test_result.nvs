@@ -1,0 +1,52 @@
+// Tests for stdlib/result.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_result.nvs
+import "../result.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+
+check("is_some", res_is_some(res_some(1)) == true)
+check("is_some no", res_is_some(res_none()) == false)
+check("is_some junk", res_is_some(42) == false)
+check("is_none", res_is_none(res_none()) == true)
+check("is_ok", res_is_ok(res_ok(1)) == true)
+check("is_err", res_is_err(res_err("e")) == true)
+check("is_err no", res_is_err(res_ok(1)) == false)
+
+check("map some", deep_equal(res_map(res_some(2), fn(x) { return x * 3 }), res_some(6)))
+check("map none", deep_equal(res_map(res_none(), fn(x) { return x * 3 }), res_none()))
+check("map ok", deep_equal(res_map(res_ok(2), fn(x) { return x + 1 }), res_ok(3)))
+check("map err", deep_equal(res_map(res_err("e"), fn(x) { return 1 }), res_err("e")))
+
+check("and_then some", deep_equal(res_and_then(res_some(2), fn(x) { return res_some(x * 2) }), res_some(4)))
+check("and_then none", deep_equal(res_and_then(res_none(), fn(x) { return res_some(1) }), res_none()))
+
+check("unwrap_or some", res_unwrap_or(res_some(5), 0) == 5)
+check("unwrap_or none", res_unwrap_or(res_none(), 0) == 0)
+check("unwrap_or err", res_unwrap_or(res_err("x"), "dflt") == "dflt")
+
+check("expect some", res_expect(res_some(9), "boom") == 9)
+let threw = false
+try { res_expect(res_none(), "boom") } catch (e) { threw = (e == "boom") }
+check("expect throws", threw)
+
+check("map_err", deep_equal(res_map_err(res_err("e"), fn(x) { return x + "!" }), res_err("e!")))
+check("map_err ok", deep_equal(res_map_err(res_ok(1), fn(x) { return 1 }), res_ok(1)))
+
+check("ok_or some", deep_equal(res_ok_or(res_some(3), "missing"), res_ok(3)))
+check("ok_or none", deep_equal(res_ok_or(res_none(), "missing"), res_err("missing")))
+
+check("transpose none", deep_equal(res_transpose(res_none()), res_ok(res_none())))
+check("transpose some-ok", deep_equal(res_transpose(res_some(res_ok(7))), res_ok(res_some(7))))
+check("transpose some-err", deep_equal(res_transpose(res_some(res_err("bad"))), res_err("bad")))
+let threw2 = false
+try { res_transpose(res_ok(1)) } catch (e) { threw2 = true }
+check("transpose bad-throws", threw2)
+
+if (failures > 0) { throw "test_result failures: " + str(failures) }
+print "PASS: test_result"

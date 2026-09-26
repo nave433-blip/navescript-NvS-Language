@@ -1,0 +1,161 @@
+// NvS standard library: iter — iterator combinators in pure NvS.
+// Python itertools + Rust Iterator counterparts.
+// The Go builtins already cover: map, filter, reduce, zip, chunk, take,
+// drop, find, unique, flatten (deep), sort. This module fills the gaps.
+//
+// Import with:   import "stdlib/iter.nvs"
+// (resolved against the importing file's directory, else the working directory)
+
+/// Concatenate two arrays end to end (Python itertools.chain on 2 iterables).
+/// The builtin flatten() is deep; chain() never descends into elements.
+fn iter_chain(a, b) {
+  let out = []
+  for (x in a) { out = push(out, x) }
+  for (x in b) { out = push(out, x) }
+  return out
+}
+
+/// Like the builtin zip(), but continues to the longest input, filling the
+/// missing side with `fill` (Python itertools.zip_longest).
+fn iter_zip_longest(a, b, fill) {
+  let out = []
+  let n = len(a)
+  if (len(b) > n) { n = len(b) }
+  let i = 0
+  while (i < n) {
+    let x = fill
+    let y = fill
+    if (i < len(a)) { x = a[i] }
+    if (i < len(b)) { y = b[i] }
+    out = push(out, [x, y])
+    i = i + 1
+  }
+  return out
+}
+
+/// Leading elements while pred holds (Python itertools.takewhile).
+fn iter_take_while(arr, pred) {
+  let out = []
+  for (x in arr) {
+    if (!pred(x)) { break }
+    out = push(out, x)
+  }
+  return out
+}
+
+/// Array with leading elements while pred holds removed (itertools.dropwhile).
+fn iter_drop_while(arr, pred) {
+  let out = []
+  let dropping = true
+  for (x in arr) {
+    if (dropping and pred(x)) { continue }
+    dropping = false
+    out = push(out, x)
+  }
+  return out
+}
+
+/// Overlapping pairs: [a,b,c] -> [[a,b],[b,c]] (Python itertools.pairwise,
+/// Rust slice::windows(2)).
+fn iter_pairwise(arr) {
+  let out = []
+  let i = 0
+  while (i + 1 < len(arr)) {
+    out = push(out, [arr[i], arr[i + 1]])
+    i = i + 1
+  }
+  return out
+}
+
+/// The array repeated `times` times end to end. (Python's itertools.cycle is
+/// infinite; NvS arrays are finite, so the repetition count is explicit.)
+fn iter_cycle(arr, times) {
+  let out = []
+  let t = 0
+  while (t < times) {
+    for (x in arr) { out = push(out, x) }
+    t = t + 1
+  }
+  return out
+}
+
+/// Array of `n` copies of x (Python itertools.repeat).
+fn iter_repeat_n(x, n) {
+  let out = []
+  let i = 0
+  while (i < n) {
+    out = push(out, x)
+    i = i + 1
+  }
+  return out
+}
+
+/// Running reductions: f is (acc, x); result[i] folds arr[0..i]
+/// (Python itertools.accumulate, Rust scan).
+fn iter_accumulate(arr, f) {
+  let out = []
+  if (len(arr) == 0) { return out }
+  let acc = arr[0]
+  out = push(out, acc)
+  let i = 1
+  while (i < len(arr)) {
+    acc = f(acc, arr[i])
+    out = push(out, acc)
+    i = i + 1
+  }
+  return out
+}
+
+/// Flatten exactly one level (the builtin flatten() is recursive).
+fn iter_flatten1(arr) {
+  let out = []
+  for (el in arr) {
+    if (is_array(el)) {
+      for (x in el) { out = push(out, x) }
+    } else {
+      out = push(out, el)
+    }
+  }
+  return out
+}
+
+/// Map f over arr, then flatten one level (Rust flat_map, Python nested
+/// comprehension). Non-array results are kept as single elements.
+fn iter_flat_map(arr, f) {
+  let mapped = map(arr, f)
+  return iter_flatten1(mapped)
+}
+
+/// Index of the first element satisfying pred, or -1 (JS Array.findIndex).
+/// The builtin find() returns the value; this returns its position.
+fn iter_find_index(arr, pred) {
+  let i = 0
+  while (i < len(arr)) {
+    if (pred(arr[i])) { return i }
+    i = i + 1
+  }
+  return -1
+}
+
+/// Split into [elements satisfying pred, the rest] (Rust partition).
+fn iter_partition(arr, pred) {
+  let yes = []
+  let no = []
+  for (x in arr) {
+    if (pred(x)) { yes = push(yes, x) } else { no = push(no, x) }
+  }
+  return [yes, no]
+}
+
+/// Alternate elements from a and b, then append the remainder of the longer
+/// (a more general zip that never drops data).
+fn iter_interleave(a, b) {
+  let out = []
+  let i = 0
+  while (i < len(a) or i < len(b)) {
+    if (i < len(a)) { out = push(out, a[i]) }
+    if (i < len(b)) { out = push(out, b[i]) }
+    i = i + 1
+  }
+  return out
+}

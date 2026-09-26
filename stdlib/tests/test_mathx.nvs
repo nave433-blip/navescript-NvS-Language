@@ -1,0 +1,58 @@
+// Tests for stdlib/mathx.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_mathx.nvs
+import "../mathx.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+fn approx(a, b) {
+  let d = a - b
+  if (d < 0) { d = 0 - d }
+  return d < 0.000001
+}
+
+check("median odd", mx_median([3, 1, 2]) == 2)
+check("median even", mx_median([1, 2, 3, 4]) == 2.5)
+check("median single", mx_median([7]) == 7)
+check("median no-mutate", deep_equal([3, 1, 2], [3, 1, 2]))
+let threw_m = false
+try { mx_median([]) } catch (e) { threw_m = true }
+check("median empty-throws", threw_m)
+
+check("mode", mx_mode(["a", "b", "a", "c", "b", "a"]) == "a")
+check("mode tie-first", mx_mode([2, 1, 2, 1]) == 2)
+
+check("variance", approx(mx_variance([2, 4, 4, 4, 5, 5, 7, 9]), 4.0))
+check("stdev", approx(mx_stdev([2, 4, 4, 4, 5, 5, 7, 9]), 2.0))
+check("variance single", mx_variance([5]) == 0.0)
+
+check("gcd", mx_gcd(48, 18) == 6)
+check("gcd coprime", mx_gcd(7, 13) == 1)
+check("gcd zero", mx_gcd(0, 5) == 5)
+check("lcm", mx_lcm(4, 6) == 12)
+check("lcm zero", mx_lcm(0, 5) == 0)
+
+check("prime 2", mx_is_prime(2) == true)
+check("prime 17", mx_is_prime(17) == true)
+check("prime 1", mx_is_prime(1) == false)
+check("prime 0", mx_is_prime(0) == false)
+check("prime composite", mx_is_prime(100) == false)
+check("prime 7919", mx_is_prime(7919) == true)
+
+check("factorial 0", mx_factorial(0) == 1)
+check("factorial 5", mx_factorial(5) == 120)
+check("factorial 10", mx_factorial(10) == 3628800)
+let threw_f = false
+try { mx_factorial(-1) } catch (e) { threw_f = true }
+check("factorial neg-throws", threw_f)
+
+check("normalize mid", mx_normalize(5, 0, 10) == 0.5)
+check("normalize clamp-lo", mx_normalize(-5, 0, 10) == 0.0)
+check("normalize clamp-hi", mx_normalize(50, 0, 10) == 1.0)
+
+if (failures > 0) { throw "test_mathx failures: " + str(failures) }
+print "PASS: test_mathx"

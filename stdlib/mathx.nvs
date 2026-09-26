@@ -1,0 +1,109 @@
+// NvS standard library: mathx — extra math in pure NvS.
+// Python statistics + general math counterparts.
+// The Go builtins already cover: avg, sum, min, max, abs, floor, ceil, round,
+// sqrt, pow, sin, cos, tan, exp, random, rand_int, and stdlib/math.ns covers
+// clamp and lerp. This module fills the gaps. Note: NvS integer division
+// truncates (7/2 == 3), so these functions use float arithmetic where a
+// fractional result is expected.
+//
+// Import with:   import "stdlib/mathx.nvs"
+
+/// Median of a non-empty array (Python statistics.median). The input is not
+/// modified. Throws on empty input.
+fn mx_median(arr) {
+  if (len(arr) == 0) { throw "mx_median: empty array" }
+  let s = []
+  for (x in arr) { s = push(s, x) }
+  s = sort(s)
+  let n = len(s)
+  if (n % 2 == 1) { return s[(n - 1) / 2] }
+  return (s[n / 2 - 1] + s[n / 2]) / 2.0
+}
+
+/// Most frequent value; ties resolve to the first value that reached the
+/// maximum count (Python statistics.mode / multimode[0]).
+fn mx_mode(arr) {
+  if (len(arr) == 0) { throw "mx_mode: empty array" }
+  let best = arr[0]
+  let best_n = 0
+  let seen = []
+  for (x in arr) {
+    if (x in seen) { continue }
+    seen = push(seen, x)
+    let c = 0
+    for (y in arr) { if (deep_equal(x, y)) { c = c + 1 } }
+    if (c > best_n) { best_n = c; best = x }
+  }
+  return best
+}
+
+/// Population variance (Python statistics.pvariance). Throws on empty input.
+fn mx_variance(arr) {
+  if (len(arr) == 0) { throw "mx_variance: empty array" }
+  let m = avg(arr) * 1.0
+  let ss = 0.0
+  for (x in arr) { ss = ss + (x - m) * (x - m) }
+  return ss / (len(arr) * 1.0)
+}
+
+/// Population standard deviation (Python statistics.pstdev).
+fn mx_stdev(arr) {
+  return sqrt(mx_variance(arr))
+}
+
+/// Greatest common divisor (Euclid). Inputs are truncated to integers.
+fn mx_gcd(a, b) {
+  a = int(abs(a))
+  b = int(abs(b))
+  while (b != 0) {
+    let t = b
+    b = a % b
+    a = t
+  }
+  return a
+}
+
+/// Least common multiple. mx_lcm(0, x) is 0.
+fn mx_lcm(a, b) {
+  a = int(abs(a))
+  b = int(abs(b))
+  if (a == 0 or b == 0) { return 0 }
+  return (a / mx_gcd(a, b)) * b
+}
+
+/// Primality test by trial division (for modest n, like sympy.isprime on
+/// small inputs). Non-integers and n < 2 return false.
+fn mx_is_prime(n) {
+  if (!is_int(n) or n < 2) { return false }
+  if (n == 2) { return true }
+  if (n % 2 == 0) { return false }
+  let i = 3
+  while (i * i <= n) {
+    if (n % i == 0) { return false }
+    i = i + 2
+  }
+  return true
+}
+
+/// Factorial of a non-negative integer (Python math.factorial).
+fn mx_factorial(n) {
+  if (!is_int(n) or n < 0) { throw "mx_factorial: want a non-negative integer" }
+  let r = 1
+  let i = 2
+  while (i <= n) {
+    r = r * i
+    i = i + 1
+  }
+  return r
+}
+
+/// Clamp-and-scale: map x from [a, b] into [0.0, 1.0], clamping outside
+/// values to the ends (useful for progress bars and lerps).
+fn mx_normalize(x, a, b) {
+  x = x * 1.0
+  if (b == a) { throw "mx_normalize: empty input range" }
+  let t = (x - a) / (b - a)
+  if (t < 0.0) { return 0.0 }
+  if (t > 1.0) { return 1.0 }
+  return t
+}

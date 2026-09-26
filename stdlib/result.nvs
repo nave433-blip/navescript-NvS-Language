@@ -1,0 +1,88 @@
+// NvS standard library: result — Rust Option/Result counterparts in pure NvS.
+// Options and Results are tagged hashes:
+//   Some(v) -> {"_tag": "Some", "value": v}    None -> {"_tag": "None"}
+//   Ok(v)   -> {"_tag": "Ok", "value": v}     Err(e) -> {"_tag": "Err", "error": e}
+// Combinators dispatch on the tag, so the same function works for both
+// Option and Result where the semantics agree.
+//
+// Import with:   import "stdlib/result.nvs"
+
+/// Wrap a value as Some (Rust Option::Some).
+fn res_some(v) { return {"_tag": "Some", "value": v} }
+
+/// The None value (Rust Option::None).
+fn res_none() { return {"_tag": "None"} }
+
+/// Wrap a value as Ok (Rust Result::Ok).
+fn res_ok(v) { return {"_tag": "Ok", "value": v} }
+
+/// Wrap an error as Err (Rust Result::Err).
+fn res_err(e) { return {"_tag": "Err", "error": e} }
+
+/// True for Some values.
+fn res_is_some(o) { return is_hash(o) and o["_tag"] == "Some" }
+
+/// True for None.
+fn res_is_none(o) { return is_hash(o) and o["_tag"] == "None" }
+
+/// True for Ok values.
+fn res_is_ok(r) { return is_hash(r) and r["_tag"] == "Ok" }
+
+/// True for Err values.
+fn res_is_err(r) { return is_hash(r) and r["_tag"] == "Err" }
+
+/// Apply f to the wrapped value, re-wrapping the result. Passes None/Err
+/// through untouched (Rust Option::map / Result::map).
+fn res_map(o, f) {
+  if (res_is_some(o) or res_is_ok(o)) {
+    let v = f(o["value"])
+    if (res_is_some(o)) { return res_some(v) }
+    return res_ok(v)
+  }
+  return o
+}
+
+/// Chain a function returning an Option/Result (Rust and_then). Passes
+/// None/Err through untouched.
+fn res_and_then(o, f) {
+  if (res_is_some(o) or res_is_ok(o)) { return f(o["value"]) }
+  return o
+}
+
+/// The wrapped value, or dflt when None/Err (Rust unwrap_or).
+fn res_unwrap_or(o, dflt) {
+  if (res_is_some(o) or res_is_ok(o)) { return o["value"] }
+  return dflt
+}
+
+/// The wrapped value, or throw msg when None/Err (Rust expect).
+fn res_expect(o, msg) {
+  if (res_is_some(o) or res_is_ok(o)) { return o["value"] }
+  throw msg
+}
+
+/// Apply f to the error inside Err, re-wrapping (Rust Result::map_err).
+/// Non-Err values pass through untouched.
+fn res_map_err(r, f) {
+  if (res_is_err(r)) { return res_err(f(r["error"])) }
+  return r
+}
+
+/// Convert Some(v) to Ok(v), None to Err(e) (Rust Option::ok_or).
+fn res_ok_or(o, e) {
+  if (res_is_some(o)) { return res_ok(o["value"]) }
+  if (res_is_none(o)) { return res_err(e) }
+  throw "res_ok_or: expected an Option"
+}
+
+/// Transpose Option<Result<T>> into Result<Option<T>> (Rust transpose):
+/// None -> Ok(None); Some(Ok(v)) -> Ok(Some(v)); Some(Err(e)) -> Err(e).
+fn res_transpose(o) {
+  if (res_is_none(o)) { return res_ok(res_none()) }
+  if (res_is_some(o)) {
+    let inner = o["value"]
+    if (res_is_ok(inner)) { return res_ok(res_some(inner["value"])) }
+    if (res_is_err(inner)) { return res_err(inner["error"]) }
+  }
+  throw "res_transpose: expected an Option of a Result"
+}

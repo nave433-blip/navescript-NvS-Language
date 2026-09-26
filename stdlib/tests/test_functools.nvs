@@ -1,0 +1,52 @@
+// Tests for stdlib/functools.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_functools.nvs
+import "../functools.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+
+let calls = 0
+let expensive = fn(x) { calls = calls + 1; return x * x }
+let memo = fn_memoize(expensive)
+check("memoize value", memo(5) == 25)
+check("memoize cached", memo(5) == 25)
+check("memoize calls-once", calls == 1)
+check("memoize other-arg", memo(6) == 36)
+check("memoize two-calls", calls == 2)
+let memo_s = fn_memoize(fn(s) { return s + "!" })
+check("memoize string", memo_s("hi") == "hi!")
+
+let runs = 0
+let o = fn_once(fn() { runs = runs + 1; return 42 })
+check("once value", o() == 42)
+check("once cached", o() == 42)
+check("once ran-once", runs == 1)
+
+let is_pos = fn(x) { return x > 0 }
+let is_nonpos = fn_complement(is_pos)
+check("complement", is_nonpos(-3) == true)
+check("complement neg", is_nonpos(3) == false)
+
+let fns = [fn(x) { return x + 1 }, fn(x) { return x * 10 }]
+check("juxt", deep_equal(fn_juxt(fns, 5), [6, 50]))
+check("juxt empty", deep_equal(fn_juxt([], 5), []))
+
+let c = fn_constant(99)
+check("constant", c() == 99)
+
+let tapped = []
+let v = fn_tap(7, fn(x) { tapped = push(tapped, x * 2) })
+check("tap returns", v == 7)
+check("tap side-effect", deep_equal(tapped, [14]))
+
+let sub = fn(a, b) { return a - b }
+let flipped = fn_flip(sub)
+check("flip", flipped(10, 3) == -7)
+
+if (failures > 0) { throw "test_functools failures: " + str(failures) }
+print "PASS: test_functools"

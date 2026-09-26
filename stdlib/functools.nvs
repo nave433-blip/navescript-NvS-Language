@@ -1,0 +1,66 @@
+// NvS standard library: functools — higher-order function utilities in pure NvS.
+// Python functools + Clojure counterparts.
+// The Go builtins already cover: compose, curry, partial. This module fills
+// the gaps. NvS user functions are not variadic, so these helpers are shaped
+// for fixed arities (documented per function).
+//
+// Import with:   import "stdlib/functools.nvs"
+
+/// Memoize a unary function: results are cached by argument, so repeated
+/// calls with the same input never recompute (Python functools.lru_cache
+/// for the unary case). Cache keys use the JSON encoding of the argument.
+fn fn_memoize(f) {
+  let cache = {}
+  return fn(x) {
+    let k = type_of(x) + ":" + json_stringify(x)
+    if (k in cache) { return cache[k] }
+    let r = f(x)
+    cache[k] = r
+    return r
+  }
+}
+
+/// Run a zero-argument function at most once; later calls return the cached
+/// result (like lazy / once initialization).
+fn fn_once(f) {
+  let done = false
+  let value = null
+  return fn() {
+    if (!done) {
+      value = f()
+      done = true
+    }
+    return value
+  }
+}
+
+/// Logical negation of a unary predicate (Clojure complement).
+fn fn_complement(pred) {
+  return fn(x) { return !pred(x) }
+}
+
+/// Apply every function in fns to x, collecting the results
+/// (Clojure juxt: ((juxt f g) x) -> [(f x) (g x)]).
+fn fn_juxt(fns, x) {
+  let out = []
+  for (f in fns) { out = push(out, f(x)) }
+  return out
+}
+
+/// A zero-argument function that always returns x (K combinator).
+fn fn_constant(x) {
+  return fn() { return x }
+}
+
+/// Call f(x) for its side effect, then return x unchanged — handy inside
+/// pipelines (Ruby Object#tap).
+fn fn_tap(x, f) {
+  f(x)
+  return x
+}
+
+/// Flip the arguments of a binary function: flip(f)(a, b) == f(b, a)
+/// (Haskell flip).
+fn fn_flip(f) {
+  return fn(a, b) { return f(b, a) }
+}

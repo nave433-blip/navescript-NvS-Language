@@ -1,0 +1,32 @@
+// Tests for stdlib/re.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_re.nvs
+import "../re.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+
+check("test hit", re_test("abc123", "[0-9]+") == true)
+check("test miss", re_test("abc", "[0-9]+") == false)
+check("test anchored", re_test("abc", "^[0-9]+$") == false)
+
+check("find_all", deep_equal(re_find_all("a1b22c333", "[0-9]+"), ["1", "22", "333"]))
+check("find_all none", deep_equal(re_find_all("abc", "[0-9]+"), []))
+
+check("replace_all", re_replace_all("a1b22", "[0-9]+", "#") == "a#b#")
+check("replace_all none", re_replace_all("abc", "[0-9]+", "#") == "abc")
+
+check("escape", re_escape("a.b+c") == "a\\.b\\+c")
+check("escape plain", re_escape("abc") == "abc")
+check("escape roundtrip", re_test("a.b", re_escape("a.b")) == true)
+
+check("split", deep_equal(re_split("a1b22c333", "[0-9]+"), ["a", "b", "c", ""]))
+check("split space", deep_equal(re_split("foo bar  baz", " +"), ["foo", "bar", "baz"]))
+check("split no-match", deep_equal(re_split("abc", "[0-9]+"), ["abc"]))
+
+if (failures > 0) { throw "test_re failures: " + str(failures) }
+print "PASS: test_re"
