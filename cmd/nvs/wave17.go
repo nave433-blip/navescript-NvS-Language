@@ -8,8 +8,103 @@ import (
 	"strings"
 	"time"
 
+	"github.com/navescript/nvs/internal/eval"
+	"github.com/navescript/nvs/internal/pkg"
 	"github.com/navescript/nvs/internal/tools"
 )
+
+// WirePackageManager installs the package resolver into the evaluator so
+// `import "pkgname"` resolves from the nvs package cache.
+func WirePackageManager() {
+	eval.PackageResolver = pkg.Resolve
+}
+
+// runPkgCmd implements `nvs pkg <subcommand>`. Honest scope: GitHub is
+// the registry — there is no central NvS package server.
+func runPkgCmd(args []string) {
+	if len(args) == 0 {
+		pkgHelp()
+		return
+	}
+	switch args[0] {
+	case "init":
+		dir := "."
+		if len(args) > 1 {
+			dir = args[1]
+		}
+		m, err := pkg.Init(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nvs pkg init: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("initialized NvS package %q in %s\n", m.Name, dir)
+	case "install", "add":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: nvs pkg install <user/repo[@tag]|./path|/abs/path>")
+			os.Exit(1)
+		}
+		for _, spec := range args[1:] {
+			inst, err := pkg.Install(spec, pkg.InstallOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "nvs pkg install %s: %v\n", spec, err)
+				os.Exit(1)
+			}
+			fmt.Printf("installed %s@%s → %s\n", inst.Name, inst.Version, inst.Dir)
+		}
+	case "list", "ls":
+		pkgs, err := pkg.List()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nvs pkg list: %v\n", err)
+			os.Exit(1)
+		}
+		if len(pkgs) == 0 {
+			fmt.Println("no packages installed")
+			return
+		}
+		for _, p := range pkgs {
+			fmt.Printf("%s@%s  (%s)\n", p.Name, p.Version, p.Source)
+		}
+	case "remove", "rm", "uninstall":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: nvs pkg remove <name>")
+			os.Exit(1)
+		}
+		if err := pkg.Remove(args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "nvs pkg remove: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("removed %s\n", args[1])
+	case "publish":
+		steps, err := pkg.PublishCheck(".")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nvs pkg publish: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(steps)
+	case "-h", "--help", "help":
+		pkgHelp()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown pkg subcommand: %s\n", args[0])
+		pkgHelp()
+		os.Exit(1)
+	}
+}
+
+func pkgHelp() {
+	fmt.Print(`nvs pkg — package manager (GitHub is the registry; no central server)
+
+Usage:
+  nvs pkg init [dir]        Scaffold nvs.json in dir (default .)
+  nvs pkg install <spec>    Install a package (alias: nvs get <spec>)
+                            spec: user/repo, user/repo@tag, ./path, /abs/path
+  nvs pkg list              List installed packages
+  nvs pkg remove <name>     Remove a package
+  nvs pkg publish           Validate and print manual publish steps
+
+Installed packages live in ~/.nvs/packages; import "name" resolves
+through the cache. Installs are recorded in ./nvs.lock.
+`)
+}
 
 // Wave 17 tooling commands: pkg, lsp, debug, test, run --watch, run --profile.
 

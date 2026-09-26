@@ -31,9 +31,17 @@ func main() {
 		return
 	}
 
+	// Wave 17: package imports resolve through the nvs package cache.
+	WirePackageManager()
+
 	cmd := os.Args[1]
 	eval.CLIArgs = os.Args[1:]
 	switch cmd {
+	case "pkg":
+		runPkgCmd(os.Args[2:])
+	case "get":
+		// Alias for `nvs pkg install`.
+		runPkgCmd(append([]string{"install"}, os.Args[2:]...))
 	case "run":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)> [--watch] [--profile]")
@@ -149,6 +157,8 @@ Usage:
                           Flags: --watch (re-run on change),
                                  --profile (report hottest lines)
   nvs test [dir...]       Run test_*.nvs / *_test.nvs files (exit 0 = pass)
+  nvs pkg <subcommand>    Package manager: init/install/list/remove/publish
+                          (alias: nvs get <spec> = nvs pkg install <spec>)
   nvs eval '<code>'       Evaluate a snippet (also: nvs -e '<code>')
   nvs init                Scaffold a new NvS project
   nvs info                Language identity & capabilities
