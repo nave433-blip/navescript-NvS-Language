@@ -44,11 +44,15 @@ func DiscoverTests(dirs []string) ([]string, error) {
 		return strings.HasPrefix(stem, "test_") || strings.HasSuffix(stem, "_test")
 	}
 	for _, dir := range dirs {
+		root := dir
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil // skip unreadable entries, don't abort the run
 			}
 			if info.IsDir() {
+				if path == root {
+					return nil // never skip the walk root itself (e.g. ".")
+				}
 				base := filepath.Base(path)
 				if strings.HasPrefix(base, ".") || base == "bin" || base == "vendor" || base == "node_modules" {
 					return filepath.SkipDir

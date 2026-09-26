@@ -49,6 +49,30 @@ func TestDiscoverTests(t *testing.T) {
 	}
 }
 
+// Regression: `nvs test .` must not skip the walk root — the hidden-dir
+// filter used to treat "." itself as hidden and find zero test files.
+func TestDiscoverTestsDotRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "test_dot.nvs"), []byte("print 1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+	got, err := DiscoverTests([]string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf(`DiscoverTests(["."]) want 1 test file, got %v`, got)
+	}
+}
+
 func TestRunTestFilePassFail(t *testing.T) {
 	NvsBin = stubBinary(t)
 	defer func() { NvsBin = "" }()
