@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/navescript/nvs/internal/dap"
 	"github.com/navescript/nvs/internal/debug"
 	"github.com/navescript/nvs/internal/eval"
 	"github.com/navescript/nvs/internal/lsp"
@@ -152,6 +153,11 @@ Uses assert(cond, msg) or any runtime error to fail.`)
 // runLspCmd starts the Language Server Protocol server on stdio.
 func runLspCmd() {
 	lsp.Serve(os.Stdin, os.Stdout)
+}
+
+// runDapCmd starts the Debug Adapter Protocol server on stdio.
+func runDapCmd() {
+	dap.Serve(os.Stdin, os.Stdout)
 }
 
 // runDebugCmd starts an interactive debugging session for a program.

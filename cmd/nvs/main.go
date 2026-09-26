@@ -46,6 +46,8 @@ func main() {
 		runLspCmd()
 	case "debug":
 		runDebugCmd(os.Args[2:])
+	case "dap":
+		runDapCmd()
 	case "run":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)> [--watch] [--profile]")
@@ -165,6 +167,7 @@ Usage:
                           (alias: nvs get <spec> = nvs pkg install <spec>)
   nvs lsp                 Language Server Protocol server (stdio) for editors
   nvs debug <file>        Interactive terminal debugger
+  nvs dap                 Debug Adapter Protocol server (stdio) for editors
   nvs eval '<code>'       Evaluate a snippet (also: nvs -e '<code>')
   nvs init                Scaffold a new NvS project
   nvs info                Language identity & capabilities
