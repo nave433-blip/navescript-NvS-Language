@@ -521,11 +521,14 @@ func (s *server) definition(uri string, pos position) []location {
 		return []location{}
 	}
 	prog := parseDoc(src)
-	b := resolve(prog, src, tok.Literal, tok.Line)
-	if b == nil {
-		return []location{}
+	if b := resolve(prog, src, tok.Literal, tok.Line); b != nil {
+		return []location{{URI: uri, Range: *nameRange(b.tok)}}
 	}
-	return []location{{URI: uri, Range: *nameRange(b.tok)}}
+	// Not defined here: follow imports into other files.
+	if loc := s.definitionCrossFile(uri, src, tok.Literal); loc != nil {
+		return []location{*loc}
+	}
+	return []location{}
 }
 
 // ---------------------------------------------------------------------------

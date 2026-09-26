@@ -11,8 +11,10 @@
 //   - textDocument/publishDiagnostics (parser + checker errors, never panics)
 //   - textDocument/hover (signatures + /// doc comments, builtins)
 //   - textDocument/completion (builtins + keywords + user names)
-//   - textDocument/definition (same-file only)
+//   - textDocument/definition (same-file, then follows imports)
 //   - textDocument/documentSymbol (top-level symbols)
+//   - textDocument/references (name-based across open files)
+//   - workspace/symbol (substring search across open files)
 package lsp
 
 import (
@@ -256,6 +258,7 @@ func (s *server) handle(raw []byte) (exit bool) {
 				"completionProvider":     map[string]any{},
 				"definitionProvider":     true,
 				"documentSymbolProvider": true,
+				"workspaceSymbolProvider": true,
 				"textDocumentSync":       1,
 			},
 			"serverInfo": map[string]any{"name": "nvs-lsp", "version": "0.1.0"},
@@ -339,6 +342,24 @@ func (s *server) handle(raw []byte) (exit bool) {
 			s.reply(msg.ID, s.definition(p.TextDocument.URI, p.Position))
 		} else if isRequest {
 			s.replyError(msg.ID, -32602, "invalid definition params")
+		}
+
+	case "workspace/symbol":
+		var pws struct {
+			Query string `json:"query"`
+		}
+		if json.Unmarshal(msg.Params, &pws) == nil {
+			s.reply(msg.ID, s.workspaceSymbols(pws.Query))
+		} else if isRequest {
+			s.replyError(msg.ID, -32602, "invalid workspace/symbol params")
+		}
+
+	case "textDocument/references":
+		var pr positionParams
+		if json.Unmarshal(msg.Params, &pr) == nil {
+			s.reply(msg.ID, s.references(pr.TextDocument.URI, pr.Position))
+		} else if isRequest {
+			s.replyError(msg.ID, -32602, "invalid references params")
 		}
 
 	case "textDocument/documentSymbol":
