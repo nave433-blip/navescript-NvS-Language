@@ -543,6 +543,9 @@ func evalIntegerInfixExpression(operator string, left, right object.Object) obje
 		}
 		return &object.Integer{Value: leftVal / rightVal}
 	case "%":
+		if rightVal == 0 {
+			return newError("modulo by zero")
+		}
 		return &object.Integer{Value: leftVal % rightVal}
 	case "&":
 		return &object.Integer{Value: leftVal & rightVal}

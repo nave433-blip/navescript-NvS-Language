@@ -74,8 +74,9 @@ func main() {
 		runBindgen(os.Args[2:])
 	case "bc":
 		// Experimental bytecode compile+run, ported from the 2.8 track.
-		// Honest subset: arithmetic, comparisons, let/const, if/else,
-		// print. Anything else fails LOUDLY at compile time.
+		// Honest subset: arithmetic, strings, comparisons, let/const,
+		// if/else, while and C-style for loops, print(...), len(), arrays.
+		// Anything else fails LOUDLY at compile time.
 		runBytecode(os.Args[2:])
 	case "nave":
 		// Workflow runner ported from the 2.9 track: executes JSON
@@ -135,8 +136,10 @@ Usage:
                           JSON bridge
   nvs nave <file.nave>    Run a JSON workflow document (also: nvs file.nave)
   nvs bc <file|--code>    Compile the bytecode subset and run it on the
-                          stack VM (--disasm to print bytecode). Only
-                          arithmetic, let/const, if/else, print.
+                          stack VM (--disasm to print bytecode). Supports
+                          arithmetic, strings, let/const, if/else, while
+                          and C-style for loops, print(...), len(), arrays.
+                          Anything else fails loudly at compile time.
   nvs version             Show version
   nvs help                Show this help
 
