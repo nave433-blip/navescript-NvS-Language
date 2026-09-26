@@ -75,7 +75,12 @@ type Session struct {
 	// State of the current pause.
 	pausedEnv  *object.Environment
 	pausedLine int
-	lastCmd    string
+	pausedFile string
+	// mainFile is the program being debugged (RunCode's name argument).
+	// Breakpoints are matched against it; pauses inside other files
+	// (imports) are reported with their file path.
+	mainFile string
+	lastCmd  string
 
 	// suppress, when true, makes the hooks ignore events. It is set
 	// while the `print` command evaluates an expression in the paused
@@ -104,14 +109,16 @@ const prompt = "(nvsdb) "
 
 // BeforeStmt is called by the evaluator once per statement, before the
 // statement executes. It pauses (prints "stopped at line N" and runs the
-// command loop) when the line has a breakpoint, when stepMode is set, or
-// when nextMode is set and the current call depth is at or above the
-// depth recorded by `next`.
-func (s *Session) BeforeStmt(line int, env *object.Environment) {
+// command loop) when the line has a breakpoint (breakpoints match the main
+// file only), when stepMode is set, or when nextMode is set and the current
+// call depth is at or above the depth recorded by `next`. Pauses inside
+// imported files report their file path.
+func (s *Session) BeforeStmt(line int, file string, env *object.Environment) {
 	if s.suppress {
 		return
 	}
-	shouldPause := s.breakpoints[line] || s.stepMode ||
+	inMain := s.mainFile == "" || file == s.mainFile
+	shouldPause := (inMain && s.breakpoints[line]) || s.stepMode ||
 		(s.nextMode && s.depth <= s.nextDepth)
 	if !shouldPause {
 		return
@@ -121,7 +128,12 @@ func (s *Session) BeforeStmt(line int, env *object.Environment) {
 	s.nextMode = false
 	s.pausedEnv = env
 	s.pausedLine = line
-	fmt.Fprintf(s.out, "stopped at line %d\n", line)
+	s.pausedFile = file
+	if inMain {
+		fmt.Fprintf(s.out, "stopped at line %d\n", line)
+	} else {
+		fmt.Fprintf(s.out, "stopped at %s:%d\n", file, line)
+	}
 	s.commandLoop()
 }
 
@@ -180,6 +192,9 @@ func (s *Session) RunCode(code, name string) error {
 	eval.ActiveDebugger = s
 	defer func() { eval.ActiveDebugger = prev }()
 
+	// The main file identifies breakpoint scope (see BeforeStmt).
+	s.mainFile = name
+
 	// The debuggee's print/printf builtins write to os.Stdout, so
 	// capture it into the session output while the program runs. This
 	// keeps program output and debugger output in one transcript.
@@ -199,6 +214,12 @@ func (s *Session) RunCode(code, name string) error {
 
 	env := object.NewEnvironment()
 	eval.LoadPrelude(env)
+
+	// The hook reports eval.CurrentFile, so point it at the debugged
+	// program for the duration of the run (restored afterwards).
+	prevFile := eval.CurrentFile
+	eval.CurrentFile = name
+	defer func() { eval.CurrentFile = prevFile }()
 
 	// gdb-style pre-run prompt: let the user set breakpoints before
 	// the program starts. `continue` (or EOF) begins execution; `step`

@@ -345,3 +345,51 @@ GOOS=windows go build ./...   # must stay green
 GOOS=darwin go build ./...    # must stay green
 nvs -e 'print os_kernel() + " " + os_shell()'
 ```
+
+## Wave 17 — package manager, LSP, debugger, deeper quantum, tooling extras
+
+- [x] **Eval hooks** (`internal/eval/debug.go`): `Debugger` interface
+      (`BeforeStmt(line, file, env)`/`EnterCall`/`LeaveCall`) fired once per
+      statement and per user-function call; `PackageResolver` hook in
+      `evalImportStatement`; `object.Environment.Names()` for debugger
+      `locals`. Statements attribute to the file where they were *defined*
+      (`object.Function.SourceFile` + `CurrentFile` switching in
+      `applyFunction`), so the profiler/debugger never report prelude or
+      imported-file lines as user code. One nil-check cost when unused;
+      tree-walker only (not the `nvs bc` VM).
+- [x] **`nvs pkg`** (`internal/pkg/`, 13 tests): `init` scaffolds `nvs.json`;
+      `install` from `user/repo[@tag]` (git clone) or local paths into
+      `~/.nvs/packages` (`$NVS_PKG_CACHE` override); transitive deps with
+      cycle detection; `nvs.lock` written and replayable; `list`/`remove`;
+      `import "name"` / `import "name/file.nvs"` resolve through the cache via
+      the evaluator hook. `publish` validates and prints manual git-tag steps.
+      Honest: GitHub is the registry; there is no central NvS server.
+- [x] **`nvs lsp`** (`internal/lsp/`, 7 tests): hand-rolled JSON-RPC over
+      stdio — initialize, didOpen/didChange/didClose, hover (signatures +
+      `///` docs; builtins marked), completion (builtins/keywords/in-scope
+      names), go-to-definition (same file), document symbols,
+      publishDiagnostics (parser errors + `checker.CheckSource`). Editor setup
+      in `docs/TOOLING.md` (VS Code, Neovim; Zed noted as not yet supporting
+      custom servers).
+- [x] **`nvs debug`** (`internal/debug/`, 10 tests, race-clean): interactive
+      terminal debugger — `break`, `step`, `next`, `continue`, `print <expr>`,
+      `backtrace`, `locals`, `quit`; scriptable via stdin; pre-run prompt for
+      breakpoints. DAP is future work.
+- [x] **Deeper quantum** (still a LOCAL simulator — disclaimers everywhere):
+      `q_toffoli`, `q_cphase`, `q_seed`, `q_shots` (no-collapse sampling),
+      `circuit(n)` chainable builder with ASCII `draw()`; `docs/QUANTUM.md`;
+      `examples/quantum_grover.nvs` (12.5% → 78.1% → 94.5%, theory-exact) and
+      `examples/quantum_qft.nvs` (uniform on |000⟩, QFT⁻¹∘QFT round-trip = 1.0).
+- [x] **Extras**: `nvs test` (discovers `test_*.nvs`/`*_test.nvs`, fresh
+      subprocess per file, CI-friendly exit codes); `nvs run --watch`
+      (mtime-poll re-run); `nvs run --profile` (statement hotspot report).
+      `docs/PACKAGES.md`, `docs/TOOLING.md` document everything.
+
+```bash
+nvs pkg init && nvs pkg install ./mylib     # then: import "mylib"
+nvs lsp                                     # point your editor at it
+printf 'break 4\ncontinue\nbt\ncontinue\n' | nvs debug prog.nvs
+nvs test ./stdlib
+nvs run --watch main.nvs
+nvs run examples/quantum_grover.nvs
+```

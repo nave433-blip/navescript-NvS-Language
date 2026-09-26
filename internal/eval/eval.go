@@ -58,7 +58,13 @@ func LoadPrelude(env *object.Environment) {
 		if len(p.Errors()) > 0 {
 			continue
 		}
+		// Wave 17: attribute prelude statements (and functions defined
+		// here, via their SourceFile) to the prelude itself, so
+		// debugger/profiler hooks never misreport them as user code.
+		prevFile := CurrentFile
+		CurrentFile = path
 		_ = Eval(program, env)
+		CurrentFile = prevFile
 		return
 	}
 }
@@ -87,9 +93,11 @@ func init() {
 
 func Eval(node ast.Node, env *object.Environment) object.Object {
 	// Wave 17: debugger/profiler hook — one nil check when unused.
+	// CurrentFile identifies the source file for correct attribution
+	// across imports and the prelude.
 	if ActiveDebugger != nil {
 		if line, ok := StmtLine(node); ok {
-			ActiveDebugger.BeforeStmt(line, env)
+			ActiveDebugger.BeforeStmt(line, CurrentFile, env)
 		}
 	}
 	switch node := node.(type) {
@@ -207,6 +215,8 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			ReturnType: node.ReturnType,
 			Body:       node.Body,
 			Env:        env,
+			// Wave 17: remember the defining file for hook attribution.
+			SourceFile: CurrentFile,
 		}
 	case *ast.CallExpression:
 		// Method call: obj.method(args)
@@ -940,6 +950,14 @@ func evalExpressions(exps []ast.Expression, env *object.Environment) []object.Ob
 func applyFunction(fn object.Object, args []object.Object) object.Object {
 	switch fn := fn.(type) {
 	case *object.Function:
+		// Wave 17: run the body attributed to the file where the
+		// function was defined, so debugger/profiler hooks and nested
+		// imports resolve against the definition site, not the caller.
+		prevFile := CurrentFile
+		if fn.SourceFile != "" {
+			CurrentFile = fn.SourceFile
+		}
+		defer func() { CurrentFile = prevFile }()
 		// Wave 17: debugger call-depth tracking.
 		if ActiveDebugger != nil {
 			name := fn.Name
@@ -1928,6 +1946,8 @@ func evalClassStatement(node *ast.ClassStatement, env *object.Environment) objec
 			ReturnType: m.ReturnType,
 			Body:       m.Body,
 			Env:        env,
+			// Wave 17: remember the defining file for hook attribution.
+			SourceFile: CurrentFile,
 		}
 	}
 	var parent *object.Class

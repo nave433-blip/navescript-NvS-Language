@@ -20,7 +20,12 @@ import (
 // BeforeStmt may block (e.g. run an interactive prompt) and evaluation
 // resumes when it returns.
 type Debugger interface {
-	BeforeStmt(line int, env *object.Environment)
+	// BeforeStmt runs before a statement executes. file is the path of
+	// the file being evaluated (eval.CurrentFile at the time) — never
+	// empty for real runs; statements from imported files and the
+	// prelude report their own file so tooling attributes lines
+	// correctly.
+	BeforeStmt(line int, file string, env *object.Environment)
 	EnterCall(name string)
 	LeaveCall()
 }

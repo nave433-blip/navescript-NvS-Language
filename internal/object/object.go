@@ -107,6 +107,11 @@ type Function struct {
 	ReturnType *ast.TypeAnnotation
 	Body       *ast.BlockStatement
 	Env        *Environment
+	// Wave 17: file where the function was defined (eval.CurrentFile at
+	// creation). The evaluator switches to it while running the body so
+	// debugger/profiler hooks and nested imports attribute correctly.
+	// "" when defined in a context without a file (REPL, -e).
+	SourceFile string
 }
 
 func (f *Function) Type() ObjectType { return FUNCTION_OBJ }
