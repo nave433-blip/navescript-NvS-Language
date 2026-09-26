@@ -336,7 +336,7 @@ func registerWave7Builtins() {
 			if !ok {
 				return newError("sh: command must be string")
 			}
-			return wave7RunProcess(exec.Command("sh", "-c", cmdStr.Value))
+			return wave7RunProcess(shellCommand(cmdStr.Value))
 		},
 	}
 

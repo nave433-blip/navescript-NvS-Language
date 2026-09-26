@@ -3239,7 +3239,7 @@ func initBuiltins() {
 				if !ok {
 					return newError("system: command must be string")
 				}
-				cmd := exec.Command("sh", "-c", cmdStr.Value)
+				cmd := shellCommand(cmdStr.Value)
 				out, err := cmd.CombinedOutput()
 				result := string(out)
 				if err != nil {
