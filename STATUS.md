@@ -87,7 +87,12 @@ nvs run examples/wave4_expr.ns
 - [x] `interface Shape { area(): number }` + `implements()`/`assert_implements()` — structural, presence + callable + knowable-arity; works on instances (incl. inherited methods), hashes of functions, record fields; NOT verified: parameter/return signature variance
 - [x] Interfaces as parameter annotations (`fn draw(s: Shape)`); class/record names as annotations
 - [x] Guards: `is_int`/`is_float`/`is_number`/`is_string`/`is_bool`/`is_array`/`is_hash`/`is_tuple`/`is_function` (`is_null` pre-existed); `type_of()` → lowercase names, `type()`/`typeof()` unchanged
-- [x] Honest gaps documented in LANGUAGE.md: no static checker, no signature-variance analysis, generator return annotations unchecked, missing-arg `null` binding unchanged, `obj.method()` still needs instances (maps use `m["name"]()`), no `const` annotations, no interface bodies/`extends`
+- [x] Honest gaps documented in LANGUAGE.md: `nvs check` is advisory only
+      (no dataflow/narrowing, no generics, no cross-file analysis), no
+      signature-variance analysis, generator return annotations unchecked,
+      missing-arg `null` binding unchanged, `obj.method()` still needs
+      instances (maps use `m["name"]()`), no `const` annotations, no
+      interface bodies/`extends`
 
 ```bash
 nvs run examples/wave5_annotations.ns
@@ -173,10 +178,13 @@ nvs run examples/wave8_measure.ns
       `null-comparison` (style; suggests `is_null()`). `file:line: severity
       rule: message`; exit 0 clean / 1 findings; `--json` supported.
       NOT claimed: dataflow, cross-file analysis, type inference.
-- [x] `nvs doc`: MINIMAL stub (labeled as such in help + docs). Extracts `//`
-      doc comments immediately preceding top-level fn/class/record/interface
-      decls (+ trivial fn params/defaults/return annotation) → Markdown
-      (`## name`, signature line, doc text). No nested docs, no cross-links.
+- [x] `nvs doc`: doc-comment extractor (honestly small, not rustdoc).
+      Prefers `///` lines, falls back to contiguous `//`; typed signatures
+      (`fn add(a: int, b: int): int`); covers top-level fn/class/record/
+      interface/const/enum plus class and interface methods (`###`
+      subsections); module-level `# <file>` heading; `nvs doc --out <dir>`
+      writes one `.md` per input; exits nonzero on parse/read/write errors.
+      No cross-links, no index page.
 - [x] 24 new Go tests (formatter idempotency + behavior preservation incl.
       real examples, per-rule lint positive/negative cases, doc extraction);
       `eval.BuiltinNames()` exported for the shadow-builtin rule.
@@ -254,8 +262,11 @@ tree-walking interpreter (which remains the primary engine), in
       now answers 42 via honest `native_op` arithmetic;
       `nasm_exec`/`component_call` remain explicit stubs).
 - [x] **2.8.0**: experimental bytecode compiler + stack VM
-      (`internal/bytecode`, `nvs bc [--disasm]`, 5 Go tests; loud errors
-      outside the documented subset).
+      (`internal/bytecode`, `nvs bc [--disasm]`; loud errors outside the
+      documented subset: arithmetic incl. truncating int division, string
+      concat + lexicographic comparison, let/const, if/else, while and
+      C-style for loops with break/continue, print(...), len(), arrays;
+      explicit division/modulo-by-zero runtime errors).
 - [x] **2.3–2.5**: NvS-written self-hosting subset (`stdlib/selfhost/`:
       `mini_eval.ns`, `emit_go.ns`, `bootstrap.ns`, `math_mini.ns`;
       `examples/selfhost_demo.ns`; emitted Go verified to compile/run).
@@ -270,4 +281,31 @@ nvs run examples/port29_quantum_lowlevel.ns
 nvs run examples/selfhost_demo.ns
 nvs nave examples/nave/hello.nave
 nvs bc 'print 6 * 7' --disasm
+```
+
+### Wave 13 — types, docs, bytecode (in progress)
+- [x] **Static checker** (`internal/checker`, `nvs check <files...>`):
+      gradual typing — unannotated code never errors; checks annotated
+      lets, reassignment, param/return annotations, call arity
+      (defaults-aware) and argument types, unknown annotation names
+      (forward references resolve), unions, class/interface structural
+      satisfaction mirroring runtime rules, class hierarchy, enum members,
+      `len` arity/return. `file:line` diagnostics on stderr; exit 0 clean,
+      1 on errors. Advisory: the runtime still enforces types.
+- [x] **Doc generator** (`nvs doc [--out <dir>]`): see Wave 9 entry above —
+      stub label removed.
+- [x] **Bytecode VM expansion** (`internal/bytecode`): while + C-style for
+      with break/continue (loop-context patch stack), string `+` concat and
+      lexicographic `<`/`>`/`<=`/`>=`, truncating int `/`, explicit
+      division/modulo-by-zero errors, `len()` over strings/arrays, array
+      literals, space-joined multi-arg `print`; `TestBytecodeMatchesTreeWalker`
+      requires VM/tree-walker output identity on 11 programs. Still honest:
+      no functions (beyond print/len), no for-in, no tuples/hashes/records/
+      classes, everything else fails loudly at compile time.
+- [x] Interpreter fix: `1 % 0` no longer panics (`ERROR: modulo by zero`).
+
+```bash
+nvs check examples/wave5_annotations.ns   # flags the intentional violations
+nvs doc --out docs/ examples/wave9_doc.ns
+nvs bc 'for (let i = 0; i < 3; i = i + 1) { print i }'
 ```

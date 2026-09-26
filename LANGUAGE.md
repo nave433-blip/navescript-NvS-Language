@@ -424,18 +424,54 @@ What is NOT claimed: no dataflow analysis, no type inference, no
 cross-file/module analysis, no dead-code detection beyond the direct
 unreachable rule.
 
-### `nvs doc` — minimal doc-comment extractor (stub, labeled as such)
+### `nvs check` — gradual static type checker (advisory)
 
 ```bash
-nvs doc [files...]          # Markdown to stdout
+nvs check [files...]        # 0 = clean ("OK: no type errors"), 1 = errors
+                            # errors print as file:line: message on stderr
 ```
 
-Extracts `//` doc comments immediately preceding **top-level**
-`fn`/`class`/`record`/`interface` declarations (a blank line stops the
-comment block) and emits `## name`, a reconstructed signature
-(`fn add(a, b)`, defaults and return annotation included when trivial),
-and the doc text. Nested declarations, cross-references, and index pages
-are out of scope — this is a stub, not rustdoc.
+Checks annotated declarations **without running the program**. Unannotated
+code is never an error: `any` (and any value flowing from unannotated code)
+is bidirectionally compatible with everything, so existing dynamic NvS
+programs check clean. The runtime still enforces types at run time; `check`
+is advisory — it flags code that *would* fail, including intentional
+negative tests wrapped in `try`/`catch`.
+
+| Checked | Example |
+|---------|---------|
+| Annotated `let`/`const` | `let x: int = "s"` → cannot assign string |
+| Reassignment to annotated binding | `x = "s"` after `let x: int` |
+| Parameter and return annotations | `fn f(a: int): int { return "x" }` |
+| Call arity (defaults-aware) | `add(1)` for `fn add(a, b)` |
+| Argument types | `add(1, "x")` for `fn add(a: int, b: int)` |
+| Unknown annotation names | `let x: Nope = 1` (reported once; forward references resolve) |
+| Union types | `let x: int \| string = true` |
+| Class/interface satisfaction | assigning a `Cat` to a `Speaker`-annotated binding; structural checks mirror the runtime (arity first, then signature compatibility, `any`-tolerant) |
+| Class hierarchy | `let d: Dog = new Animal()` rejected; `let a: Animal = new Dog()` fine |
+| A few builtins | `len` arity and `int` return |
+
+Builtin annotation names are case-insensitive, exactly like the runtime.
+Spread calls (`f(...a, 10)`) and named arguments skip arity checks — the
+count is unknowable statically. What is NOT claimed: dataflow/narrowing,
+generics, cross-file analysis, macros.
+
+### `nvs doc` — doc-comment extractor
+
+```bash
+nvs doc [--out <dir>] [files...]   # Markdown to stdout, or one .md per input
+                                   # exits nonzero on parse/read/write errors
+```
+
+Extracts doc comments immediately preceding **top-level**
+`fn`/`class`/`record`/`interface`/`const`/`enum` declarations (plus class
+and interface methods) and emits Markdown with a module-level `# <file>`
+heading, `## name` sections, reconstructed **typed** signatures
+(`fn add(a: int, b: int): int`, defaults included), and `###` method
+subsections. Doc comments are `///` lines; when a declaration has none,
+plain contiguous `//` lines are used (a blank line stops the scan).
+Comment text is emitted verbatim. Cross-references and index pages are out
+of scope — honestly small, not rustdoc.
 
 ```bash
 nvs run examples/wave9_fmt_bad.ns    # deliberately badly formatted
