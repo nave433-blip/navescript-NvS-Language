@@ -33,6 +33,20 @@ type Debugger interface {
 // ActiveDebugger, when non-nil, receives statement/call events.
 var ActiveDebugger Debugger
 
+// currentSourceFile resolves the file that hook attribution should use
+// for code running in env: the environment's own file when set (function
+// bodies, nested imports), else the global CurrentFile. Reading the
+// environment's file — rather than switching the global per call — keeps
+// attribution correct when spawned tasks evaluate on other goroutines.
+func currentSourceFile(env *object.Environment) string {
+	if env != nil {
+		if f := env.GetSourceFile(); f != "" {
+			return f
+		}
+	}
+	return CurrentFile
+}
+
 // StmtLine returns the source line of a statement node, if it is one.
 // Expression nodes and the synthetic program root return ok=false so
 // hooks only fire once per statement.

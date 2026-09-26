@@ -443,6 +443,12 @@ type Environment struct {
 	// is checked by the evaluator before assigning).
 	declaredTypes map[string]*ast.TypeAnnotation
 	outer         *Environment
+	// Wave 17: source file whose code this environment belongs to, for
+	// debugger/profiler hook attribution. Inherited by enclosed scopes;
+	// the evaluator sets it to a function's SourceFile on call and to
+	// the imported file during nested imports. Access via GetSourceFile /
+	// SetSourceFile: spawned tasks evaluate on other goroutines.
+	sourceFile string
 	// Wave 11: yield collection for generator functions. When a function
 	// body is evaluated by evalCollectingYields, it installs a sink on the
 	// call's own environment; evalYieldStatement appends to the NEAREST
@@ -476,7 +482,27 @@ func NewEnvironment() *Environment {
 func NewEnclosedEnvironment(outer *Environment) *Environment {
 	env := NewEnvironment()
 	env.outer = outer
+	if outer != nil {
+		// Wave 17: scopes inherit their file for hook attribution.
+		env.sourceFile = outer.GetSourceFile()
+	}
 	return env
+}
+
+// GetSourceFile reports the source file this environment's code belongs
+// to ("" when unknown). Wave 17: debugger/profiler attribution.
+func (e *Environment) GetSourceFile() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sourceFile
+}
+
+// SetSourceFile sets the source file for this environment's code.
+// Wave 17: debugger/profiler attribution.
+func (e *Environment) SetSourceFile(f string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sourceFile = f
 }
 
 func (e *Environment) SetConst(name string, val Object) Object {

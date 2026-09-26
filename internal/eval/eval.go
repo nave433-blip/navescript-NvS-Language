@@ -93,11 +93,11 @@ func init() {
 
 func Eval(node ast.Node, env *object.Environment) object.Object {
 	// Wave 17: debugger/profiler hook — one nil check when unused.
-	// CurrentFile identifies the source file for correct attribution
-	// across imports and the prelude.
+	// The file is resolved per-environment so spawned tasks on other
+	// goroutines attribute correctly without touching the global.
 	if ActiveDebugger != nil {
 		if line, ok := StmtLine(node); ok {
-			ActiveDebugger.BeforeStmt(line, CurrentFile, env)
+			ActiveDebugger.BeforeStmt(line, currentSourceFile(env), env)
 		}
 	}
 	switch node := node.(type) {
@@ -216,7 +216,7 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			Body:       node.Body,
 			Env:        env,
 			// Wave 17: remember the defining file for hook attribution.
-			SourceFile: CurrentFile,
+			SourceFile: currentSourceFile(env),
 		}
 	case *ast.CallExpression:
 		// Method call: obj.method(args)
@@ -950,14 +950,6 @@ func evalExpressions(exps []ast.Expression, env *object.Environment) []object.Ob
 func applyFunction(fn object.Object, args []object.Object) object.Object {
 	switch fn := fn.(type) {
 	case *object.Function:
-		// Wave 17: run the body attributed to the file where the
-		// function was defined, so debugger/profiler hooks and nested
-		// imports resolve against the definition site, not the caller.
-		prevFile := CurrentFile
-		if fn.SourceFile != "" {
-			CurrentFile = fn.SourceFile
-		}
-		defer func() { CurrentFile = prevFile }()
 		// Wave 17: debugger call-depth tracking.
 		if ActiveDebugger != nil {
 			name := fn.Name
@@ -1196,6 +1188,11 @@ func evalCollectingYields(body *ast.BlockStatement, env *object.Environment) ([]
 // violation returns a runtime error as the second value.
 func extendFunctionEnv(fn *object.Function, args []object.Object) (*object.Environment, object.Object) {
 	env := object.NewEnclosedEnvironment(fn.Env)
+	// Wave 17: the call's scope belongs to the file where the function
+	// was defined, so hooks attribute nested statements correctly.
+	if fn.SourceFile != "" {
+		env.SetSourceFile(fn.SourceFile)
+	}
 	for paramIdx, param := range fn.Parameters {
 		var val object.Object
 		bound := false
@@ -1924,11 +1921,15 @@ func evalImportStatement(node *ast.ImportStatement, env *object.Environment) obj
 	if len(p.Errors()) > 0 {
 		return newError("import parse errors in %s: %v", path, p.Errors())
 	}
-	// Nested imports resolve against this file's directory; restore after.
+	// Nested imports resolve against this file's directory and attribute
+	// to it; restore after.
 	prevFile := CurrentFile
 	CurrentFile = abs
+	prevSrc := env.GetSourceFile()
+	env.SetSourceFile(abs)
 	result := Eval(program, env)
 	CurrentFile = prevFile
+	env.SetSourceFile(prevSrc)
 	if isError(result) {
 		return result
 	}
@@ -1947,7 +1948,7 @@ func evalClassStatement(node *ast.ClassStatement, env *object.Environment) objec
 			Body:       m.Body,
 			Env:        env,
 			// Wave 17: remember the defining file for hook attribution.
-			SourceFile: CurrentFile,
+			SourceFile: currentSourceFile(env),
 		}
 	}
 	var parent *object.Class
