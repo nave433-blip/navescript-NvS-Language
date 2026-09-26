@@ -36,11 +36,38 @@ func main() {
 	switch cmd {
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)>")
+			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)> [--watch] [--profile]")
 			os.Exit(1)
 		}
-		eval.CLIArgs = os.Args[3:]
-		runFile(os.Args[2], true)
+		// Wave 17: --watch re-runs on change; --profile reports hot lines.
+		watch, profile := false, false
+		var fileArgs []string
+		for _, a := range os.Args[2:] {
+			switch a {
+			case "--watch":
+				watch = true
+			case "--profile":
+				profile = true
+			default:
+				fileArgs = append(fileArgs, a)
+			}
+		}
+		if len(fileArgs) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)> [--watch] [--profile]")
+			os.Exit(1)
+		}
+		if watch {
+			runWatch(fileArgs[0])
+			return
+		}
+		if profile {
+			runProfile(fileArgs[0], 15)
+			return
+		}
+		eval.CLIArgs = fileArgs[1:]
+		runFile(fileArgs[0], true)
+	case "test":
+		runTestCmd(os.Args[2:])
 	case "eval", "e", "-e":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs eval '<code>'")
@@ -119,6 +146,9 @@ Usage:
   nvs                     Start interactive REPL
   nvs <file>              Run a program (.ns, .nvs, or .nave)
   nvs run <file>          Run a program (.ns or .nvs)
+                          Flags: --watch (re-run on change),
+                                 --profile (report hottest lines)
+  nvs test [dir...]       Run test_*.nvs / *_test.nvs files (exit 0 = pass)
   nvs eval '<code>'       Evaluate a snippet (also: nvs -e '<code>')
   nvs init                Scaffold a new NvS project
   nvs info                Language identity & capabilities
