@@ -48,6 +48,16 @@ func (vm *VM) Run() (interface{}, error) {
 			vm.push(vm.constants[idx])
 		case OpAdd:
 			r, l := vm.pop(), vm.pop()
+			if ls, ok := l.(string); ok {
+				if rs, ok := r.(string); ok {
+					vm.push(ls + rs)
+					break
+				}
+				return nil, fmt.Errorf("type mismatch: string + %s", typeName(r))
+			}
+			if _, ok := r.(string); ok {
+				return nil, fmt.Errorf("type mismatch: %s + string", typeName(l))
+			}
 			vm.push(numBin(l, r, func(a, b float64) float64 { return a + b }))
 		case OpSub:
 			r, l := vm.pop(), vm.pop()
@@ -57,10 +67,18 @@ func (vm *VM) Run() (interface{}, error) {
 			vm.push(numBin(l, r, func(a, b float64) float64 { return a * b }))
 		case OpDiv:
 			r, l := vm.pop(), vm.pop()
-			vm.push(numBin(l, r, func(a, b float64) float64 { return a / b }))
+			v, err := numDiv(l, r)
+			if err != nil {
+				return nil, err
+			}
+			vm.push(v)
 		case OpMod:
 			r, l := vm.pop(), vm.pop()
-			vm.push(numBin(l, r, func(a, b float64) float64 { return float64(int64(a) % int64(b)) }))
+			v, err := numMod(l, r)
+			if err != nil {
+				return nil, err
+			}
+			vm.push(v)
 		case OpEqual:
 			r, l := vm.pop(), vm.pop()
 			vm.push(eq(l, r))
@@ -69,16 +87,32 @@ func (vm *VM) Run() (interface{}, error) {
 			vm.push(!eq(l, r))
 		case OpGreater:
 			r, l := vm.pop(), vm.pop()
-			vm.push(toF(l) > toF(r))
+			v, err := cmp(l, r, func(c int) bool { return c > 0 })
+			if err != nil {
+				return nil, err
+			}
+			vm.push(v)
 		case OpLess:
 			r, l := vm.pop(), vm.pop()
-			vm.push(toF(l) < toF(r))
+			v, err := cmp(l, r, func(c int) bool { return c < 0 })
+			if err != nil {
+				return nil, err
+			}
+			vm.push(v)
 		case OpGreaterEq:
 			r, l := vm.pop(), vm.pop()
-			vm.push(toF(l) >= toF(r))
+			v, err := cmp(l, r, func(c int) bool { return c >= 0 })
+			if err != nil {
+				return nil, err
+			}
+			vm.push(v)
 		case OpLessEq:
 			r, l := vm.pop(), vm.pop()
-			vm.push(toF(l) <= toF(r))
+			v, err := cmp(l, r, func(c int) bool { return c <= 0 })
+			if err != nil {
+				return nil, err
+			}
+			vm.push(v)
 		case OpMinus:
 			v := vm.pop()
 			vm.push(-toF(v))
@@ -113,11 +147,34 @@ func (vm *VM) Run() (interface{}, error) {
 			ip += 2
 			vm.push(vm.globals[idx])
 		case OpPrint:
-			v := vm.pop()
-			s := fmt.Sprint(v)
+			n := ReadUint16(vm.ins, ip)
+			ip += 2
+			parts := make([]string, n)
+			for i := n - 1; i >= 0; i-- {
+				parts[i] = fmt.Sprint(vm.pop())
+			}
+			s := strings.Join(parts, " ")
 			vm.Output.WriteString(s)
 			vm.Output.WriteByte('\n')
 			fmt.Println(s)
+		case OpLen:
+			v := vm.pop()
+			switch t := v.(type) {
+			case string:
+				vm.push(int64(len(t))) // byte count, like the tree-walker
+			case []interface{}:
+				vm.push(int64(len(t)))
+			default:
+				return nil, fmt.Errorf("argument to `len` not supported, got %s", typeName(v))
+			}
+		case OpArray:
+			n := ReadUint16(vm.ins, ip)
+			ip += 2
+			elems := make([]interface{}, n)
+			for i := n - 1; i >= 0; i-- {
+				elems[i] = vm.pop()
+			}
+			vm.push(elems)
 		case OpHalt:
 			if vm.sp > 0 {
 				return vm.pop(), nil
@@ -143,6 +200,81 @@ func toF(v interface{}) float64 {
 		return float64(n)
 	default:
 		return 0
+	}
+}
+
+func typeName(v interface{}) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "bool"
+	case int64, int:
+		return "int"
+	case float64:
+		return "float"
+	case string:
+		return "string"
+	case []interface{}:
+		return "array"
+	default:
+		return "unknown"
+	}
+}
+
+// numDiv matches the tree-walker: truncating division for two ints,
+// float division otherwise, and an explicit error on division by zero.
+func numDiv(l, r interface{}) (interface{}, error) {
+	if li, ok := l.(int64); ok {
+		if ri, ok := r.(int64); ok {
+			if ri == 0 {
+				return nil, fmt.Errorf("division by zero")
+			}
+			return li / ri, nil
+		}
+	}
+	rf := toF(r)
+	if rf == 0 {
+		return nil, fmt.Errorf("division by zero")
+	}
+	return toF(l) / rf, nil
+}
+
+// numMod matches the tree-walker: Go % semantics for two ints with an
+// explicit error on modulo by zero (the tree-walker panics there — the
+// VM is honest instead).
+func numMod(l, r interface{}) (interface{}, error) {
+	if li, ok := l.(int64); ok {
+		if ri, ok := r.(int64); ok {
+			if ri == 0 {
+				return nil, fmt.Errorf("modulo by zero")
+			}
+			return li % ri, nil
+		}
+	}
+	return nil, fmt.Errorf("type mismatch: %s %% %s", typeName(l), typeName(r))
+}
+
+// cmp compares two values: lexicographic for two strings (like the
+// tree-walker), numeric otherwise. pred maps strings.Compare's result.
+func cmp(l, r interface{}, pred func(int) bool) (bool, error) {
+	if ls, ok := l.(string); ok {
+		if rs, ok := r.(string); ok {
+			return pred(strings.Compare(ls, rs)), nil
+		}
+		return false, fmt.Errorf("type mismatch: string compared with %s", typeName(r))
+	}
+	if _, ok := r.(string); ok {
+		return false, fmt.Errorf("type mismatch: %s compared with string", typeName(l))
+	}
+	lf, rf := toF(l), toF(r)
+	switch {
+	case lf < rf:
+		return pred(-1), nil
+	case lf > rf:
+		return pred(1), nil
+	default:
+		return pred(0), nil
 	}
 }
 

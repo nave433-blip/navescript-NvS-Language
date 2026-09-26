@@ -1,0 +1,36 @@
+// port29_quantum_lowlevel.ns — low-level quantum primitives + physics
+// constants, ported from the NvS 2.2–2.9 track.
+//
+// These complement wave 8's circuit API (qalloc/q_h/q_cnot/...): here you
+// manipulate raw state vectors as [[re,im], ...] arrays.
+// LOCAL SIMULATOR — not quantum hardware.
+
+// |0> state, apply H -> 50/50 superposition
+let s = qzero(1)
+print qprob(s)              // [1, 0]
+let h = qgate(s, "H")
+print qprob(h)              // [0.5, 0.5]
+
+// Bell pair the low-level way: H on qubit 0, then CNOT.
+// (qtensor builds |0>|0>; qgate applies single-qubit gates.)
+let b0 = qtensor(qubit(0), qubit(0))
+print qprob(b0)             // [1, 0, 0, 0]
+
+// Rotation gate with an angle (radians)
+let r = qgate(s, "RX", pi / 2)
+print qprob(r)
+
+// Inner product <0|0> = 1
+print qinner(qubit(0), qubit(0))   // [1, 0]
+
+// Measurement returns {outcome, state}
+let m = qmeasure(h)
+print m["outcome"]          // 0 or 1, honestly random
+
+// Physics constants: globals and lookup
+print hbar                // 1.054571817e-34
+print c_light             // 299792458
+print physics_const("pi") // 3.14159...
+
+// self_eval: run NvS source from inside NvS (full interpreter)
+print self_eval("6 * 7")   // 42

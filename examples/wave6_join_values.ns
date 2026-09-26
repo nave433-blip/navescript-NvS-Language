@@ -1,0 +1,33 @@
+// Wave 6 — join returns task values; a raising task re-raises at join.
+// join(task) blocks until the task finishes and hands back its return
+// value. If the task raised, join raises the same error (catchable).
+
+fn add(a, b) { return a + b }
+
+fn boom() {
+  throw "kaboom"
+}
+
+let t1 = spawn(add, 40, 2)
+let t2 = spawn(add, 1, 2)
+assert(join(t1) == 42, "join value 1")
+assert(join(t2) == 3, "join value 2")
+
+let t3 = spawn(boom)
+let caught = ""
+try {
+  join(t3)
+} catch (e) {
+  caught = e
+}
+assert(contains(caught, "kaboom"), "join re-raised the task error")
+
+// A task returning a compound value: the value is delivered intact.
+fn make() {
+  return {"a": [1, 2], "b": "x"}
+}
+let t4 = spawn(make)
+let v = join(t4)
+assert(deep_equal(v["a"], [1, 2]) and (v["b"] == "x"), "join compound value")
+
+print "join ok"

@@ -1,0 +1,8 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era quantum simulator basics (deterministic checks only).
+let q = qalloc(1)
+q_h(q, 0)
+let probs = q_probs(q)
+print probs[0] + probs[1]
+q_x(q, 0)
+print q_probs(q)

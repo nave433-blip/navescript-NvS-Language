@@ -1,0 +1,109 @@
+// NvS standard library: str — string utilities in pure NvS.
+// JS String + Python str + Go strings + Ruby String counterparts.
+// The Go builtins already cover: trim, upper, lower, split, join, lines,
+// starts_with, ends_with, contains, replace (all occurrences), repeat,
+// substr, pad_left, pad_right, index_of, count. This module fills the gaps.
+//
+// Import with:   import "stdlib/str.nvs"
+
+/// Reverse a string (the builtin reverse() is array-only).
+fn str_reverse(s) {
+  return join(reverse(split(s, "")), "")
+}
+
+/// Convert to snake_case: "camelCase" -> "camel_case", "kebab-case" ->
+/// "kebab_case". Existing separators become underscores.
+fn str_to_snake(s) {
+  let out = ""
+  for (c in split(s, "")) {
+    if (c == upper(c) and c != lower(c)) {
+      if (len(out) > 0) { out = out + "_" }
+      out = out + lower(c)
+    } else if (c == "-" or c == " " or c == ".") {
+      out = out + "_"
+    } else {
+      out = out + c
+    }
+  }
+  return out
+}
+
+/// Convert to kebab-case: "camelCase" -> "camel-case".
+fn str_to_kebab(s) {
+  return replace(str_to_snake(s), "_", "-")
+}
+
+/// Convert to camelCase: "snake_case" / "kebab-case" -> "snakeCase".
+/// A leading separator is dropped ("_foo" -> "foo").
+fn str_to_camel(s) {
+  let norm = replace(replace(s, "-", "_"), " ", "_")
+  let parts = filter(split(norm, "_"), fn(w) { return len(w) > 0 })
+  let out = ""
+  let i = 0
+  for (w in parts) {
+    if (i == 0) {
+      out = out + lower(w)
+    } else {
+      out = out + upper(substr(w, 0, 1)) + lower(substr(w, 1, len(w) - 1))
+    }
+    i = i + 1
+  }
+  return out
+}
+
+/// Uppercase the first character, lowercase the rest (Python str.capitalize).
+fn str_capitalize(s) {
+  if (len(s) == 0) { return s }
+  return upper(substr(s, 0, 1)) + lower(substr(s, 1, len(s) - 1))
+}
+
+/// Truncate to n characters, appending suffix ("...") when truncated.
+/// If suffix is longer than n, the string is cut to n with no suffix.
+fn str_truncate(s, n, suffix="...") {
+  if (len(s) <= n) { return s }
+  if (len(suffix) >= n) { return substr(s, 0, n) }
+  return substr(s, 0, n - len(suffix)) + suffix
+}
+
+/// Split on runs of spaces (Python str.split() with no args).
+fn str_words(s) {
+  return filter(split(s, " "), fn(w) { return len(w) > 0 })
+}
+
+/// Remove leading whitespace (JS String.trimStart).
+fn str_trim_start(s) {
+  return regex_replace("^[ \t\r\n]+", s, "")
+}
+
+/// Remove trailing whitespace (JS String.trimEnd).
+fn str_trim_end(s) {
+  return regex_replace("[ \t\r\n]+$", s, "")
+}
+
+/// Interpolate {name} placeholders from a hash (Python str.format_map /
+/// JS template literals, minimal edition). Unknown keys are left as-is.
+fn str_template(tmpl, vals) {
+  let out = tmpl
+  for (k in keys(vals)) {
+    out = replace(out, "{" + k + "}", str(vals[k]))
+  }
+  return out
+}
+
+/// True when s consists only of decimal digits (Python str.isdigit).
+fn str_is_digit(s) {
+  if (len(s) == 0) { return false }
+  for (c in split(s, "")) {
+    if (c < "0" or c > "9") { return false }
+  }
+  return true
+}
+
+/// True when s consists only of letters (Python str.isalpha, ASCII).
+fn str_is_alpha(s) {
+  if (len(s) == 0) { return false }
+  for (c in split(s, "")) {
+    if (c == upper(c) and c == lower(c)) { return false }
+  }
+  return true
+}

@@ -1,0 +1,70 @@
+// Wave 5: runtime type-guard helpers (TS type-predicate style) and type_of().
+// is_null() already existed; the rest of the family is filled in here.
+// type_of() is the lowercase companion to type()/typeof() (which return the
+// uppercase internal names like "INTEGER").
+
+print "== guards =="
+print is_int(1)
+print is_int(1.0)
+print is_float(1.5)
+print is_float(2)
+print is_number(7)
+print is_number(7.5)
+print is_number("7")
+print is_string("seven")
+print is_string(7)
+print is_bool(true)
+print is_bool(1)
+print is_null(null)
+print is_null(false)
+print is_array([1, 2])
+print is_array((1, 2))
+print is_hash({"a": 1})
+print is_hash([1])
+print is_tuple((1, 2))
+print is_tuple([1, 2])
+print is_function(fn(x) { return x })
+print is_function(len)
+print is_function(42)
+
+print "== type_of =="
+print type_of(1)
+print type_of(1.5)
+print type_of("s")
+print type_of(true)
+print type_of(null)
+print type_of([1])
+print type_of({"a": 1})
+print type_of((1, 2))
+print type_of(fn(x) { return x })
+print type_of(len)
+print type_of(type_of)
+
+print "== guards as predicates =="
+fn only_ints(xs) {
+  let out = []
+  for (x in xs) {
+    if (is_int(x)) {
+      push(out, x)
+    }
+  }
+  return out
+}
+print only_ints([1, "a", 2.5, 3, null, 4])
+
+fn what_is(v) {
+  if (is_null(v)) { return "nothing" }
+  if (is_int(v)) { return "whole number" }
+  if (is_number(v)) { return "some number" }
+  if (is_string(v)) { return "text" }
+  if (is_array(v)) { return "list" }
+  if (is_hash(v)) { return "map" }
+  return "something else (" + type_of(v) + ")"
+}
+print what_is(null)
+print what_is(5)
+print what_is(5.5)
+print what_is("hi")
+print what_is([1])
+print what_is({"k": "v"})
+print what_is((1, 2))

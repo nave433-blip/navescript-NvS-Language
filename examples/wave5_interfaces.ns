@@ -1,0 +1,119 @@
+// Wave 5: interfaces / protocols (Go/TS/Python-Protocol style).
+// `interface` declares a STRUCTURAL contract. implements() /
+// assert_implements() check it at runtime. What is verified, honestly:
+//   - every required member is present,
+//   - every required member is callable,
+//   - a method with knowable arity can be called with the declared arity.
+// NOT verified: parameter/return type compatibility (no signature variance
+// analysis — an annotated implementation enforces its own contracts when
+// called).
+
+print "== declaring and checking =="
+interface Shape {
+  area(): number
+  label(): string
+}
+
+class Circle {
+  fn init(r) {
+    this.r = r
+  }
+  fn area(): number {
+    return 3.14159 * this.r * this.r
+  }
+  fn label(): string {
+    return "circle r=${this.r}"
+  }
+}
+
+let c = new Circle(2)
+print implements(c, Shape)
+print assert_implements(c, Shape)
+
+print "== maps of functions count (structural, not nominal) =="
+let square = {
+  "area": fn() { return 16.0 },
+  "label": fn() { return "square" }
+}
+print implements(square, Shape)
+
+print "== negative cases =="
+let missing = { "area": fn() { return 1.0 } }
+print implements(missing, Shape)
+try {
+  assert_implements(missing, Shape)
+} catch (e) {
+  print "caught: " + e
+}
+
+let not_callable = { "area": 42, "label": fn() { return "x" } }
+print implements(not_callable, Shape)
+try {
+  assert_implements(not_callable, Shape)
+} catch (e) {
+  print "caught: " + e
+}
+
+let wrong_arity = {
+  "area": fn(a, b) { return 1.0 },
+  "label": fn() { return "x" }
+}
+print implements(wrong_arity, Shape)
+try {
+  assert_implements(wrong_arity, Shape)
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== inherited methods satisfy interfaces =="
+interface Speaker {
+  speak(): string
+}
+class Animal {
+  fn speak(): string {
+    return "..."
+  }
+}
+class Dog extends Animal {
+}
+print implements(new Dog(), Speaker)
+
+print "== interfaces as parameter annotations =="
+fn circle_draw(s: Shape) {
+  return s.label() + " area=" + "${s.area()}"
+}
+print circle_draw(new Circle(1))
+try {
+  circle_draw(42)
+} catch (e) {
+  print "caught: " + e
+}
+// Honest edge: `obj.method()` call syntax needs a class instance in NvS, so
+// a map that implements Shape is invoked through its function values.
+fn map_draw(s: Shape) {
+  return s["label"]() + " area=" + "${s["area"]()}"
+}
+print map_draw(square)
+
+print "== class names as annotations (subclasses count) =="
+fn adopt(a: Animal) {
+  return a.speak()
+}
+print adopt(new Dog())
+try {
+  adopt("not an animal")
+} catch (e) {
+  print "caught: " + e
+}
+
+print "== record type names as annotations =="
+record Point(x, y)
+fn get_x(p: Point) {
+  return p.x
+}
+print get_x(Point(3, 4))
+try {
+  get_x([3, 4])
+} catch (e) {
+  print "caught: " + e
+}

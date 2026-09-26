@@ -1,0 +1,24 @@
+// Self-hosting subset demo: the NvS-written mini-interpreter and Go emitter.
+//
+// mini_eval.ns implements a small expression language (integers, + - * / %,
+// comparisons, parentheses, let/print/if/while) *in NvS itself*.
+// emit_go.ns translates that same subset into Go source code.
+//
+// These are honest subset tools: they do not handle the full NvS language
+// (no functions-as-values, records, pattern matching, concurrency, etc.).
+// Anything outside the subset is an explicit error or a best-effort comment.
+
+import "stdlib/selfhost/mini_eval.ns"
+import "stdlib/selfhost/emit_go.ns"
+
+print "--- mini_eval: NvS interpreting NvS ---"
+print mini_eval("1 + 2 * 3")        // 7  (precedence works)
+print mini_eval("(1 + 2) * 3")      // 9
+print mini_eval("10 % 3")           // 1
+print mini_eval("2 < 3")            // true
+
+print "--- emit_go: NvS emitting Go ---"
+let src = "let x = 40 + 2\nprint x\n"
+let g = emit_go_program(src)
+print g
+print "(That Go program prints 42 when compiled with the Go toolchain.)"

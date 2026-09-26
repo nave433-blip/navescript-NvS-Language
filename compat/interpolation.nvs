@@ -1,0 +1,5 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era string interpolation.
+let name = "nvs"
+let n = 41
+print "hello ${name}, ${n + 1}"

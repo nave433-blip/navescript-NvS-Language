@@ -1,0 +1,17 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era while, C-style for, for-in, break/continue, loop-else.
+let i = 0
+while (i < 3) { i = i + 1 }
+print i
+let total = 0
+for (let j = 0; j < 5; j = j + 1) {
+  if (j == 3) { continue }
+  total = total + j
+}
+print total
+for (x in [1, 2, 3]) {
+  if (x == 2) { break }
+  print x
+} else {
+  print "no-break"
+}

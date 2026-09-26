@@ -1,0 +1,58 @@
+// wave3_freeze.ns — Wave 3: deep immutable freeze (Python frozenset, JS Object.freeze)
+let f = freeze({"a": [1, {"b": 2}], "c": "hi"})
+print is_frozen(f)          // true
+print is_frozen(f["a"])     // true — deep: nested values frozen too
+print is_frozen(f["a"][1])  // true
+print is_frozen([1, 2])     // false
+print is_frozen((1, 2))     // true — tuples are inherently immutable
+print is_frozen(42)         // true — scalars are inherently immutable
+
+// reads still work fine on frozen values
+print f["a"][0]             // 1
+print f["a"][1]["b"]        // 2
+print len(f)                // 2
+
+// every mutation path refuses loudly and names the offense
+try { push(f["a"], 3) } catch (e) { print e }        // cannot push into frozen array
+try { pop(f["a"]) } catch (e) { print e }            // cannot pop from frozen array
+try { sort(f["a"]) } catch (e) { print e }           // cannot sort frozen array
+try { reverse(f["a"]) } catch (e) { print e }        // cannot reverse frozen array
+try { f["a"][0] = 9 } catch (e) { print e }          // cannot assign index of frozen array: [0]
+try { f["c"] = "x" } catch (e) { print e }           // cannot assign index of frozen hash
+try { f.c = "x" } catch (e) { print e }              // cannot assign member of frozen hash: .c
+try { delete(f, "a") } catch (e) { print e }         // cannot delete key from frozen hash
+try { set_add(freeze(set(1)), 2) } catch (e) { print e }  // cannot set_add into frozen set
+try { deep_set(f, "a.0", 9) } catch (e) { print e }  // cannot deep_set into frozen array
+
+// slices of a frozen array stay frozen
+let sl = freeze([1, 2, 3])[0:2]
+print is_frozen(sl)         // true
+try { push(sl, 9) } catch (e) { print e }
+
+// thaw(x): deep mutable copy — the original stays frozen
+let m = thaw(f)
+print is_frozen(m)          // false
+print is_frozen(m["a"])     // false
+push(m["a"], 3)
+m["a"][1]["b"] = 99
+print m["a"]                // [1, {b: 99}, 3]
+print f["a"]                // [1, {b: 2}] — untouched
+try { push(f["a"], 3) } catch (e) { print e }  // still frozen
+
+// thaw converts immutables to their mutable counterparts
+let tm = thaw((1, 2))
+push(tm, 3)
+print tm                    // [1, 2, 3]
+record Pt(x, y)
+let rm = thaw(Pt(1, 2))
+rm["x"] = 9
+print rm["x"]               // 9
+
+// freeze is in-place: aliases see it too (JS Object.freeze semantics)
+let alias_src = [1, [2]]
+let alias = alias_src
+freeze(alias_src)
+print is_frozen(alias)      // true
+print is_frozen(alias[1])   // true
+
+print "FREEZE OK"

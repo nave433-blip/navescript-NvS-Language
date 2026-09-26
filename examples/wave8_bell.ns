@@ -1,0 +1,45 @@
+// wave8_bell.ns — Bell pair on the LOCAL state-vector simulator
+// (not quantum hardware). H on qubit 0, CNOT(0 -> 1), then measure.
+// Entanglement means only 00 and 11 ever appear — we assert that 01/10
+// NEVER occur. We do NOT assert exact 50/50 ratios (that would be flaky
+// statistics); the correlation structure is the deterministic claim.
+
+fn bell_pair() {
+  let q = qalloc(2)
+  q_h(q, 0)
+  q_cnot(q, 0, 1)
+  return q
+}
+
+// Sanity: before measuring, the probabilities are exactly (|00> + |11>)/sqrt(2).
+let p = q_probs(bell_pair())
+print "bell probs: ${p}"
+if (!(abs(p[0] - 0.5) < 0.000000001)) { throw "p(|00>) should be 0.5" }
+if (!(abs(p[3] - 0.5) < 0.000000001)) { throw "p(|11>) should be 0.5" }
+if (p[1] != 0) { throw "p(|01>) should be 0" }
+if (p[2] != 0) { throw "p(|10>) should be 0" }
+
+// 200 shots: count outcomes. Only 00 and 11 may appear.
+let n00 = 0
+let n11 = 0
+let bad = 0
+let i = 0
+while (i < 200) {
+  let bits = q_measure_all(bell_pair())  // bits[0] is qubit 0, bits[1] is qubit 1
+  if ((bits[0] == 0) and (bits[1] == 0)) {
+    n00 = n00 + 1
+  } else {
+    if ((bits[0] == 1) and (bits[1] == 1)) {
+      n11 = n11 + 1
+    } else {
+      bad = bad + 1
+    }
+  }
+  i = i + 1
+}
+print "shots: 00=${n00} 11=${n11} other=${bad}"
+if (bad != 0) { throw "Bell pair produced a 01/10 outcome — entanglement broken" }
+if (n00 + n11 != 200) { throw "shot count mismatch" }
+if (n00 == 0) { throw "expected some 00 outcomes in 200 shots" }
+if (n11 == 0) { throw "expected some 11 outcomes in 200 shots" }
+print "bell ok: perfect 00/11 correlation, no 01/10"

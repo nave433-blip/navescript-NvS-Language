@@ -1,0 +1,61 @@
+// Tests for stdlib/collections.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_collections.nvs
+import "../collections.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+
+let c = coll_counter(["a", "b", "a", "c", "a", "b"])
+check("counter a", coll_count_get(c, "a") == 3)
+check("counter b", coll_count_get(c, "b") == 2)
+check("counter missing", coll_count_get(c, "z") == 0)
+let ci = coll_counter([1, 2, 1, 1.5])
+check("counter int", coll_count_get(ci, 1) == 2)
+check("counter float-distinct", coll_count_get(ci, 1.5) == 1)
+check("counter empty", len(keys(coll_counter([]))) == 0)
+
+let mc = coll_most_common(c, 2)
+check("most_common", deep_equal(mc, [["a", 3], ["b", 2]]))
+check("most_common all", len(coll_most_common(c, 0)) == 3)
+
+let dd = coll_defaultdict(fn() { return [] })
+let l1 = coll_dd_get(dd, "k1")
+l1 = push(l1, 1)
+check("dd auto-create", deep_equal(coll_dd_get(dd, "k1"), [1]))
+check("dd has", coll_dd_has(dd, "k1") == true)
+check("dd has-not", coll_dd_has(dd, "nope") == false)
+coll_dd_set(dd, "k2", 99)
+check("dd set", coll_dd_get(dd, "k2") == 99)
+
+let d = coll_deque()
+coll_dq_push(d, 1)
+coll_dq_push(d, 2)
+coll_dq_push_front(d, 0)
+check("deque order", deep_equal(coll_dq_to_array(d), [0, 1, 2]))
+check("deque len", coll_dq_len(d) == 3)
+check("deque shift", coll_dq_shift(d) == 0)
+check("deque pop", coll_dq_pop(d) == 2)
+check("deque remaining", deep_equal(coll_dq_to_array(d), [1]))
+check("deque len2", coll_dq_len(d) == 1)
+
+let d2 = coll_deque()
+coll_dq_push_front(d2, "b")
+coll_dq_push_front(d2, "a")
+check("deque front-only", deep_equal(coll_dq_to_array(d2), ["a", "b"]))
+check("deque pop-cross", coll_dq_pop(d2) == "b")
+check("deque shift-cross", coll_dq_shift(d2) == "a")
+check("deque empty-len", coll_dq_len(d2) == 0)
+let threw = false
+try { coll_dq_pop(d2) } catch (e) { threw = true }
+check("deque pop-empty-throws", threw)
+let threw2 = false
+try { coll_dq_shift(d2) } catch (e) { threw2 = true }
+check("deque shift-empty-throws", threw2)
+
+if (failures > 0) { throw "test_collections failures: " + str(failures) }
+print "PASS: test_collections"

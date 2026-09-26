@@ -1,0 +1,26 @@
+// wave8_circuit.ns — the ASCII circuit diagram on the LOCAL simulator
+// (not quantum hardware). Every gate application is recorded; q_reset
+// clears the recording along with the state.
+
+let q = qalloc(2)
+q_h(q, 0)
+q_cnot(q, 0, 1)
+q_rx(q, 1, 1.5707963267948966)
+print q_circuit(q)
+
+// The backend registry is honest: only "local" exists in this build.
+let be = q_backend("local")
+print "backend: ${be}"
+try {
+  q_backend("azure")
+  throw "q_backend azure should have failed"
+} catch (e) {
+  print "azure honestly refused: ${e}"
+}
+
+// After q_reset the state is |00> again and the diagram is empty.
+q_reset(q)
+let p = q_probs(q)
+if (p[0] != 1) { throw "q_reset should restore |00>" }
+print q_circuit(q)
+print "circuit ok"

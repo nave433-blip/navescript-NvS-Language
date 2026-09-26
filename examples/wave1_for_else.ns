@@ -1,0 +1,38 @@
+// Wave 1: for...else / while...else — else runs only if the loop didn't break
+print "== for-in else, no break =="
+for (i in [1, 2, 3]) {
+  print i
+} else {
+  print "completed"
+}
+print "== for-in else, with break =="
+for (i in [1, 2, 3]) {
+  if (i == 2) { break }
+  print i
+} else {
+  print "must-not-print"
+}
+print "== c-style for else =="
+for (let i = 0; i < 3; i = i + 1) {
+  print i
+} else {
+  print "c-completed"
+}
+print "== while else, no break =="
+let j = 0
+while (j < 3) {
+  j = j + 1
+} else {
+  print "while-completed"
+}
+print "== while else, with break =="
+let k = 0
+while (true) {
+  k = k + 1
+  if (k == 2) { break }
+} else {
+  print "must-not-print-2"
+}
+print k
+print "== no else still fine =="
+for (x in [7, 8]) { print x }

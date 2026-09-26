@@ -1,0 +1,33 @@
+// Wave 1: labeled break / continue — break outer / continue outer
+print "== labeled break =="
+outer: for (x in [1, 2, 3]) {
+  for (y in [10, 20, 30]) {
+    if (y == 20) { break outer }
+    print y
+  }
+  print "inner-done-must-not-print"
+}
+print "after-outer"
+print "== labeled continue =="
+c2: for (x in [1, 2]) {
+  for (y in [1, 2, 3]) {
+    if (y == 2) { continue c2 }
+    print "${x}-${y}"
+  }
+}
+print "== unlabeled break still innermost =="
+for (x in [1, 2]) {
+  for (y in [1, 2]) {
+    if (y == 2) { break }
+    print "${x}:${y}"
+  }
+  print "inner-finished"
+}
+print "== labeled while =="
+let i = 0
+wloop: while (true) {
+  i = i + 1
+  if (i > 5) { break wloop }
+}
+print i
+print "done"

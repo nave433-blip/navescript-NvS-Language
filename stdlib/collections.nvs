@@ -1,0 +1,133 @@
+// NvS standard library: collections — Python collections counterparts.
+// The Go builtins already cover: set_* (sets), group_by, map_merge/pick/omit,
+// invert, sort/sort_by. This module fills the gaps.
+//
+// Import with:   import "stdlib/collections.nvs"
+
+/// Count occurrences of each element (Python collections.Counter).
+/// Returns a hash keyed by type+JSON encoding; each entry is
+/// {"value": original, "count": n}. Works for any JSON-encodable value.
+fn coll_counter(arr) {
+  let table = {}
+  for (x in arr) {
+    let k = type_of(x) + ":" + json_stringify(x)
+    if (k in table) {
+      let e = table[k]
+      e["count"] = e["count"] + 1
+    } else {
+      table[k] = {"value": x, "count": 1}
+    }
+  }
+  return table
+}
+
+/// Look up the count of x in a counter made by coll_counter (0 if absent).
+fn coll_count_get(counter, x) {
+  let k = type_of(x) + ":" + json_stringify(x)
+  if (k in counter) { return counter[k]["count"] }
+  return 0
+}
+
+/// The n most common [value, count] pairs, most frequent first
+/// (Python Counter.most_common). n <= 0 returns all pairs.
+fn coll_most_common(counter, n) {
+  let pairs = []
+  for (k in keys(counter)) {
+    let e = counter[k]
+    pairs = push(pairs, [e["value"], e["count"]])
+  }
+  // Insertion sort by count, descending. (The sort_by builtin compares keys
+  // as strings, so it cannot order numbers; this sorts in pure NvS.)
+  let i = 1
+  while (i < len(pairs)) {
+    let cur = pairs[i]
+    let j = i - 1
+    while (j >= 0 and pairs[j][1] < cur[1]) {
+      pairs[j + 1] = pairs[j]
+      j = j - 1
+    }
+    pairs[j + 1] = cur
+    i = i + 1
+  }
+  if (n > 0 and len(pairs) > n) { return slice(pairs, 0, n) }
+  return pairs
+}
+
+/// A defaultdict: missing keys are created by calling factory()
+/// (Python collections.defaultdict). Keys must be valid hash keys.
+fn coll_defaultdict(factory) {
+  return {"_factory": factory, "_data": {}}
+}
+
+/// Get dd[k], creating it via the factory when absent.
+fn coll_dd_get(dd, k) {
+  let d = dd["_data"]
+  if (!(k in d)) { d[k] = (dd["_factory"])() }
+  return d[k]
+}
+
+/// Set dd[k] = v, returning v.
+fn coll_dd_set(dd, k, v) {
+  dd["_data"][k] = v
+  return v
+}
+
+/// True when k is present in dd (without creating it).
+fn coll_dd_has(dd, k) {
+  return k in dd["_data"]
+}
+
+/// A double-ended queue (Python collections.deque), as a two-stack structure:
+/// {"_front": [...], "_back": [...]} with amortized O(1) operations.
+fn coll_deque() {
+  return {"_front": [], "_back": []}
+}
+
+/// Push x onto the back.
+fn coll_dq_push(d, x) {
+  d["_back"] = push(d["_back"], x)
+  return d
+}
+
+/// Push x onto the front.
+fn coll_dq_push_front(d, x) {
+  d["_front"] = push(d["_front"], x)
+  return d
+}
+
+/// Remove and return the back element. Throws when the deque is empty.
+fn coll_dq_pop(d) {
+  if (len(d["_back"]) == 0) {
+    if (len(d["_front"]) == 0) { throw "coll_dq_pop: empty deque" }
+    d["_back"] = reverse(d["_front"])
+    d["_front"] = []
+  }
+  return pop(d["_back"])
+}
+
+/// Remove and return the front element. Throws when the deque is empty.
+fn coll_dq_shift(d) {
+  if (len(d["_front"]) == 0) {
+    if (len(d["_back"]) == 0) { throw "coll_dq_shift: empty deque" }
+    d["_front"] = reverse(d["_back"])
+    d["_back"] = []
+  }
+  return pop(d["_front"])
+}
+
+/// Number of elements in the deque.
+fn coll_dq_len(d) {
+  return len(d["_front"]) + len(d["_back"])
+}
+
+/// The deque contents front-to-back as a plain array.
+fn coll_dq_to_array(d) {
+  // Copy first: the reverse() builtin reverses in place.
+  let fr = []
+  for (x in d["_front"]) { fr = push(fr, x) }
+  fr = reverse(fr)
+  let out = []
+  for (x in fr) { out = push(out, x) }
+  for (x in d["_back"]) { out = push(out, x) }
+  return out
+}

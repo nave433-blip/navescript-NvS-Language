@@ -1,0 +1,20 @@
+// wave9_fmt_bad.ns - deliberately badly formatted.
+// `nvs fmt` should normalize the whitespace without changing behavior.
+
+fn   messy( x,y ){
+	let result=x+y
+	if(result>0){
+		print("positive: ${result}")   
+	}else{
+		print("not positive")
+	}
+	return result
+}
+
+
+let items=[1,2,3]
+	for(item in items){
+	print(item*2)
+	}
+
+print(messy(2,3))

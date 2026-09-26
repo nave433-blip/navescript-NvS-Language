@@ -1,0 +1,56 @@
+// Tests for stdlib/os.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_os.nvs
+import "../os.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+
+// Runtime facts (Linux VM: linux/unix///sh).
+check("os_name", os_name() == "linux")
+check("os_kernel", os_kernel() == "unix")
+check("os_sep", os_sep() == "/")
+check("os_eol", os_eol() == "\n")
+check("os_shell", os_shell() == "sh")
+check("is_windows", os_is_windows() == false)
+check("is_unix", os_is_unix() == true)
+check("exe_suffix", os_exe_suffix() == "")
+
+// norm with explicit unix separator.
+check("norm basic", os_path_norm_with("/", "/a/b/../c") == "/a/c")
+check("norm dots", os_path_norm_with("/", "/a/./b//c/") == "/a/b/c")
+check("norm rel", os_path_norm_with("/", "a/b/../../c") == "c")
+check("norm root", os_path_norm_with("/", "/") == "/")
+check("norm empty", os_path_norm_with("/", "") == "")
+check("norm up-past-root", os_path_norm_with("/", "/../a") == "/a")
+
+// norm with explicit windows separator (injected — testable on Linux).
+check("norm win seps", os_path_norm_with("\\", "C:/a\\b") == "C:\\a\\b")
+check("norm win drive", os_path_norm_with("\\", "C:\\a\\..\\b") == "C:\\b")
+check("norm win drive fwd", os_path_norm_with("/", "C:\\a\\..\\b") == "C:/b")
+check("norm win rel", os_path_norm_with("\\", "a\\b\\..\\c") == "a\\c")
+
+// absoluteness under explicit separators.
+check("abs unix", os_is_abs_with("/", "/a/b") == true)
+check("abs unix rel", os_is_abs_with("/", "a/b") == false)
+check("abs win drive", os_is_abs_with("\\", "C:\\a") == true)
+check("abs win drive fwd", os_is_abs_with("\\", "C:/a") == true)
+check("abs win unc", os_is_abs_with("\\", "\\\\srv\\share") == true)
+check("abs win rel", os_is_abs_with("\\", "a\\b") == false)
+
+// join with explicit separators.
+check("join unix", os_path_join_with("/", ["/a/", "/b/", "c"]) == "/a/b/c")
+check("join win", os_path_join_with("\\", ["C:\\", "a", "b"]) == "C:\\a\\b")
+check("join win foreign", os_path_join_with("\\", ["C:/", "a/b"]) == "C:\\a\\b")
+
+// native-separator wrappers agree with the runtime here.
+check("norm native", os_path_norm("/a//b/../c") == "/a/c")
+check("is_abs native", os_is_abs("/x") == true)
+check("join native", os_path_join(["/a", "b"]) == "/a/b")
+
+if (failures > 0) { throw "test_os failures: " + str(failures) }
+print "PASS: test_os"

@@ -1,0 +1,59 @@
+// SIMULATED quantum computing — classical state-vector simulation, not hardware.
+// Quantum Fourier Transform on 3 qubits.
+// Convention: the register is read qubit-0-first, so qubit 0 is the MOST
+// significant bit of the logical number ("101" means q0=1, q1=0, q2=1).
+// Under that reading this is the textbook QFT:
+//   QFT|x> = (1/sqrt(8)) * sum_s e^{2 pi i x s / 8} |s>.
+// QFT on |000> gives the uniform superposition (all probs 1/8).
+// QFT of any basis state has uniform magnitudes; the phases encode the input.
+// Applying QFT then inverse QFT returns the original basis state.
+
+fn qft(r, n) {
+  for (let j = 0; j < n; j = j + 1) {
+    q_h(r, j)
+    for (let k = j + 1; k < n; k = k + 1) {
+      q_cphase(r, k, j, pi / pow(2, k - j))
+    }
+  }
+  for (let j = 0; j < n / 2; j = j + 1) {
+    q_swap(r, j, n - 1 - j)
+  }
+}
+
+fn qft_inv(r, n) {
+  for (let j = 0; j < n / 2; j = j + 1) {
+    q_swap(r, j, n - 1 - j)
+  }
+  for (let j = n - 1; j >= 0; j = j - 1) {
+    for (let k = n - 1; k > j; k = k - 1) {
+      q_cphase(r, k, j, 0 - pi / pow(2, k - j))
+    }
+    q_h(r, j)
+  }
+}
+
+print "QFT of |000> (uniform, all probs 0.125):"
+let r1 = qalloc(3)
+qft(r1, 3)
+print q_probs(r1)
+
+print "QFT of logical 1 (qubit 2 set): amplitude of output string s is (1/sqrt8) e^{2 pi i s/8}:"
+let r2 = qalloc(3)
+q_x(r2, 2)
+qft(r2, 3)
+print q_probs(r2)
+let s2 = q_state(r2)
+print "amp of output string 000 (index 0):"
+print s2[0]
+print "amp of output string 001 (index 4) should be [0.25, 0.25]:"
+print s2[4]
+print "amp of output string 010 (index 2) should be [~0, 0.3536]:"
+print s2[2]
+
+print "QFT then inverse QFT of |101> returns |101>:"
+let r3 = qalloc(3)
+q_x(r3, 0)
+q_x(r3, 2)
+qft(r3, 3)
+qft_inv(r3, 3)
+print q_probs(r3)

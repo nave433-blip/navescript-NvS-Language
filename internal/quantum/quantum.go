@@ -35,7 +35,7 @@ func NewZero(n int) State {
 func Normalize(s State) State {
 	var norm float64
 	for _, a := range s {
-		norm += real(a*cmplx.Conj(a))
+		norm += real(a * cmplx.Conj(a))
 	}
 	norm = math.Sqrt(norm)
 	if norm == 0 {
@@ -223,18 +223,18 @@ func FromPairs(pairs [][2]float64) State {
 
 // Physics constants (SI where applicable)
 const (
-	Pi     = math.Pi
-	E      = math.E
-	Hbar   = 1.054571817e-34 // J·s
-	H      = 6.62607015e-34  // Planck
-	C      = 299792458.0     // m/s
-	G      = 6.67430e-11
-	K_B    = 1.380649e-23
+	Pi       = math.Pi
+	E        = math.E
+	Hbar     = 1.054571817e-34 // J·s
+	H        = 6.62607015e-34  // Planck
+	C        = 299792458.0     // m/s
+	G        = 6.67430e-11
+	K_B      = 1.380649e-23
 	E_CHARGE = 1.602176634e-19
-	M_E    = 9.1093837015e-31
-	M_P    = 1.67262192369e-27
-	NA     = 6.02214076e23
-	ALPHA  = 7.2973525693e-3 // fine structure
+	M_E      = 9.1093837015e-31
+	M_P      = 1.67262192369e-27
+	NA       = 6.02214076e23
+	ALPHA    = 7.2973525693e-3 // fine structure
 )
 
 // GreekLetters maps common Greek letter names / glyphs to float values (math constants where meaningful).

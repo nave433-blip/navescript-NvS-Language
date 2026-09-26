@@ -172,6 +172,39 @@ func (r *Runner) Run(doc *Doc) error {
 			}
 		case "nasm_exec", "component_call":
 			r.logf("skip unsupported op %s (stub)", op)
+		case "native_op":
+			// Small arithmetic/logic ops over resolved vars.
+			// (Port note: the 2.9 track skipped these; supporting the
+			// basic set makes the bundled examples run end-to-end.)
+			operator, _ := step["operator"].(string)
+			args, _ := step["args"].([]interface{})
+			ret, _ := step["return_var"].(string)
+			vals := make([]float64, 0, len(args))
+			for _, a := range args {
+				vals = append(vals, toFloat64(r.resolve(a)))
+			}
+			var result interface{}
+			switch strings.ToLower(operator) {
+			case "add":
+				result = vals[0] + vals[1]
+			case "sub":
+				result = vals[0] - vals[1]
+			case "mul":
+				result = vals[0] * vals[1]
+			case "div":
+				if vals[1] == 0 {
+					result = map[string]interface{}{"error": "div by zero"}
+				} else {
+					result = vals[0] / vals[1]
+				}
+			case "eq":
+				result = fmt.Sprint(r.resolve(args[0])) == fmt.Sprint(r.resolve(args[1]))
+			default:
+				r.logf("skip unsupported native_op %q", operator)
+			}
+			if result != nil && ret != "" {
+				r.Vars[ret] = result
+			}
 		case "assert_eq":
 			a := r.resolve(step["left"])
 			b := r.resolve(step["right"])
@@ -257,6 +290,24 @@ func truthy(v interface{}) bool {
 		return n != 0
 	default:
 		return true
+	}
+}
+
+// toFloat64 coerces JSON-ish numbers for native_op arithmetic.
+func toFloat64(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case string:
+		var f float64
+		_, _ = fmt.Sscanf(n, "%f", &f)
+		return f
+	default:
+		return 0
 	}
 }
 

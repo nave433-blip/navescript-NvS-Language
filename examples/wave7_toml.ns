@@ -1,0 +1,24 @@
+// Wave 7: toml_parse — a DOCUMENTED SUBSET of TOML (see LANGUAGE.md).
+// Supported: [table]/[table.sub], key = value, dotted keys, bare + quoted
+// keys, basic/literal strings, ints (0x/0o/0b, underscores), floats, bools,
+// single-line arrays, # comments. NOT supported: multi-line strings/arrays,
+// inline tables {k=v}, datetimes, [[array-of-tables]] — those are loud errors.
+let toml = "[server]\n" +
+  "host = \"localhost\"\n" +
+  "port = 8080\n" +
+  "tls = true\n" +
+  "[server.limits]\n" +
+  "max_conn = 100\n" +
+  "ratios = [0.5, 0.75]\n" +
+  "[db]\n" +
+  "dotted.key = \"nested\"\n"
+
+let c = toml_parse(toml)
+print c["server"]["host"]               // localhost
+print c["server"]["port"]               // 8080
+print c["server"]["limits"]["max_conn"] // 100
+print c["server"]["limits"]["ratios"][1] // 0.75
+print c["db"]["dotted"]["key"]          // nested
+
+// print toml_parse("a = {b = 1}")  // ERROR: inline tables aren't in the subset
+// print toml_parse("[[x]]")         // ERROR: array-of-tables aren't either

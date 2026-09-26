@@ -1,0 +1,14 @@
+// Wave 1: string interpolation "hello ${name}"
+let name = "nave"
+let age = 30
+print "hello ${name}, you are ${age + 1}"
+print "hi ${name}!"
+print "math: ${1 + 2 * 3}"
+print "nested: ${"in ${1 + 1}"} end"
+print "array: ${[1, 2, 3]}"
+print "range: ${1..3}"
+print "bool: ${true}, null: ${null}"
+print "no interpolation here"
+print "${name}${name}"
+let q = "say \"hi\" ${name}"
+print q

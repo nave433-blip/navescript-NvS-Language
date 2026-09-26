@@ -1,0 +1,47 @@
+// NvS standard library: re — friendly regular-expression helpers in pure NvS.
+// The Go builtins regex_find / regex_match / regex_replace already exist but
+// take (pattern, string) in that order. This module offers the same power
+// with the subject first, matching the rest of the stdlib, plus helpers the
+// builtins lack.
+//
+// Import with:   import "stdlib/re.nvs"
+
+/// True when the pattern matches anywhere in s (JS RegExp.test,
+/// Python re.search). Note the builtin regex_match takes (pattern, string).
+fn re_test(s, pat) {
+  return regex_match(pat, s)
+}
+
+/// All non-overlapping matches of pat in s (Python re.findall).
+fn re_find_all(s, pat) {
+  return regex_find(pat, s)
+}
+
+/// Replace every match of pat in s with repl (Python re.sub,
+/// JS String.replace with /g).
+fn re_replace_all(s, pat, repl) {
+  return regex_replace(pat, s, repl)
+}
+
+/// Escape all regex metacharacters so s matches literally
+/// (Python re.escape).
+fn re_escape(s) {
+  let meta = {"\\": 1, ".": 1, "+": 1, "*": 1, "?": 1, "(": 1, ")": 1,
+              "|": 1, "[": 1, "]": 1, "{": 1, "}": 1, "^": 1, "$": 1}
+  let out = ""
+  for (c in split(s, "")) {
+    if (c in meta) { out = out + "\\" }
+    out = out + c
+  }
+  return out
+}
+
+/// Split s around matches of pat, like Python re.split. Implemented by
+/// replacing matches with a newline sentinel and splitting on it; the
+/// sentinel is chosen per-call so it cannot collide with s content.
+fn re_split(s, pat) {
+  let sentinel = "\n"
+  while (contains(s, sentinel)) { sentinel = sentinel + "\n" }
+  let marked = regex_replace(pat, s, sentinel)
+  return split(marked, sentinel)
+}

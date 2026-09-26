@@ -8,16 +8,19 @@ import (
 	"strings"
 
 	"github.com/navescript/nvs/internal/bytecode"
+	"github.com/navescript/nvs/internal/checker"
 	"github.com/navescript/nvs/internal/nave"
+
 	"github.com/navescript/nvs/internal/eval"
 	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
 	"github.com/navescript/nvs/internal/parser"
+	"github.com/navescript/nvs/internal/tools"
 )
 
 // NvS — Navescript custom language
 const (
-	VERSION      = "2.9.0"
+	VERSION      = "2.1.0"
 	LANGUAGE     = "NvS"
 	LANGUAGEFull = "Navescript"
 )
@@ -28,17 +31,58 @@ func main() {
 		return
 	}
 
+	// Wave 17: package imports resolve through the nvs package cache.
+	WirePackageManager()
+
 	cmd := os.Args[1]
 	eval.CLIArgs = os.Args[1:]
 	switch cmd {
+	case "pkg":
+		runPkgCmd(os.Args[2:])
+	case "get":
+		// Alias for `nvs pkg install`.
+		runPkgCmd(append([]string{"install"}, os.Args[2:]...))
+	case "lsp":
+		runLspCmd()
+	case "debug":
+		runDebugCmd(os.Args[2:])
+	case "dap":
+		runDapCmd()
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: nvs run <file.ns>")
+			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)> [--watch] [--profile]")
 			os.Exit(1)
 		}
-		eval.CLIArgs = os.Args[3:]
-		runFile(os.Args[2], true)
-	case "eval", "e":
+		// Wave 17: --watch re-runs on change; --profile reports hot lines.
+		watch, profile := false, false
+		var fileArgs []string
+		for _, a := range os.Args[2:] {
+			switch a {
+			case "--watch":
+				watch = true
+			case "--profile":
+				profile = true
+			default:
+				fileArgs = append(fileArgs, a)
+			}
+		}
+		if len(fileArgs) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)> [--watch] [--profile]")
+			os.Exit(1)
+		}
+		if watch {
+			runWatch(fileArgs[0])
+			return
+		}
+		if profile {
+			runProfile(fileArgs[0], 15)
+			return
+		}
+		eval.CLIArgs = fileArgs[1:]
+		runFile(fileArgs[0], true)
+	case "test":
+		runTestCmd(os.Args[2:])
+	case "eval", "e", "-e":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs eval '<code>'")
 			os.Exit(1)
@@ -49,26 +93,40 @@ func main() {
 		startREPL()
 	case "init":
 		initProject(".")
-	case "selfhost":
-		// Run pure-NvS subset interpreter on code or file
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: nvs selfhost <file.ns|'code'>")
-			os.Exit(1)
-		}
-		arg := os.Args[2]
-		code := arg
-		if strings.HasSuffix(arg, ".ns") || strings.HasSuffix(arg, ".nave") {
-			data, err := os.ReadFile(arg)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			code = string(data)
-		}
-		// Load mini_eval and call it
-		wrap := "import \"stdlib/selfhost/mini_eval.ns\"\nprint mini_eval(" + fmt.Sprintf("%q", code) + ")\n"
-		runCode(wrap, true)
-	case "nave", "jarvis":
+	case "version", "-v", "--version":
+		fmt.Printf("%s (%s) %s\n", LANGUAGE, LANGUAGEFull, VERSION)
+	case "info":
+		printLanguageInfo()
+	case "fmt":
+		runFmt(os.Args[2:])
+	case "lint":
+		runLint(os.Args[2:])
+	case "check":
+		runCheck(os.Args[2:])
+	case "doc":
+		runDoc(os.Args[2:])
+	case "transpile":
+		runTranspile(os.Args[2:])
+	case "bridge":
+		runBridge(os.Args[2:])
+	case "exports":
+		runExports(os.Args[2:])
+	case "bindgen":
+		runBindgen(os.Args[2:])
+	case "import":
+		runImport(os.Args[2:])
+	case "extract":
+		runExtract(os.Args[2:])
+	case "bc":
+		// Experimental bytecode compile+run, ported from the 2.8 track.
+		// Honest subset: arithmetic, strings, comparisons, let/const,
+		// if/else, while and C-style for loops, print(...), len(), arrays.
+		// Anything else fails LOUDLY at compile time.
+		runBytecode(os.Args[2:])
+	case "nave":
+		// Workflow runner ported from the 2.9 track: executes JSON
+		// .nave workflow documents (log/set/http_get/file ops,
+		// polyglot python/js steps, assertions).
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs nave <file.nave>")
 			os.Exit(1)
@@ -77,44 +135,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case "bytecode", "bc":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: nvs bytecode <file.ns|'code'> [--disasm]")
-			os.Exit(1)
-		}
-		arg := os.Args[2]
-		disasm := false
-		for _, a := range os.Args[3:] {
-			if a == "--disasm" || a == "-d" {
-				disasm = true
-			}
-		}
-		code := arg
-		if strings.HasSuffix(arg, ".ns") || strings.HasSuffix(arg, ".nave") {
-			data, err := os.ReadFile(arg)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			code = string(data)
-		}
-		runBytecode(code, disasm)
-	case "bootstrap":
-		// go build + baseline + selfhost
-		fmt.Println("NvS bootstrap: building host...")
-		runCode(`print build_nvs("bin/nvs")`, true)
-		fmt.Println("running selfhost suite...")
-		runFile("examples/selfhost.ns", true)
-		runFile("examples/baseline_all.ns", true)
-		fmt.Println("BOOTSTRAP OK")
-	case "version", "-v", "--version":
-		fmt.Printf("%s (%s) %s\n", LANGUAGE, LANGUAGEFull, VERSION)
-	case "info":
-		printLanguageInfo()
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		if strings.HasSuffix(cmd, ".ns") || strings.HasSuffix(cmd, ".nave") {
+		if strings.HasSuffix(cmd, ".nave") {
+			if err := nave.RunFile(cmd, os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		} else if strings.HasSuffix(cmd, ".ns") || strings.HasSuffix(cmd, ".nvs") {
 			runFile(cmd, true)
 		} else {
 			fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
@@ -129,22 +158,59 @@ func printUsage() {
 
 Usage:
   nvs                     Start interactive REPL
-  nvs run <file.ns>       Run a program
-  nvs eval '<code>'       Evaluate a snippet
+  nvs <file>              Run a program (.ns, .nvs, or .nave)
+  nvs run <file>          Run a program (.ns or .nvs)
+                          Flags: --watch (re-run on change),
+                                 --profile (report hottest lines)
+  nvs test [dir...]       Run test_*.nvs / *_test.nvs files (exit 0 = pass)
+  nvs pkg <subcommand>    Package manager: init/install/list/remove/publish
+                          (alias: nvs get <spec> = nvs pkg install <spec>)
+  nvs lsp                 Language Server Protocol server (stdio) for editors
+  nvs debug <file>        Interactive terminal debugger
+  nvs dap                 Debug Adapter Protocol server (stdio) for editors
+  nvs eval '<code>'       Evaluate a snippet (also: nvs -e '<code>')
   nvs init                Scaffold a new NvS project
-  nvs selfhost <src>       Run pure-NvS mini interpreter
-  nvs bootstrap            Build host + run selfhost/baseline
-  nvs bytecode <src> [-d]  Compile & run on stack VM (--disasm)
-  nvs nave|jarvis <file>   Run NJSON/.nave workflow (Jarvis/NASI style)
   nvs info                Language identity & capabilities
+  nvs fmt [files...]      Format files (reads stdin if no files)
+  nvs lint [files...]     Lint files (0 = clean, 1 = findings)
+  nvs check [files...]    Static type check (gradual; advisory — the
+                          runtime still enforces types; 0 = clean, 1 = errors)
+  nvs doc [--out <dir>] [files...]
+                          Extract doc comments as Markdown (one file per
+                          input with --out)
+  nvs transpile --to=js|python <file>
+                          Transpile the NvS subset to JavaScript or Python
+  nvs bridge              JSON stdio bridge: read requests on stdin,
+                          write {"ok":...} responses on stdout
+  nvs exports <file>      Describe the file's public surface (functions,
+                          classes, enums, constants) as JSON — no execution
+  nvs bindgen --to=python <file> -o <module>.py
+                          Generate a Python client module wired through the
+                          JSON bridge
+  nvs nave <file.nave>    Run a JSON workflow document (also: nvs file.nave)
+  nvs import --from=python|js <file>
+                          Fold foreign source into NvS (documented subset;
+                          loud errors outside it — see docs/FOLDING.md)
+  nvs extract <file>      Run @nvs blocks embedded in a foreign source file
+  nvs bc <file|--code>    Compile the bytecode subset and run it on the
+                          stack VM (--disasm to print bytecode). Supports
+                          arithmetic, strings, let/const, if/else, while
+                          and C-style for loops, print(...), len(), arrays.
+                          Anything else fails loudly at compile time.
   nvs version             Show version
   nvs help                Show this help
 
-File extensions: .ns  .nave
+File extensions: .ns  .nvs  .nave
+  .ns   classic NvS source (still fully supported — backward compatible)
+  .nvs  canonical NvS source; scripts may start with #!/usr/bin/env nvs
+        and be chmod +x'd to run directly (shebang line is stripped)
+  .nave JSON workflow documents for the nave runner
 
 Examples:
-  nvs run hello.ns
-  nvs eval 'print 1 + 2 * 3'
+  nvs run hello.nvs
+  nvs hello.nvs
+  nvs -e 'print 1 + 2 * 3'
+  ./hello.nvs             (with #!/usr/bin/env nvs shebang + chmod +x)
   nvs
 `, LANGUAGE, LANGUAGEFull, VERSION)
 }
@@ -155,7 +221,7 @@ Version:      %s
 Paradigm:     multi (imperative, functional, OOP)
 Typing:       dynamic (optional runtime annotations)
 Implementation: tree-walking interpreter (Go host)
-Extensions:   .ns, .nave
+Extensions:   .ns, .nvs, .nave
 Stdlib:       prelude, polyglot, highlight, fuzzy, corrections
 
 Core features:
@@ -206,6 +272,284 @@ main()
 	fmt.Println("NvS project initialized. Run: nvs run main.ns")
 }
 
+// --- Wave 9: developer tooling ---
+
+func fmtHelp() {
+	fmt.Print(`nvs fmt — canonical code formatter (lexical, gofmt/rustfmt idea)
+
+Usage:
+  nvs fmt [--check] [files...]
+  nvs fmt --help
+
+With no files, reads stdin and writes formatted output to stdout.
+Otherwise formats each file in place.
+
+Normalizes: 4-space indentation by brace/paren/bracket depth, tabs to
+spaces (outside strings), trailing-whitespace removal, blank-line
+collapsing (max 1 consecutive), exactly one trailing newline.
+Leaves alone: string contents (incl. ${} interpolation), comments,
+in-line spacing.
+
+  --check   exit 1 and list files that would change; exit 0 if all clean
+`)
+}
+
+func runFmt(args []string) {
+	check := false
+	var files []string
+	for _, a := range args {
+		switch a {
+		case "--check":
+			check = true
+		case "-h", "--help":
+			fmtHelp()
+			return
+		default:
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		if check {
+			fmt.Fprintln(os.Stderr, "nvs fmt --check needs at least one file")
+			os.Exit(1)
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fmt: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(tools.Format(string(data)))
+		return
+	}
+	changedAny := false
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fmt: %v\n", err)
+			os.Exit(1)
+		}
+		formatted := tools.Format(string(data))
+		if formatted == string(data) {
+			continue
+		}
+		changedAny = true
+		if check {
+			fmt.Println(f)
+			continue
+		}
+		changed, err := tools.FormatFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fmt: %v\n", err)
+			os.Exit(1)
+		}
+		if changed {
+			fmt.Printf("formatted %s\n", f)
+		}
+	}
+	if check && changedAny {
+		os.Exit(1)
+	}
+}
+
+func lintHelp() {
+	fmt.Print(`nvs lint — small set of sound static checks (clippy idea)
+
+Usage:
+  nvs lint [--json] <files...>
+  nvs lint --help
+
+Rules:
+  unused-binding  let/const bound but never referenced (warning)
+                  (function params excluded; named fns exempt)
+  shadow-builtin  let/const/assignment shadows a builtin like len (warning)
+  unreachable-code  code after return/break/continue/throw in a block (warning)
+  null-comparison   x == null / x != null; suggests is_null() (style)
+
+Findings print as: file:line: severity rule: message
+Exit code: 0 = clean, 1 = findings (or a file that fails to parse).
+
+  --json   emit findings as JSON instead of text
+`)
+}
+
+func runLint(args []string) {
+	asJSON := false
+	var files []string
+	for _, a := range args {
+		switch a {
+		case "--json":
+			asJSON = true
+		case "-h", "--help":
+			lintHelp()
+			return
+		default:
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nvs lint [--json] <files...>")
+		os.Exit(1)
+	}
+	var all []tools.Finding
+	for _, f := range files {
+		findings, perr, err := tools.LintFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "lint: %v\n", err)
+			os.Exit(1)
+		}
+		for _, e := range perr {
+			fmt.Fprintf(os.Stderr, "%s: parser error: %s\n", f, e)
+		}
+		all = append(all, findings...)
+	}
+	if asJSON {
+		fmt.Print(tools.FindingsJSON(all))
+	} else {
+		for _, fd := range all {
+			fmt.Println(fd.String())
+		}
+	}
+	if len(all) > 0 {
+		os.Exit(1)
+	}
+}
+
+func checkHelp() {
+	fmt.Print(`nvs check — gradual static type checker (advisory)
+
+Usage:
+  nvs check <files...>
+  nvs check --help
+
+Checks annotated declarations without running the program:
+  - let/const annotations and reassignment
+  - function parameter and return annotations
+  - call arity (defaults-aware) and argument types
+  - unknown annotation names, union types
+  - class/interface structural satisfaction
+
+Unannotated code is never an error (gradual typing): ` + "`any`" + `
+is compatible with everything. The runtime still enforces types at
+run time; check is advisory and exits 0 when clean, 1 on errors.
+`)
+}
+
+func runCheck(args []string) {
+	var files []string
+	for _, a := range args {
+		switch a {
+		case "-h", "--help":
+			checkHelp()
+			return
+		default:
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nvs check <files...>")
+		os.Exit(1)
+	}
+	failed := false
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "check: %v\n", err)
+			failed = true
+			continue
+		}
+		for _, e := range checker.CheckSource(f, string(src)) {
+			fmt.Fprintln(os.Stderr, e.Error())
+			failed = true
+		}
+	}
+	if failed {
+		os.Exit(1)
+	}
+	fmt.Println("OK: no type errors")
+}
+
+func docHelp() {
+	fmt.Print(`nvs doc — doc-comment extractor (rustdoc idea, honestly small)
+
+Usage:
+  nvs doc [--out <dir>] <files...>
+  nvs doc --help
+
+Extracts doc comments immediately preceding top-level fn/class/record/
+interface/const/enum declarations (plus class and interface methods) and
+emits Markdown with a module-level heading:
+
+  # hello.ns
+
+  ## add
+  ` + "`fn add(a: int, b: int): int`" + `
+
+  Adds two numbers.
+
+  ## Dog
+  ` + "`class Dog extends Animal`" + `
+
+  ### speak
+  ` + "`fn speak(volume: int): string`" + `
+
+Doc comments are ` + "`///`" + ` lines; when a declaration has none, plain
+contiguous ` + "`//`" + ` lines are used. A blank line stops the scan.
+Signatures are reconstructed from the AST: typed params, defaults, and
+return annotations are included. Comment text is emitted verbatim.
+
+With --out <dir>, one <name>.md file is written per input instead of
+printing to stdout. Exits nonzero on parse, read, or write errors.
+`)
+}
+
+func runDoc(args []string) {
+	var files []string
+	outDir := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			docHelp()
+			return
+		case "--out":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: nvs doc [--out <dir>] <files...>")
+				os.Exit(1)
+			}
+			i++
+			outDir = args[i]
+		default:
+			files = append(files, args[i])
+		}
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nvs doc [--out <dir>] <files...>")
+		os.Exit(1)
+	}
+	for _, f := range files {
+		entries, perr, err := tools.ExtractDocsFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "doc: %v\n", err)
+			os.Exit(1)
+		}
+		if len(perr) > 0 {
+			for _, e := range perr {
+				fmt.Fprintf(os.Stderr, "%s: parser error: %s\n", f, e)
+			}
+			os.Exit(1)
+		}
+		if outDir != "" {
+			dest, werr := tools.WriteDocsFile(outDir, f, entries)
+			if werr != nil {
+				fmt.Fprintf(os.Stderr, "doc: %v\n", werr)
+				os.Exit(1)
+			}
+			fmt.Println(dest)
+			continue
+		}
+		fmt.Print(tools.RenderMarkdown(f, entries))
+	}
+}
+
 func runFile(path string, withPrelude bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -236,6 +580,10 @@ func runCode(code string, withPrelude bool) {
 		fmt.Fprintln(os.Stderr, result.Inspect())
 		os.Exit(1)
 	}
+	// Wave 6: wait for all spawned tasks to finish before exiting, so no
+	// task output is lost to an early exit. A program that raised an error
+	// exits immediately above instead of risking a deadlock here.
+	eval.DrainSpawnedTasks()
 }
 
 func printParserErrors(out io.Writer, errors []string) {
@@ -282,8 +630,33 @@ func startREPL() {
 	}
 }
 
-
-func runBytecode(code string, disasm bool) {
+// runBytecode compiles the supported subset to bytecode and runs it on the
+// stack VM. Anything outside the subset is a loud compile error, never
+// silently wrong output.
+func runBytecode(args []string) {
+	disasm := false
+	var code string
+	for _, a := range args {
+		switch a {
+		case "--disasm", "-d":
+			disasm = true
+		default:
+			if strings.HasSuffix(a, ".ns") || strings.HasSuffix(a, ".nvs") {
+				data, err := os.ReadFile(a)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error reading %s: %v\n", a, err)
+					os.Exit(1)
+				}
+				code = string(data)
+			} else {
+				code = a
+			}
+		}
+	}
+	if code == "" {
+		fmt.Fprintln(os.Stderr, "usage: nvs bc <file (.ns or .nvs)|'code'> [--disasm]")
+		os.Exit(1)
+	}
 	l := lexer.New(code)
 	p := parser.New(l)
 	program := p.ParseProgram()
@@ -291,23 +664,18 @@ func runBytecode(code string, disasm bool) {
 		printParserErrors(os.Stderr, p.Errors())
 		os.Exit(1)
 	}
-	comp := bytecode.NewCompiler()
-	if err := comp.Compile(program); err != nil {
-		fmt.Fprintln(os.Stderr, "compile error:", err)
+	c := bytecode.NewCompiler()
+	if err := c.Compile(program); err != nil {
+		fmt.Fprintf(os.Stderr, "bytecode compile error: %v\n", err)
 		os.Exit(1)
 	}
-	bc := comp.Bytecode()
+	bc := c.Bytecode()
 	if disasm {
 		fmt.Print(bytecode.Disassemble(bc))
 	}
 	vm := bytecode.NewVM(bc)
-	result, err := vm.Run()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "vm error:", err)
+	if _, err := vm.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "bytecode runtime error: %v\n", err)
 		os.Exit(1)
-	}
-	if result != nil && !disasm {
-		// result already printed via OpPrint mostly
-		_ = result
 	}
 }

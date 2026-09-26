@@ -1,0 +1,4 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era ranges (1..5 inclusive, 1...5 exclusive).
+for (x in 1..5) { print x }
+print 1...4

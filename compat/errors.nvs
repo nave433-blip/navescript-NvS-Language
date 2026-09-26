@@ -1,0 +1,8 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era try/catch/throw.
+try {
+  throw "boom"
+} catch (e) {
+  print "caught"
+}
+print "after"

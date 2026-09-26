@@ -1,0 +1,11 @@
+// Wave 7: gzip. NvS strings are byte-safe, so raw gzip bytes
+// round-trip through strings untouched.
+let original = "the quick brown fox jumps over the lazy dog. " +
+  "the quick brown fox jumps over the lazy dog. " +
+  "the quick brown fox jumps over the lazy dog. " +
+  "the quick brown fox jumps over the lazy dog."
+let zipped = gzip_compress(original)
+print len(zipped) < len(original)            // true: it actually compresses
+print gzip_decompress(zipped) == original    // true: lossless round-trip
+print gzip_decompress(gzip_compress("")) == ""  // true: empty works too
+// print gzip_decompress("not gzip")  // ERROR: loud, not silent garbage

@@ -1,0 +1,34 @@
+// wave9_doc.ns — exercises `nvs doc`.
+// Runs clean under `nvs run` (exit 0).
+
+// Adds two numbers together.
+fn add(a, b) {
+    return a + b
+}
+
+// Greets someone by name.
+// Defaults to "world".
+fn greet(name = "world") {
+    return "hello " + name
+}
+
+// A 2D point.
+record Point(x, y)
+
+// A named thing.
+class Thing {
+    init(name) {
+        this.name = name
+    }
+}
+
+fn undocumented() {
+    return 0
+}
+
+print(add(1, 2))
+print(greet())
+print(Point(1, 2))
+let t = new Thing("nave")
+print(t.name)
+print(undocumented())

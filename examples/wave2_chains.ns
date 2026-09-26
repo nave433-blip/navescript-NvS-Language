@@ -1,0 +1,43 @@
+// Wave 2: `?.` call chains (wave 1 feature) — call coverage with args,
+// named args, and null short-circuiting. No reimplementation; this just
+// exercises the paths.
+print "== calls with args =="
+fn add(a, b) { return a + b }
+let f = add
+print f?.(1, 2)
+let n = null
+print n?.(1, 2)
+
+print "== named args in chains =="
+fn greet(name, punct = "!") { return "hi " + name + punct }
+let g = greet
+print g?.(name: "bob")
+print g?.(punct: "?", name: "al")
+print n?.(name: "x")
+
+print "== null short-circuits: no call made =="
+let called = false
+fn mark(x) { called = true; return x * 2 }
+print n?.mark(21)
+print called
+let h = {"mark": mark}
+let hm = h.mark
+print hm?.(21)
+print h?.missing?.(1)
+
+print "== method chains keep this + named args =="
+class Dog {
+  init(n) { this.name = n }
+  speak(times) { return "woof " + this.name + " x" + str(times) }
+}
+let d = new Dog("rex")
+print d?.speak(3)
+print d?.speak(times: 2)
+let nd = null
+print nd?.speak(3)
+print nd?.speak(times: 2)
+
+print "== chain errors (caught) =="
+try { g?.(bogus: 1) } catch (e) { print "chain-unknown: " + e }
+try { d?.speak(bogus: 1) } catch (e) { print "chain-method-unknown: " + e }
+print "done"

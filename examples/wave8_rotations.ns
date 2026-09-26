@@ -1,0 +1,56 @@
+// wave8_rotations.ns — rotation gates on the LOCAL simulator
+// (not quantum hardware). Angles are in RADIANS. All checks are against
+// q_probs (exact), so nothing here can flake.
+
+fn close(a, b) { return abs(a - b) < 0.000000001 }
+let pi = 3.141592653589793
+
+// RX(pi)|0> = |1> (up to global phase — probabilities are exact up to float dust).
+let q = qalloc(1)
+q_rx(q, 0, pi)
+let p = q_probs(q)
+print "RX(pi)|0> probs: ${p}"
+if (!close(p[0], 0)) { throw "RX(pi): p0 should be ~0" }
+if (!close(p[1], 1)) { throw "RX(pi): p1 should be ~1" }
+
+// RY(pi/2)|0> = (|0> + |1>)/sqrt(2), like H but a different phase path.
+let q2 = qalloc(1)
+q_ry(q2, 0, pi / 2)
+let p2 = q_probs(q2)
+print "RY(pi/2)|0> probs: ${p2}"
+if (!close(p2[0], 0.5)) { throw "RY(pi/2): p0 should be 0.5" }
+if (!close(p2[1], 0.5)) { throw "RY(pi/2): p1 should be 0.5" }
+
+// RZ is a pure phase on |0>: probabilities must not move.
+let q3 = qalloc(1)
+q_rz(q3, 0, 1.234)
+let p3 = q_probs(q3)
+print "RZ(1.234)|0> probs: ${p3}"
+if (!close(p3[0], 1)) { throw "RZ: p0 should stay 1" }
+if (!close(p3[1], 0)) { throw "RZ: p1 should stay 0" }
+
+// RX(0) is the identity.
+let q4 = qalloc(1)
+q_rx(q4, 0, 0)
+let p4 = q_probs(q4)
+if (!close(p4[0], 1)) { throw "RX(0): p0 should stay 1" }
+
+// SWAP exchanges the qubits: |01> (little-endian: qubit0=1) -> |10>.
+let q5 = qalloc(2)
+q_x(q5, 0)
+q_swap(q5, 0, 1)
+let p5 = q_probs(q5)
+print "SWAP|01> probs: ${p5}"
+if (!close(p5[2], 1)) { throw "SWAP: |01> should become |10> (index 2)" }
+
+// CZ on |11> flips the sign of the |11> amplitude (phase, not probability).
+let q6 = qalloc(2)
+q_x(q6, 0)
+q_x(q6, 1)
+q_cz(q6, 0, 1)
+let s6 = q_state(q6)
+print "CZ|11> amplitude of |11>: ${s6[3]}"
+if (s6[3][0] != -1) { throw "CZ|11>: re should be -1" }
+if (s6[3][1] != 0) { throw "CZ|11>: im should be 0" }
+
+print "rotations ok: RX/RY/RZ/SWAP/CZ verified"

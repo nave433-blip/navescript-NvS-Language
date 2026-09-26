@@ -1,0 +1,33 @@
+// Wave 1: optional chaining ?. — null short-circuits the whole chain
+print "== basic =="
+let u = null
+print u?.b
+print u?.b.c?.d
+let h = {"b": {"c": 5}}
+print h?.b.c
+print h?.missing.deeper
+print h?.["b"]
+print "== index chains =="
+let arr = [10, 20, 30]
+print arr?.[1]
+print u?.[0]
+print h?.b?.missing?.[3]
+print "== call chains (short-circuit, no call) =="
+let called = false
+fn mark() { called = true; return 1 }
+let n = null
+print n?.mark()
+print called
+print h?.b?.c
+print "== methods keep `this` =="
+class Dog {
+  init(n) { this.name = n }
+  speak() { return "woof " + this.name }
+}
+let d = new Dog("rex")
+print d?.speak()
+let nd = null
+print nd?.speak()
+print "== mixes with ternary =="
+print u?.x ? "t" : "f"
+print h?.b ? "t" : "f"

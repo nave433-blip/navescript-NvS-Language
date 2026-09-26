@@ -1,0 +1,11 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era generators.
+fn count() {
+  yield 1
+  yield 2
+  yield 3
+}
+let g = count()
+print next(g)
+print next(g)
+for (v in count()) { print v * 10 }

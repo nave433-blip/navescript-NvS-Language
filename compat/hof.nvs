@@ -1,0 +1,10 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era higher-order functions and closures.
+fn make_adder(n) {
+  return fn(x) { return x + n }
+}
+let add5 = make_adder(5)
+print add5(10)
+print map([1, 2, 3], fn(x) { return x * 2 })
+print filter([1, 2, 3, 4], fn(x) { return x > 2 })
+print reduce([1, 2, 3], fn(a, b) { return a + b }, 0)

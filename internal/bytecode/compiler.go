@@ -17,6 +17,14 @@ type Compiler struct {
 	constants    []interface{}
 	names        []string
 	nameIndex    map[string]int
+	loops        []loopContext // innermost loop last
+}
+
+// loopContext tracks the patch sites for break/continue inside one loop.
+type loopContext struct {
+	breakJumps    []int // OpJump placeholders -> patched to loop end
+	continueJumps []int // OpJump placeholders -> patched to continueTo
+	continueTo    int   // resolved continue target; -1 until known
 }
 
 func NewCompiler() *Compiler {
@@ -127,7 +135,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 		if err := c.Compile(n.Value); err != nil {
 			return err
 		}
-		c.emit(OpPrint)
+		c.emit(OpPrint, 1)
 	case *ast.AssignExpression:
 		if err := c.Compile(n.Value); err != nil {
 			return err
@@ -166,18 +174,137 @@ func (c *Compiler) Compile(node ast.Node) error {
 		// if block ends with expression statement we already OpPop'd — for if value, keep last expr
 		_ = last
 	case *ast.CallExpression:
-		// only support print(x) style via identifier print
-		if id, ok := n.Function.(*ast.Identifier); ok && id.Value == "print" {
-			for _, a := range n.Arguments {
-				if err := c.Compile(a); err != nil {
+		// Supported builtins in this stage: print(...) and len(x).
+		if id, ok := n.Function.(*ast.Identifier); ok {
+			switch id.Value {
+			case "print":
+				for _, a := range n.Arguments {
+					if err := c.Compile(a); err != nil {
+						return err
+					}
+				}
+				c.emit(OpPrint, len(n.Arguments))
+				c.emit(OpNull)
+				return nil
+			case "len":
+				if len(n.Arguments) != 1 {
+					return fmt.Errorf("bytecode: len() takes exactly 1 argument")
+				}
+				if err := c.Compile(n.Arguments[0]); err != nil {
 					return err
 				}
-				c.emit(OpPrint)
+				c.emit(OpLen)
+				return nil
 			}
-			c.emit(OpNull)
-			return nil
 		}
-		return fmt.Errorf("bytecode: only print() calls supported in this stage")
+		return fmt.Errorf("bytecode: unsupported call in this stage (only print() and len())")
+	case *ast.ArrayLiteral:
+		for _, e := range n.Elements {
+			if err := c.Compile(e); err != nil {
+				return err
+			}
+		}
+		c.emit(OpArray, len(n.Elements))
+	case *ast.WhileStatement:
+		if n.OrElse != nil {
+			return fmt.Errorf("bytecode: while/else not supported in this stage")
+		}
+		if n.Label != "" {
+			return fmt.Errorf("bytecode: labeled loops not supported in this stage")
+		}
+		loopStart := len(c.instructions)
+		if err := c.Compile(n.Condition); err != nil {
+			return err
+		}
+		jnt := c.emit(OpJumpNotTruthy, 0)
+		// `continue` re-evaluates the condition.
+		c.loops = append(c.loops, loopContext{continueTo: loopStart})
+		if err := c.Compile(n.Body); err != nil {
+			return err
+		}
+		c.emit(OpJump, loopStart)
+		loopEnd := len(c.instructions)
+		c.patch(jnt, loopEnd)
+		lc := c.loops[len(c.loops)-1]
+		c.loops = c.loops[:len(c.loops)-1]
+		for _, pos := range lc.breakJumps {
+			c.patch(pos, loopEnd)
+		}
+		for _, pos := range lc.continueJumps {
+			c.patch(pos, lc.continueTo)
+		}
+	case *ast.ForStatement:
+		// C-style for only; for-in is not supported in this stage.
+		if n.OrElse != nil {
+			return fmt.Errorf("bytecode: for/else not supported in this stage")
+		}
+		if n.Label != "" {
+			return fmt.Errorf("bytecode: labeled loops not supported in this stage")
+		}
+		if err := c.Compile(n.Init); err != nil {
+			return err
+		}
+		// Init is a statement and therefore stack-neutral (ExpressionStatement
+		// already OpPops its value).
+		loopStart := len(c.instructions)
+		if n.Condition != nil {
+			if err := c.Compile(n.Condition); err != nil {
+				return err
+			}
+		} else {
+			c.emit(OpTrue)
+		}
+		jnt := c.emit(OpJumpNotTruthy, 0)
+		// continueTo is unknown until the body is compiled (it targets
+		// the post step); continue jumps are patched afterwards.
+		c.loops = append(c.loops, loopContext{continueTo: -1})
+		if err := c.Compile(n.Body); err != nil {
+			return err
+		}
+		postStart := len(c.instructions)
+		lc := &c.loops[len(c.loops)-1]
+		lc.continueTo = postStart
+		for _, pos := range lc.continueJumps {
+			c.patch(pos, postStart)
+		}
+		if n.Post != nil {
+			if err := c.Compile(n.Post); err != nil {
+				return err
+			}
+			c.emit(OpPop) // discard the post expression's value
+		}
+		c.emit(OpJump, loopStart)
+		loopEnd := len(c.instructions)
+		c.patch(jnt, loopEnd)
+		for _, pos := range lc.breakJumps {
+			c.patch(pos, loopEnd)
+		}
+		c.loops = c.loops[:len(c.loops)-1]
+	case *ast.BreakStatement:
+		if n.Label != "" {
+			return fmt.Errorf("bytecode: labeled break not supported in this stage")
+		}
+		if len(c.loops) == 0 {
+			return fmt.Errorf("bytecode: break outside loop")
+		}
+		pos := c.emit(OpJump, 0)
+		lc := &c.loops[len(c.loops)-1]
+		lc.breakJumps = append(lc.breakJumps, pos)
+	case *ast.ContinueStatement:
+		if n.Label != "" {
+			return fmt.Errorf("bytecode: labeled continue not supported in this stage")
+		}
+		if len(c.loops) == 0 {
+			return fmt.Errorf("bytecode: continue outside loop")
+		}
+		lc := &c.loops[len(c.loops)-1]
+		if lc.continueTo >= 0 {
+			c.emit(OpJump, lc.continueTo)
+		} else {
+			// C-style for: the post step isn't laid out yet; patch later.
+			pos := c.emit(OpJump, 0)
+			lc.continueJumps = append(lc.continueJumps, pos)
+		}
 	default:
 		return fmt.Errorf("bytecode: unsupported node %T", node)
 	}
@@ -232,6 +359,10 @@ func Disassemble(bc *Bytecode) string {
 			t := ReadUint16(ins, ip)
 			ip += 2
 			line += fmt.Sprintf(" -> %d", t)
+		case OpArray:
+			n := ReadUint16(ins, ip)
+			ip += 2
+			line += fmt.Sprintf(" %d", n)
 		case OpSetGlobal, OpGetGlobal:
 			idx := ReadUint16(ins, ip)
 			ip += 2
@@ -240,6 +371,10 @@ func Disassemble(bc *Bytecode) string {
 				name = bc.Names[idx]
 			}
 			line += fmt.Sprintf(" %d (%s)", idx, name)
+		case OpPrint:
+			n := ReadUint16(ins, ip)
+			ip += 2
+			line += fmt.Sprintf(" %d", n)
 		}
 		out += line + "\n"
 	}

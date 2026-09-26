@@ -1,0 +1,6 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era destructuring and spread.
+let [a, b] = [1, 2, 3]
+let {x, y} = {"x": 10, "y": 20}
+print a + b + x + y
+print [...[1, 2], 3]

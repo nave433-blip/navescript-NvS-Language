@@ -1,0 +1,5 @@
+#!/usr/bin/env nvs
+// Hello from NvS — run me directly: chmod +x examples/hello.nvs && ./examples/hello.nvs
+print "hello from nvs"
+let answer = 6 * 7
+print "the answer is " + str(answer)

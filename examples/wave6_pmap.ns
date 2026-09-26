@@ -1,0 +1,20 @@
+// Wave 6 — pmap: parallel map preserving order.
+// Each element is squared in its own task (with a small sleep so the work
+// genuinely overlaps); results come back in input order.
+
+fn work(x) {
+  sleep(5)
+  return x * x
+}
+
+let xs = [1, 2, 3, 4, 5, 6, 7, 8]
+let ys = pmap(work, xs)
+
+assert(deep_equal(ys, [1, 4, 9, 16, 25, 36, 49, 64]), "pmap order/values")
+assert(deep_equal(xs, [1, 2, 3, 4, 5, 6, 7, 8]), "pmap does not mutate input")
+
+// pmap with a builtin works too
+let lens = pmap(len, ["a", "bb", "ccc"])
+assert(deep_equal(lens, [1, 2, 3]), "pmap with builtin")
+
+print "pmap ok"

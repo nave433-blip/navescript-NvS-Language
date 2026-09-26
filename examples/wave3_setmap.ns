@@ -1,0 +1,46 @@
+// wave3_setmap.ns — Wave 3: stronger set/map builtins
+let s1 = set(1, 2, 3)
+let s2 = set(2, 3, 4)
+
+// set algebra — each returns a NEW set, inputs untouched
+print set_to_array(set_union(s1, s2))      // [1, 2, 3, 4]
+print set_to_array(set_intersect(s1, s2))  // [2, 3]
+print set_to_array(set_diff(s1, s2))       // [1]
+print set_len(s1)                         // 3
+print len(s1)                             // 3 — len() now handles sets too
+print set_len(set_union(s1, s2))          // 4
+
+// set_remove complements set_add
+let s3 = set(1, 2)
+set_add(s3, 3)
+print set_has(s3, 3)                      // true
+set_remove(s3, 1)
+print set_has(s3, 1)                      // false
+print set_to_array(s3)                    // [2, 3]
+
+// map_merge: later maps win, returns a NEW map
+let m = map_merge({"a": 1, "b": 2}, {"b": 9, "c": 3})
+print m["a"]                              // 1
+print m["b"]                              // 9
+print m["c"]                              // 3
+print map_merge({"a": 1}, {"b": 2}, {"a": 7})["a"]  // 7 — variadic
+
+// map_pick / map_omit: variadic keys or an array of keys
+let big = {"a": 1, "b": 2, "c": 3}
+print len(map_pick(big, "a", "c"))        // 2
+print len(map_pick(big, ["a"]))           // 1
+print len(map_omit(big, "b"))             // 2
+print len(map_omit(big, ["a", "b", "c"])) // 0
+print map_pick(big, "zzz")["a"]           // null — missing keys just absent
+
+// invert: swap keys and values
+let inv = invert({"a": 1, "b": 2})
+print inv[1]                              // a
+print inv[2]                              // b
+try {
+  invert({"a": [1]})
+} catch (e) {
+  print e                                 // invert: value not hashable: ARRAY
+}
+
+print "SETMAP OK"

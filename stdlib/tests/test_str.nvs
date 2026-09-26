@@ -1,0 +1,56 @@
+// Tests for stdlib/str.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_str.nvs
+import "../str.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+
+check("reverse", str_reverse("hello") == "olleh")
+check("reverse empty", str_reverse("") == "")
+check("reverse single", str_reverse("a") == "a")
+
+check("to_snake camel", str_to_snake("camelCase") == "camel_case")
+check("to_snake pascal", str_to_snake("PascalCase") == "pascal_case")
+check("to_snake kebab", str_to_snake("kebab-case") == "kebab_case")
+check("to_snake plain", str_to_snake("plain") == "plain")
+check("to_snake digits", str_to_snake("abc123") == "abc123")
+
+check("to_kebab", str_to_kebab("camelCase") == "camel-case")
+check("to_camel snake", str_to_camel("snake_case") == "snakeCase")
+check("to_camel kebab", str_to_camel("kebab-case") == "kebabCase")
+check("to_camel leading", str_to_camel("_foo_bar") == "fooBar")
+check("to_camel single", str_to_camel("word") == "word")
+
+check("capitalize", str_capitalize("hELLO") == "Hello")
+check("capitalize empty", str_capitalize("") == "")
+
+check("truncate short", str_truncate("hi", 10) == "hi")
+check("truncate exact", str_truncate("hello", 5) == "hello")
+check("truncate long", str_truncate("hello world", 8) == "hello...")
+check("truncate custom", str_truncate("hello world", 8, "~") == "hello w~")
+check("truncate tiny", str_truncate("hello", 2) == "he")
+
+check("words", deep_equal(str_words("  foo   bar baz "), ["foo", "bar", "baz"]))
+check("words empty", deep_equal(str_words(""), []))
+
+check("trim_start", str_trim_start("  hi  ") == "hi  ")
+check("trim_end", str_trim_end("  hi  ") == "  hi")
+check("trim tabs", str_trim_start("\t\tx") == "x")
+
+check("template", str_template("Hello {name}, you are {age}!", {"name": "Nave", "age": 30}) == "Hello Nave, you are 30!")
+check("template unknown", str_template("{a} {b}", {"a": 1}) == "1 {b}")
+
+check("is_digit", str_is_digit("123") == true)
+check("is_digit no", str_is_digit("12a") == false)
+check("is_digit empty", str_is_digit("") == false)
+check("is_alpha", str_is_alpha("abc") == true)
+check("is_alpha no", str_is_alpha("ab1") == false)
+check("is_alpha empty", str_is_alpha("") == false)
+
+if (failures > 0) { throw "test_str failures: " + str(failures) }
+print "PASS: test_str"

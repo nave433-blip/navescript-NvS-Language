@@ -1,0 +1,29 @@
+// Wave 1: destructuring — let [a, b] / let {x, y} (also const)
+print "== array destructuring =="
+let [a, b] = [1, 2, 3]
+print a
+print b
+let [x, y, z] = [10]
+print x
+print y
+print z
+print "== rest =="
+let [first, ...rest] = [1, 2, 3, 4]
+print first
+print rest
+let [only, ...empty] = [9]
+print only
+print empty
+print "== object destructuring =="
+let {name, age} = {"name": "nave", "age": 30}
+print name
+print age
+let {k: renamed, missing} = {"k": 42}
+print renamed
+print missing
+print "== const =="
+const [c1, c2] = [7, 8]
+print c1
+print c2
+const {cc} = {"cc": "see"}
+print cc

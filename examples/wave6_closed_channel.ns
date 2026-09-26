@@ -1,0 +1,44 @@
+// Wave 6 — closed-channel semantics.
+// close() seals a channel: buffered values still drain, then recv gives
+// null. Sending on a closed channel and double-close are loud errors.
+
+let ch = chan(2)
+
+assert(try_send(ch, "a") == true, "try_send 1")
+assert(try_send(ch, "b") == true, "try_send 2")
+assert(try_send(ch, "c") == false, "buffer full -> false")
+
+close(ch)
+
+// send on a closed channel raises
+let send_err = ""
+try { send(ch, "x") } catch (e) { send_err = e }
+assert(send_err != "", "send on closed channel raises")
+
+// double close raises
+let close_err = ""
+try { close(ch) } catch (e) { close_err = e }
+assert(close_err != "", "double close raises")
+
+// buffered values still drain after close
+assert(recv(ch) == "a", "drain 1")
+assert(recv(ch) == "b", "drain 2")
+
+// closed AND drained: recv -> null, try_recv -> [false, null]
+assert(recv(ch) == null, "recv on closed+drained is null")
+let r = try_recv(ch)
+assert((r[0] == false) and (r[1] == null), "try_recv on closed+drained")
+
+// unbuffered channel basics
+let u = chan()
+fn echo(c) {
+  let v = recv(c)
+  send(c, v + "!")
+  return "echo done"
+}
+let t = spawn(echo, u)
+send(u, "hi")
+assert(recv(u) == "hi!", "unbuffered rendezvous")
+assert(join(t) == "echo done", "echo result")
+
+print "closed-channel ok"

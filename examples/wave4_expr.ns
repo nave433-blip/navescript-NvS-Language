@@ -1,0 +1,83 @@
+// Wave 4: match as an expression (Rust style).
+// An arm body yields its last statement's value, so match composes anywhere
+// an expression can appear: let bindings, call args, string interpolation,
+// nested matches. `switch` works identically. Scrutinee parens are optional.
+
+print "== basic expression form =="
+let r1 = match (2) { case 1: "one"; case 2: "two"; default: "other" }
+print r1
+let r2 = match (9) { case 1: "one"; default: "other" }
+print r2
+// block bodies also yield their last value
+let r3 = match (1) {
+  case 1 {
+    let doubled = 2 * 2
+    doubled + 1
+  }
+  default { 0 }
+}
+print r3
+
+print "== no match and no default -> null =="
+let r4 = match (5) { case 1: { "one" } }
+print r4
+
+print "== expression form with guards =="
+fn fizzbuzz(n) {
+  return match (n) {
+    case x if x % 15 == 0: "fizzbuzz"
+    case x if x % 3 == 0: "fizz"
+    case x if x % 5 == 0: "buzz"
+    default: "${n}"
+  }
+}
+print fizzbuzz(15)
+print fizzbuzz(9)
+print fizzbuzz(10)
+print fizzbuzz(7)
+
+print "== expression form with destructuring =="
+record Point(x, y)
+let label = match (Point(0, 5)) {
+  case Point(0, 0): "origin"
+  case Point(0, y): "y-axis ${y}"
+  case Point(x, 0): "x-axis ${x}"
+  case Point(x, y): "(${x}, ${y})"
+}
+print label
+let total = match ([1, 2, 3]) {
+  case [a, b, c]: a + b + c
+  case [a, ...rest]: a + len(rest)
+  default: 0
+}
+print total
+
+print "== nested matches =="
+let nested = match ([1, 2]) {
+  case [a, b]: match (a + b) { case 3: "three"; default: "other" }
+  default: "no pair"
+}
+print nested
+
+print "== match in call args and interpolation =="
+fn shout(s) { return s + "!" }
+print shout(match ("x") { case "x": "ex"; default: "why" })
+let n = 4
+print "n is ${match (n) { case x if x > 3: "big"; default: "small" }}"
+
+print "== optional scrutinee parens =="
+let v = 2
+print match v { case 1: "one"; case 2: "two"; default: "other" }
+print match 1 + 1 { case 2: "two!"; default: "?" }
+print switch v { case 2: "two (switch)"; default: "?" }
+
+print "== match inside functions, early value =="
+fn first_word(words) {
+  return match (words) {
+    case []: "(empty)"
+    case [w, ..._]: w
+    default: "(?)"
+  }
+}
+print first_word([])
+print first_word(["hello", "world"])
