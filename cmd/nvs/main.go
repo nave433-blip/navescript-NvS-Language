@@ -121,7 +121,9 @@ Usage:
   nvs lint [files...]     Lint files (0 = clean, 1 = findings)
   nvs check [files...]    Static type check (gradual; advisory — the
                           runtime still enforces types; 0 = clean, 1 = errors)
-  nvs doc [files...]      Extract doc comments as Markdown (minimal stub)
+  nvs doc [--out <dir>] [files...]
+                          Extract doc comments as Markdown (one file per
+                          input with --out)
   nvs transpile --to=js|python <file>
                           Transpile the NvS subset to JavaScript or Python
   nvs bridge              JSON stdio bridge: read requests on stdin,
@@ -407,49 +409,84 @@ func runCheck(args []string) {
 }
 
 func docHelp() {
-	fmt.Print(`nvs doc — MINIMAL doc-comment extractor (stub, not rustdoc)
+	fmt.Print(`nvs doc — doc-comment extractor (rustdoc idea, honestly small)
 
 Usage:
-  nvs doc <files...>
+  nvs doc [--out <dir>] <files...>
   nvs doc --help
 
-Extracts // doc comments immediately preceding top-level fn/class/record/
-interface declarations (and fn params, trivially) and emits Markdown:
+Extracts doc comments immediately preceding top-level fn/class/record/
+interface/const/enum declarations (plus class and interface methods) and
+emits Markdown with a module-level heading:
 
-  ## name
-  ` + "`fn name(a, b)`" + `
-  doc text...
+  # hello.ns
 
-Only top-level declarations are covered; no nested docs, no cross-links.
+  ## add
+  ` + "`fn add(a: int, b: int): int`" + `
+
+  Adds two numbers.
+
+  ## Dog
+  ` + "`class Dog extends Animal`" + `
+
+  ### speak
+  ` + "`fn speak(volume: int): string`" + `
+
+Doc comments are ` + "`///`" + ` lines; when a declaration has none, plain
+contiguous ` + "`//`" + ` lines are used. A blank line stops the scan.
+Signatures are reconstructed from the AST: typed params, defaults, and
+return annotations are included. Comment text is emitted verbatim.
+
+With --out <dir>, one <name>.md file is written per input instead of
+printing to stdout. Exits nonzero on parse, read, or write errors.
 `)
 }
 
 func runDoc(args []string) {
 	var files []string
-	for _, a := range args {
-		switch a {
+	outDir := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "-h", "--help":
 			docHelp()
 			return
+		case "--out":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: nvs doc [--out <dir>] <files...>")
+				os.Exit(1)
+			}
+			i++
+			outDir = args[i]
 		default:
-			files = append(files, a)
+			files = append(files, args[i])
 		}
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nvs doc <files...>")
+		fmt.Fprintln(os.Stderr, "usage: nvs doc [--out <dir>] <files...>")
 		os.Exit(1)
 	}
-	multi := len(files) > 1
 	for _, f := range files {
 		entries, perr, err := tools.ExtractDocsFile(f)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "doc: %v\n", err)
 			os.Exit(1)
 		}
-		for _, e := range perr {
-			fmt.Fprintf(os.Stderr, "%s: parser error: %s\n", f, e)
+		if len(perr) > 0 {
+			for _, e := range perr {
+				fmt.Fprintf(os.Stderr, "%s: parser error: %s\n", f, e)
+			}
+			os.Exit(1)
 		}
-		fmt.Print(tools.RenderMarkdown(f, entries, multi))
+		if outDir != "" {
+			dest, werr := tools.WriteDocsFile(outDir, f, entries)
+			if werr != nil {
+				fmt.Fprintf(os.Stderr, "doc: %v\n", werr)
+				os.Exit(1)
+			}
+			fmt.Println(dest)
+			continue
+		}
+		fmt.Print(tools.RenderMarkdown(f, entries))
 	}
 }
 
