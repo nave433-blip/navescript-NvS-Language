@@ -15,7 +15,7 @@ func transpileHelp() {
 	fmt.Print(`nvs transpile — honest-subset source transpiler (NvS -> JS/Python)
 
 Usage:
-  nvs transpile --to=js|python <file.ns>
+  nvs transpile --to=js|python <file (.ns or .nvs)>
   nvs transpile --help
 
 Transpiles the documented transpilable subset of NvS (see LANGUAGE.md,
@@ -57,7 +57,7 @@ func runTranspile(args []string) {
 		os.Exit(1)
 	}
 	if len(files) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: nvs transpile --to=js|python <file.ns>")
+		fmt.Fprintln(os.Stderr, "usage: nvs transpile --to=js|python <file (.ns or .nvs)>")
 		os.Exit(1)
 	}
 	data, err := os.ReadFile(files[0])

@@ -14,7 +14,7 @@ func exportsHelp() {
 	fmt.Print(`nvs exports — describe an NvS file's public surface as JSON
 
 Usage:
-  nvs exports <file.ns>
+  nvs exports <file (.ns or .nvs)>
   nvs exports --help
 
 Parses the file WITHOUT running it and prints a JSON document describing
@@ -35,7 +35,7 @@ func runExports(args []string) {
 		}
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: nvs exports <file.ns>")
+		fmt.Fprintln(os.Stderr, "usage: nvs exports <file (.ns or .nvs)>")
 		os.Exit(1)
 	}
 	data, err := os.ReadFile(args[0])
@@ -55,7 +55,7 @@ func bindgenHelp() {
 	fmt.Print(`nvs bindgen — generate a foreign-language client module for an NvS file
 
 Usage:
-  nvs bindgen --to=python <file.ns> -o <module>.py
+  nvs bindgen --to=python <file (.ns or .nvs)> -o <module>.py
   nvs bindgen --help
 
 Reads the file's public surface (see nvs exports) and generates a module
@@ -95,7 +95,7 @@ func runBindgen(args []string) {
 		}
 	}
 	if target == "" || len(rest) != 1 || out == "" {
-		fmt.Fprintln(os.Stderr, "usage: nvs bindgen --to=python <file.ns> -o <module>.py")
+		fmt.Fprintln(os.Stderr, "usage: nvs bindgen --to=python <file (.ns or .nvs)> -o <module>.py")
 		os.Exit(1)
 	}
 	data, err := os.ReadFile(rest[0])

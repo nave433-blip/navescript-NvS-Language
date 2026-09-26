@@ -35,12 +35,12 @@ func main() {
 	switch cmd {
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: nvs run <file.ns>")
+			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)>")
 			os.Exit(1)
 		}
 		eval.CLIArgs = os.Args[3:]
 		runFile(os.Args[2], true)
-	case "eval", "e":
+	case "eval", "e", "-e":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs eval '<code>'")
 			os.Exit(1)
@@ -94,7 +94,7 @@ func main() {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-		} else if strings.HasSuffix(cmd, ".ns") {
+		} else if strings.HasSuffix(cmd, ".ns") || strings.HasSuffix(cmd, ".nvs") {
 			runFile(cmd, true)
 		} else {
 			fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
@@ -109,34 +109,41 @@ func printUsage() {
 
 Usage:
   nvs                     Start interactive REPL
-  nvs run <file.ns>       Run a program
-  nvs eval '<code>'       Evaluate a snippet
+  nvs <file>              Run a program (.ns, .nvs, or .nave)
+  nvs run <file>          Run a program (.ns or .nvs)
+  nvs eval '<code>'       Evaluate a snippet (also: nvs -e '<code>')
   nvs init                Scaffold a new NvS project
   nvs info                Language identity & capabilities
   nvs fmt [files...]      Format files (reads stdin if no files)
   nvs lint [files...]     Lint files (0 = clean, 1 = findings)
   nvs doc [files...]      Extract doc comments as Markdown (minimal stub)
-  nvs transpile --to=js|python <file.ns>
+  nvs transpile --to=js|python <file>
                           Transpile the NvS subset to JavaScript or Python
   nvs bridge              JSON stdio bridge: read requests on stdin,
                           write {"ok":...} responses on stdout
-  nvs exports <file.ns>   Describe the file's public surface (functions,
+  nvs exports <file>      Describe the file's public surface (functions,
                           classes, enums, constants) as JSON — no execution
-  nvs bindgen --to=python <file.ns> -o <module>.py
+  nvs bindgen --to=python <file> -o <module>.py
                           Generate a Python client module wired through the
                           JSON bridge
   nvs nave <file.nave>    Run a JSON workflow document (also: nvs file.nave)
-  nvs bc <file.ns|--code> Compile the bytecode subset and run it on the
+  nvs bc <file|--code>    Compile the bytecode subset and run it on the
                           stack VM (--disasm to print bytecode). Only
                           arithmetic, let/const, if/else, print.
   nvs version             Show version
   nvs help                Show this help
 
-File extensions: .ns  .nave
+File extensions: .ns  .nvs  .nave
+  .ns   classic NvS source (still fully supported — backward compatible)
+  .nvs  canonical NvS source; scripts may start with #!/usr/bin/env nvs
+        and be chmod +x'd to run directly (shebang line is stripped)
+  .nave JSON workflow documents for the nave runner
 
 Examples:
-  nvs run hello.ns
-  nvs eval 'print 1 + 2 * 3'
+  nvs run hello.nvs
+  nvs hello.nvs
+  nvs -e 'print 1 + 2 * 3'
+  ./hello.nvs             (with #!/usr/bin/env nvs shebang + chmod +x)
   nvs
 `, LANGUAGE, LANGUAGEFull, VERSION)
 }
@@ -147,7 +154,7 @@ Version:      %s
 Paradigm:     multi (imperative, functional, OOP)
 Typing:       dynamic (optional runtime annotations)
 Implementation: tree-walking interpreter (Go host)
-Extensions:   .ns, .nave
+Extensions:   .ns, .nvs, .nave
 Stdlib:       prelude, polyglot, highlight, fuzzy, corrections
 
 Core features:
@@ -478,7 +485,7 @@ func runBytecode(args []string) {
 		case "--disasm", "-d":
 			disasm = true
 		default:
-			if strings.HasSuffix(a, ".ns") {
+			if strings.HasSuffix(a, ".ns") || strings.HasSuffix(a, ".nvs") {
 				data, err := os.ReadFile(a)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "error reading %s: %v\n", a, err)
@@ -491,7 +498,7 @@ func runBytecode(args []string) {
 		}
 	}
 	if code == "" {
-		fmt.Fprintln(os.Stderr, "usage: nvs bc <file.ns|'code'> [--disasm]")
+		fmt.Fprintln(os.Stderr, "usage: nvs bc <file (.ns or .nvs)|'code'> [--disasm]")
 		os.Exit(1)
 	}
 	l := lexer.New(code)

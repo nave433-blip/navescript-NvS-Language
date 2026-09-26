@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -17,6 +18,15 @@ type Lexer struct {
 
 // New creates a new Lexer for the given input.
 func New(input string) *Lexer {
+	// Wave 12: strip a Unix shebang line (#!/usr/bin/env nvs) so scripts
+	// can be chmod +x'd and executed directly. The lexer never sees it.
+	if strings.HasPrefix(input, "#!") {
+		if i := strings.IndexByte(input, '\n'); i >= 0 {
+			input = input[i+1:]
+		} else {
+			input = ""
+		}
+	}
 	l := &Lexer{
 		input:  input,
 		line:   1,
