@@ -9,7 +9,7 @@ package fold
 //   expressions: ints, floats, strings (+escapes), simple f-strings,
 //     True/False/None, lists, dicts (str/int keys), indexing, slices
 //     (no step), calls incl. keyword args, lambdas, single-level list
-//     comprehensions with optional if, ternary, and/or/not, comparisons,
+//     tuple assignment/swaps, chained assignment, boolean logic, and/or/not, comparisons,
 //     is None / is not None, in / not in, arithmetic (+,-,*,/,%,**,//),
 //     unary -/+
 // Everything else -> *UnsupportedError naming the construct and line.
@@ -1201,42 +1201,12 @@ func (p *pyParser) parseListOrCompr() (string, error) {
 }
 
 // [EXPR for x in ITER] / [EXPR for x in ITER if COND]
+//
+// Comprehensions are OUTSIDE the importable subset: they are rejected loudly
+// (never silently miscompiled) with the construct name and line number.
 func (p *pyParser) parseComprehension(elt string) (string, error) {
-	p.next() // for
-	if p.peek().kind != pyName {
-		return "", p.unsupported("comprehension target", "only simple names are supported in comprehensions")
-	}
-	varName := p.next().text
-	if !p.acceptName("in") {
-		return "", &SyntaxError{Lang: "python", Line: p.peek().line, Detail: "expected 'in' in comprehension"}
-	}
-	iter, err := p.parseOr() // no lambdas/comprehensions nesting: use parseOr to stop before 'for'
-	if err != nil {
-		return "", err
-	}
-	// Nested "for" -> unsupported.
-	if p.peek().kind == pyName && p.peek().text == "for" {
-		return "", p.unsupported("nested comprehension", "only a single for-clause is supported")
-	}
-	var cond string
-	hasCond := false
-	if p.acceptName("if") {
-		hasCond = true
-		cond, err = p.parseOr()
-		if err != nil {
-			return "", err
-		}
-	}
-	if err := p.expectOp("]"); err != nil {
-		return "", err
-	}
-	body := "fn(" + varName + ") { return " + elt + " }"
-	if hasCond {
-		body = "map(filter(" + iter + ", fn(" + varName + ") { return " + cond + " }), " + body + ")"
-	} else {
-		body = "map(" + iter + ", " + body + ")"
-	}
-	return body, nil
+	_ = elt
+	return "", p.unsupported("list comprehension", "comprehensions are outside the importable subset; use an explicit for loop with append")
 }
 
 func (p *pyParser) parseDict() (string, error) {
@@ -1262,6 +1232,9 @@ func (p *pyParser) parseDict() (string, error) {
 			return "", err
 		}
 		pairs = append(pairs, k+": "+v)
+		if p.peek().kind == pyName && p.peek().text == "for" {
+			return "", p.unsupported("dict comprehension", "comprehensions are outside the importable subset; use an explicit for loop")
+		}
 		if !p.acceptOp(",") {
 			break
 		}

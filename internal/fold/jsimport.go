@@ -107,6 +107,10 @@ func (p *jsParser) parseProgram() error {
 func (p *jsParser) parseStmt() error {
 	t := p.peek()
 	if t.kind == jsName {
+		// async (function/async arrow) must never silently degrade to sync.
+		if t.text == "async" {
+			return p.unsupported("async function", "async/await is outside the importable subset")
+		}
 		switch t.text {
 		case "var", "let", "const":
 			return p.parseVarDecl()
@@ -153,14 +157,7 @@ func (p *jsParser) parseStmt() error {
 			p.semi()
 			return nil
 		case "throw":
-			p.next()
-			e, err := p.parseExpr()
-			if err != nil {
-				return err
-			}
-			p.e.line("throw(" + e + ")")
-			p.semi()
-			return nil
+			return p.unsupported("throw statement", "exceptions are outside the importable subset")
 		case "try":
 			return p.unsupported("try/catch", "exception handling blocks are outside the importable subset")
 		case "class":
@@ -345,6 +342,9 @@ func (p *jsParser) parseDestructureObj(kw string) error {
 
 func (p *jsParser) parseFuncDecl() error {
 	p.next() // function
+	if p.acceptOp("*") {
+		return p.unsupported("generator function", "generators are outside the importable subset")
+	}
 	name := ""
 	if p.peek().kind == jsName {
 		name = p.next().text
@@ -941,6 +941,8 @@ func (p *jsParser) parsePostfix() (string, error) {
 			return node, nil
 		}
 		switch t.text {
+		case "?.":
+			return "", p.unsupported("optional chaining", "optional chaining (?.) is outside the importable subset")
 		case ".":
 			p.next()
 			if p.peek().kind != jsName {
@@ -964,16 +966,6 @@ func (p *jsParser) parsePostfix() (string, error) {
 				// support o.a as well as o["a"].
 				node = node + "." + prop
 			}
-		case "?.":
-			p.next()
-			if p.peek().kind != jsName {
-				return "", &SyntaxError{Lang: "js", Line: p.peek().line, Detail: "expected property name after '?'."}
-			}
-			prop := p.next().text
-			if p.peek().kind == jsOp && p.peek().text == "(" {
-				return "", p.unsupported("optional call ?.", "optional method calls are outside the importable subset")
-			}
-			node = node + "?." + prop
 		case "[":
 			p.next()
 			idx, err := p.parseExpr()
@@ -1143,6 +1135,8 @@ func (p *jsParser) parsePrimary() (string, error) {
 		return nvsQuote(t.val), nil
 	case jsName:
 		switch t.text {
+		case "await":
+			return "", p.unsupported("await expression", "async/await is outside the importable subset")
 		case "true", "false", "null":
 			p.next()
 			return t.text, nil
@@ -1188,6 +1182,11 @@ func (p *jsParser) parsePrimary() (string, error) {
 		case "new":
 			return "", p.unsupported("new", "constructors are outside the importable subset")
 		}
+	}
+	if t.kind == jsOp && t.text == "/" {
+		// A "/" where an operand is expected is a regex literal (the lexer
+		// emits division tokens; real division never reaches here).
+		return "", p.unsupported("regex literal", "regular expressions are outside the importable subset")
 	}
 	return "", &SyntaxError{Lang: "js", Line: t.line, Detail: fmt.Sprintf("unexpected %s in expression", t)}
 }
@@ -1287,6 +1286,9 @@ func (p *jsParser) parseArrowBody(params []string) (string, error) {
 
 func (p *jsParser) parseFuncExpr() (string, error) {
 	p.next() // function
+	if p.acceptOp("*") {
+		return "", p.unsupported("generator function", "generators are outside the importable subset")
+	}
 	if p.peek().kind == jsName {
 		p.next() // name (ignored for anonymous emission)
 	}

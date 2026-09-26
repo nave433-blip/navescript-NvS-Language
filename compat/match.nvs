@@ -1,0 +1,7 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era match expressions.
+print match (2) {
+  case 1 { "one" }
+  case 2 { "two" }
+  default { "other" }
+}

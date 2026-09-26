@@ -1,0 +1,13 @@
+// FROZEN COMPAT FIXTURE — do not modify to match new behavior.
+// Exercises 2.1.0-era classes.
+class Person {
+  init(name, age) {
+    this.name = name
+    this.age = age
+  }
+  greet() {
+    return "Hi, I'm " + this.name
+  }
+}
+let p = new Person("Nave", 30)
+print p.greet()
