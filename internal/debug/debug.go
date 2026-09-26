@@ -1,17 +1,14 @@
 // Package debug implements nvsdb, the interactive terminal debugger for
 // NvS ("nvs debug").
 //
-// It is built on the cooperative hooks in internal/eval/debug.go: the
-// evaluator calls Session.BeforeStmt once per statement and brackets
-// user-function calls with EnterCall/LeaveCall. All hooks run
-// synchronously on the evaluating goroutine, so BeforeStmt can block on
-// an interactive prompt and evaluation resumes when it returns.
+// The stepping engine is Controller (controller.go), shared with the DAP
+// adapter ("nvs dap", internal/dap). This file is only the terminal
+// front end: the prompt, the command loop, and the break/step/next/
+// continue/print/backtrace/locals/quit commands.
 //
 // Honest scope: this drives the tree-walking evaluator only. The
 // experimental bytecode VM (nvs bc) is a separate execution engine and
 // does not fire these hooks, so it cannot be debugged with nvsdb.
-// A DAP (Debug Adapter Protocol) server is future work; the hook
-// interface here is deliberately small enough to back one later.
 package debug
 
 import (
@@ -19,145 +16,48 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
 
-	"github.com/navescript/nvs/internal/eval"
-	"github.com/navescript/nvs/internal/lexer"
 	"github.com/navescript/nvs/internal/object"
-	"github.com/navescript/nvs/internal/parser"
 )
 
-// quitSignal is the private panic value used to unwind the entire
-// evaluation when the user types `quit`. It is recovered ONLY in
-// RunFile/RunCode (see the deferred recover there); any other panic
-// value is re-panicked untouched, so this sentinel never leaks out of
-// this package and never masks a real evaluator bug.
-type quitSignal struct{}
-
-// syncWriter serializes concurrent writes: the stdout-capture
-// goroutine (program output) and the command loop (debugger output)
-// both write to the session output.
-type syncWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (s *syncWriter) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.w.Write(p)
-}
-
-// Session is one interactive debugging session. It implements the
-// eval.Debugger interface, so a Session can be installed as
-// eval.ActiveDebugger while a program runs.
+// Session is one interactive debugging session. It embeds the shared
+// Controller (the stepping engine) and adds the terminal command loop.
 type Session struct {
-	in     *bufio.Reader
-	out    io.Writer // mutex-guarded; all session writes go here
-	rawOut io.Writer // the underlying writer, for type checks
-
-	breakpoints map[int]bool
-
-	// Pause modes. stepMode is one-shot: pause at the very next
-	// statement, then clear. nextMode pauses at the next statement
-	// whose call depth is <= nextDepth (step over calls).
-	stepMode  bool
-	nextMode  bool
-	nextDepth int
-
-	// Call tracking, maintained from EnterCall/LeaveCall.
-	depth int
-	stack []string // innermost call last
-
-	// State of the current pause.
-	pausedEnv  *object.Environment
-	pausedLine int
-	pausedFile string
-	// mainFile is the program being debugged (RunCode's name argument).
-	// Breakpoints are matched against it; pauses inside other files
-	// (imports) are reported with their file path.
-	mainFile string
-	lastCmd  string
-
-	// suppress, when true, makes the hooks ignore events. It is set
-	// while the `print` command evaluates an expression in the paused
-	// environment, so that functions called by the expression neither
-	// disturb the call stack/depth bookkeeping nor trigger pauses.
-	suppress bool
+	*Controller
+	in      *bufio.Reader
+	out     io.Writer // mutex-guarded; all session writes go here
+	rawOut  io.Writer // the underlying writer, for type checks
+	lastCmd string
 }
 
 // New creates a debugging session reading commands from in and writing
 // all debugger and debuggee output to out.
 func New(in io.Reader, out io.Writer) *Session {
-	return &Session{
-		in:          bufio.NewReader(in),
-		out:         &syncWriter{w: out},
-		rawOut:      out,
-		breakpoints: map[int]bool{},
+	s := &Session{
+		in:     bufio.NewReader(in),
+		out:    &syncWriter{w: out},
+		rawOut: out,
 	}
+	s.Controller = NewController()
+	s.Controller.OnPause = s.onPause
+	return s
 }
 
-// prompt is the interactive prompt, gdb-style.
-const prompt = "(nvsdb) "
-
-// ---------------------------------------------------------------------------
-// eval.Debugger implementation
-// ---------------------------------------------------------------------------
-
-// BeforeStmt is called by the evaluator once per statement, before the
-// statement executes. It pauses (prints "stopped at line N" and runs the
-// command loop) when the line has a breakpoint (breakpoints match the main
-// file only), when stepMode is set, or when nextMode is set and the current
-// call depth is at or above the depth recorded by `next`. Pauses inside
-// imported files report their file path.
-func (s *Session) BeforeStmt(line int, file string, env *object.Environment) {
-	if s.suppress {
-		return
-	}
-	inMain := s.mainFile == "" || file == s.mainFile
-	shouldPause := (inMain && s.breakpoints[line]) || s.stepMode ||
-		(s.nextMode && s.depth <= s.nextDepth)
-	if !shouldPause {
-		return
-	}
-	// One-shot modes are consumed by the pause they cause.
-	s.stepMode = false
-	s.nextMode = false
-	s.pausedEnv = env
-	s.pausedLine = line
-	s.pausedFile = file
+// onPause implements the Controller pause hook for the terminal: report
+// where we stopped, then run the interactive command loop.
+func (s *Session) onPause(c *Controller) {
+	inMain := c.mainFile == "" || c.pausedFile == c.mainFile
 	if inMain {
-		fmt.Fprintf(s.out, "stopped at line %d\n", line)
+		fmt.Fprintf(s.out, "stopped at line %d\n", c.pausedLine)
 	} else {
-		fmt.Fprintf(s.out, "stopped at %s:%d\n", file, line)
+		fmt.Fprintf(s.out, "stopped at %s:%d\n", c.pausedFile, c.pausedLine)
 	}
 	s.commandLoop()
 }
 
-// EnterCall records entry into a user-defined function call.
-func (s *Session) EnterCall(name string) {
-	if s.suppress {
-		return
-	}
-	s.stack = append(s.stack, name)
-	s.depth++
-}
-
-// LeaveCall records return from a user-defined function call.
-func (s *Session) LeaveCall() {
-	if s.suppress {
-		return
-	}
-	if len(s.stack) > 0 {
-		s.stack = s.stack[:len(s.stack)-1]
-	}
-	if s.depth > 0 {
-		s.depth--
-	}
-}
+// prompt is the interactive prompt, gdb-style.
+const prompt = "(nvsdb) "
 
 // ---------------------------------------------------------------------------
 // Running programs
@@ -165,8 +65,7 @@ func (s *Session) LeaveCall() {
 
 // RunFile parses the file at path and debugs it. Parser errors are
 // printed and returned. A runtime ERROR object is printed and stops the
-// session. eval.ActiveDebugger is set to the session for the duration of
-// the run and restored afterwards.
+// session.
 func (s *Session) RunFile(path string) error {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -177,91 +76,14 @@ func (s *Session) RunFile(path string) error {
 
 // RunCode debugs a source string (name is used in error messages).
 // Used by tests and by callers that already hold the source.
+//
+// gdb-style pre-run prompt: let the user set breakpoints before the
+// program starts. `continue` (or EOF) begins execution; `step` / `next`
+// pause at the first statement; `quit` exits.
 func (s *Session) RunCode(code, name string) error {
-	l := lexer.New(code)
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if errs := p.Errors(); len(errs) > 0 {
-		for _, e := range errs {
-			fmt.Fprintf(s.out, "parse error: %s\n", e)
-		}
-		return fmt.Errorf("parse errors in %s", name)
-	}
-
-	prev := eval.ActiveDebugger
-	eval.ActiveDebugger = s
-	defer func() { eval.ActiveDebugger = prev }()
-
-	// The main file identifies breakpoint scope (see BeforeStmt).
-	s.mainFile = name
-
-	// The debuggee's print/printf builtins write to os.Stdout, so
-	// capture it into the session output while the program runs. This
-	// keeps program output and debugger output in one transcript.
-	restoreStdout := s.captureStdout()
-	defer restoreStdout()
-
-	// `quit` unwinds the whole evaluation via a private panic value;
-	// recover it here and let every other panic propagate.
-	defer func() {
-		if r := recover(); r != nil {
-			if _, ok := r.(quitSignal); !ok {
-				panic(r)
-			}
-			fmt.Fprintln(s.out, "quit")
-		}
-	}()
-
-	env := object.NewEnvironment()
-	eval.LoadPrelude(env)
-
-	// The hook reports eval.CurrentFile, so point it at the debugged
-	// program for the duration of the run (restored afterwards).
-	prevFile := eval.CurrentFile
-	eval.CurrentFile = name
-	defer func() { eval.CurrentFile = prevFile }()
-
-	// gdb-style pre-run prompt: let the user set breakpoints before
-	// the program starts. `continue` (or EOF) begins execution; `step`
-	// / `next` pause at the first statement; `quit` exits.
-	s.commandLoop()
-
-	result := eval.Eval(program, env)
-	if errObj, ok := result.(*object.Error); ok && errObj != nil {
-		fmt.Fprintf(s.out, "runtime error: %s\n", errObj.Inspect())
-	}
-	return nil
-}
-
-// captureStdout redirects os.Stdout into s.out for the duration of the
-// run and returns a restore function. The copy runs on a goroutine;
-// restore closes the pipe and waits for the copy to drain so no program
-// output is lost. Ordering caveat: debugger writes go directly to s.out
-// while program output travels through the pipe, so under a transcript
-// the two streams can interleave slightly out of order; content is never
-// lost.
-func (s *Session) captureStdout() func() {
-	if f, ok := s.rawOut.(*os.File); ok && f == os.Stdout {
-		return func() {}
-	}
-	r, w, err := os.Pipe()
-	if err != nil {
-		return func() {}
-	}
-	old := os.Stdout
-	os.Stdout = w
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		io.Copy(s.out, r) //nolint:errcheck
-	}()
-	return func() {
-		w.Close()
-		os.Stdout = old
-		wg.Wait()
-		r.Close()
-	}
+	return Run(s.Controller, code, name, s.out, s.rawOut, func(*Controller) {
+		s.commandLoop()
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -311,13 +133,13 @@ func (s *Session) execCommand(cmd string) (resume bool) {
 		s.cmdBreak(arg)
 		return false
 	case "step", "s":
-		s.stepMode = true
+		s.Step()
 		return true
 	case "next", "n":
-		s.nextMode = true
-		s.nextDepth = s.depth
+		s.Next()
 		return true
 	case "continue", "c":
+		s.Continue()
 		return true
 	case "print", "p":
 		s.cmdPrint(arg)
@@ -329,7 +151,8 @@ func (s *Session) execCommand(cmd string) (resume bool) {
 		s.cmdLocals()
 		return false
 	case "quit", "q":
-		panic(quitSignal{})
+		s.Terminate()
+		return false // unreachable
 	case "help", "h", "?":
 		s.printHelp()
 		return false
@@ -348,58 +171,53 @@ func (s *Session) printHelp() {
 // toggles the breakpoint (adds it, or removes it if already set).
 func (s *Session) cmdBreak(arg string) {
 	if arg == "" {
-		if len(s.breakpoints) == 0 {
+		lines := s.Breakpoints()
+		if len(lines) == 0 {
 			fmt.Fprintln(s.out, "no breakpoints")
 			return
 		}
-		lines := make([]int, 0, len(s.breakpoints))
-		for l := range s.breakpoints {
-			lines = append(lines, l)
-		}
-		sort.Ints(lines)
 		for _, l := range lines {
 			fmt.Fprintf(s.out, "breakpoint at line %d\n", l)
 		}
 		return
 	}
-	n, err := strconv.Atoi(strings.Fields(arg)[0])
-	if err != nil || n < 1 {
+	n, err := parseLine(arg)
+	if err != nil {
 		fmt.Fprintf(s.out, "bad line number %q: want a positive integer\n", arg)
 		return
 	}
 	if s.breakpoints[n] {
-		delete(s.breakpoints, n)
+		s.RemoveBreakpoint(n)
 		fmt.Fprintf(s.out, "breakpoint at line %d removed\n", n)
 	} else {
-		s.breakpoints[n] = true
+		s.AddBreakpoint(n)
 		fmt.Fprintf(s.out, "breakpoint at line %d added\n", n)
 	}
 }
 
-// cmdPrint parses expr and evaluates it in the paused environment. The
-// debuggee's control flow is not disturbed: hooks are suppressed during
-// the evaluation so any functions the expression calls neither pause
-// nor corrupt the call-stack bookkeeping. Null results print nothing.
+func parseLine(arg string) (int, error) {
+	var n int
+	_, err := fmt.Sscanf(strings.Fields(arg)[0], "%d", &n)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("bad line")
+	}
+	return n, nil
+}
+
+// cmdPrint evaluates expr in the paused environment and prints the
+// result. Null results print nothing.
 func (s *Session) cmdPrint(expr string) {
 	if strings.TrimSpace(expr) == "" {
 		fmt.Fprintln(s.out, "usage: print <expr>")
 		return
 	}
-	if s.pausedEnv == nil {
+	if s.PausedEnv() == nil {
 		fmt.Fprintln(s.out, "not stopped in a program")
 		return
 	}
-	p := parser.New(lexer.New(expr))
-	prog := p.ParseProgram()
-	if errs := p.Errors(); len(errs) > 0 {
-		fmt.Fprintf(s.out, "parse error: %s\n", strings.Join(errs, "; "))
-		return
-	}
-	s.suppress = true
-	defer func() { s.suppress = false }()
-	val := eval.Eval(prog, s.pausedEnv)
-	if errObj, ok := val.(*object.Error); ok && errObj != nil {
-		fmt.Fprintf(s.out, "error: %s\n", errObj.Inspect())
+	val, err := s.EvalInPausedEnv(expr)
+	if err != nil {
+		fmt.Fprintf(s.out, "%s\n", err.Error())
 		return
 	}
 	if val == nil || val.Type() == object.NULL_OBJ {
@@ -410,27 +228,29 @@ func (s *Session) cmdPrint(expr string) {
 
 // cmdBacktrace prints the call stack, innermost frame first, gdb-style.
 func (s *Session) cmdBacktrace() {
-	for i := len(s.stack) - 1; i >= 0; i-- {
-		fmt.Fprintf(s.out, "#%d %s\n", len(s.stack)-1-i, s.stack[i])
+	stack := s.Stack()
+	for i := len(stack) - 1; i >= 0; i-- {
+		fmt.Fprintf(s.out, "#%d %s\n", len(stack)-1-i, stack[i].Name)
 	}
-	fmt.Fprintf(s.out, "#%d <toplevel>\n", len(s.stack))
+	fmt.Fprintf(s.out, "#%d <toplevel>\n", len(stack))
 }
 
 // cmdLocals prints the current frame's bindings (env.Names is sorted,
 // current frame only; Get walks outer scopes).
 func (s *Session) cmdLocals() {
-	if s.pausedEnv == nil {
+	env := s.PausedEnv()
+	if env == nil {
 		fmt.Fprintln(s.out, "no frame")
 		return
 	}
-	names := s.pausedEnv.Names()
+	names := env.Names()
 	if len(names) == 0 {
 		fmt.Fprintln(s.out, "(no locals)")
 		return
 	}
 	for _, name := range names {
 		val := "<undefined>"
-		if obj, ok := s.pausedEnv.Get(name); ok && obj != nil {
+		if obj, ok := env.Get(name); ok && obj != nil {
 			val = truncate(obj.Inspect(), 120)
 		}
 		fmt.Fprintf(s.out, "%s = %s\n", name, val)
