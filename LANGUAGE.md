@@ -7,13 +7,19 @@ where a tree-walking interpreter can support them honestly.
 ## Quick start
 ```bash
 nvs                  # REPL
-nvs run file.ns
+nvs run file.nvs     # run a program (.nvs canonical, .ns also works)
+nvs file.nvs         # same, no subcommand needed
+nvs -e 'print 6 * 7' # one-liner
+./script.nvs         # with #!/usr/bin/env nvs shebang + chmod +x
 nvs init
 nvs info
 nvs fmt [--check] [files...]
 nvs lint [--json] [files...]
 nvs doc [files...]
 ```
+
+File types: `.nvs` (canonical source), `.ns` (classic, still supported),
+`.nave` (JSON workflow docs for `nvs nave`). See `docs/POLYGLOT.md` §0.
 
 ## Feature map (established-language inspired)
 

@@ -9,10 +9,15 @@ A practical scripting language implemented in Go. Original ambitious claims are 
 ## Quick start
 
 ```bash
-go run ./cmd/nvs/ run examples/claimed.ns
-go run ./cmd/nvs/ run examples/hof.ns
+go run ./cmd/nvs/ run examples/hello.nvs   # .nvs is the canonical extension (.ns also works)
+./examples/hello.nvs                        # shebang + chmod +x (needs nvs on PATH)
+go run ./cmd/nvs/ -e 'print 6 * 7'
 go run ./cmd/nvs/ version
 ```
+
+Use NvS from other languages: see [`docs/POLYGLOT.md`](docs/POLYGLOT.md) —
+C (`examples/c_embed/`), Rust (`bindings/rust/`), Python
+(`examples/python_embed.py`), plus the JSON bridge and `nvs bindgen`.
 
 ## Language features
 

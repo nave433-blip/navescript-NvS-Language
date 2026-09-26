@@ -6,9 +6,41 @@ There are four integration paths, in order of recommendation:
 | Path | How | Best for |
 |------|-----|----------|
 | **JSON stdio bridge** (`nvs bridge`) | Spawn `nvs` as a subprocess; exchange line-delimited JSON | Any language with subprocess + JSON (Python, Node, Ruby, …). Tested: Python, Node.js |
-| **`nvs bindgen`** | Generates a native client module from an `.ns` file, wired through the bridge | Python today (`--to=python`); the module embeds the NvS source and exposes each function as a callable |
-| **C ABI** (`libnvs.so`) | `go build -buildmode=c-shared -o libnvs.so ./cbridge` → `nvs_eval` / `nvs_call` / `nvs_free` | Languages with C FFI. Tested: Python ctypes |
+| **`nvs bindgen`** | Generates a native client module from an `.nvs` file, wired through the bridge | Python today (`--to=python`); the module embeds the NvS source and exposes each function as a callable |
+| **C ABI** (`libnvs.so`) | `go build -buildmode=c-shared -o libnvs.so ./cbridge` → `nvs_eval` / `nvs_call` / `nvs_free` | Languages with C FFI. Tested: C, Rust, Python ctypes |
 | **Transpiler** (`nvs transpile`) | Honest-subset NvS → JS/Python source | Shipping NvS logic as native target code where it fits the subset |
+
+---
+
+## 0. File types and launch modes
+
+| Extension | Meaning |
+|-----------|---------|
+| `.nvs` | **Canonical** NvS source. May start with a `#!/usr/bin/env nvs` shebang line (stripped by the lexer) so scripts can be `chmod +x`'d and run directly. |
+| `.ns` | Classic NvS source — still fully supported everywhere (backward compatible). |
+| `.nave` | JSON workflow documents for the `nvs nave` runner — not NvS source. |
+
+NvS reads the *content*, not the suffix: every subcommand that takes a
+file (`run`, `fmt`, `lint`, `doc`, `transpile`, `exports`, `bindgen`,
+`bc`) accepts `.ns` and `.nvs` interchangeably.
+
+Launch modes:
+
+```bash
+nvs                     # interactive REPL
+nvs script.nvs          # run a file (no subcommand needed)
+nvs run script.nvs      # same, explicit
+nvs -e 'print 6 * 7'    # evaluate a snippet (also: nvs eval '...')
+chmod +x script.nvs && ./script.nvs   # shebang execution
+nvs bridge              # JSON stdio bridge (see §1)
+```
+
+Example — `examples/hello.nvs`:
+
+```nvs
+#!/usr/bin/env nvs
+print "hello from nvs"
+```
 
 ---
 
@@ -101,6 +133,38 @@ void  nvs_free(char* s);                          // free a returned string
 - Tested live: Python ctypes (`examples/wave10_ctypes.py`) — persistence,
   error envelopes, `nvs_free` discipline. Other languages' FFI sketches in
   LANGUAGE.md are labeled by test status; treat untested ones as sketches.
+
+### Embedding in C — minimal example
+
+Full working program: `examples/c_embed/main.c` (contract header:
+`examples/c_embed/nvs.h`). Build and run:
+
+```bash
+go build -buildmode=c-shared -o examples/c_embed/libnvs.so ./cbridge
+cd examples/c_embed
+gcc -o c_embed main.c -L. -lnvs -Wl,-rpath,'$ORIGIN'
+./c_embed
+```
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include "nvs.h"
+
+int main(void) {
+    char *r = nvs_eval("fn add(a, b) { a + b }");
+    nvs_free(r);                                    // always free exactly once
+
+    r = nvs_call("add", "[20, 22]");
+    printf("%s\n", r);                              // {"ok":true,"result":42}
+    nvs_free(r);
+
+    r = nvs_call("nope", "[]");
+    printf("%s\n", r);                              // {"ok":false,"error":"..."}
+    nvs_free(r);
+    return 0;
+}
+```
 
 ---
 
@@ -228,7 +292,9 @@ literal      := NUMBER | STRING | "true" | "false" | "null"
 
 | Client | Path | Proof |
 |--------|------|-------|
-| Python | ctypes → C ABI | `examples/wave10_ctypes.py` (all assertions pass) |
+| C | C ABI | `examples/c_embed/main.c` compiled with gcc, all 6 checks pass live |
+| Rust | C ABI via `bindings/rust` | `cargo test`: 7 integration tests + doctest pass live |
+| Python | ctypes → C ABI | `examples/python_embed.py` (8 assertions pass live); `examples/wave10_ctypes.py` |
 | Python | generated module → bridge | `nvs bindgen` + live round-trip (ints, strings+defaults, lists, maps, `NvSError` on `throw`) |
 | Python | raw bridge client | multi-call session: persistence, id echo, honest type errors |
 | Node.js | bridge client | `examples/wave11_node_bridge.mjs` (all assertions pass) |
@@ -236,6 +302,73 @@ literal      := NUMBER | STRING | "true" | "false" | "null"
 | Any | `nvs bridge --once` | one-shot request/response verified |
 
 Untested sketches (in this tree, labeled as such): Node ffi-napi, Ruby
-fiddle, Rust `extern "C"`, C# P/Invoke, Java JNA. They follow the same
+fiddle, C# P/Invoke, Java JNA. They follow the same
 `nvs_eval`/`nvs_call`/`nvs_free` contract in §3; contributions with live
 tests welcome.
+
+## 7. Embedding in Rust (`bindings/rust`)
+
+Safe bindings over the C ABI: raw `extern "C"` declarations plus
+`nvs::eval` / `nvs::call` returning `serde_json::Value`, with RAII
+cleanup (`nvs_free` exactly once) and a mutex around the one global
+interpreter.
+
+```rust
+let v = nvs::eval("6 * 7").unwrap();
+assert_eq!(v, serde_json::json!(42));
+
+nvs::eval("fn add(a, b) { a + b }").unwrap();
+let v = nvs::call("add", &serde_json::json!([20, 22])).unwrap();
+assert_eq!(v, serde_json::json!(42));
+```
+
+`build.rs` compiles `libnvs.so` from `../../cbridge` into Cargo's
+`$OUT_DIR` and bakes an rpath, so no manual setup is needed — Go is
+found via `$GO_BIN`, `~/go-dist/go/bin/go`, or `PATH`:
+
+```bash
+cd bindings/rust
+cargo test        # builds libnvs.so, runs 7 integration tests + doctest
+```
+
+Errors: NvS parse/runtime failures surface as `NvsError::Nvs(String)`;
+bridge-level failures as `NvsError::Bridge(String)`.
+
+## 8. Embedding in Python
+
+Three paths, pick by need:
+
+| Path | Speed | Best for |
+|------|-------|----------|
+| **ctypes → C ABI** (`examples/python_embed.py`) | Fastest (in-process) | Tight loops, embedding NvS in a Python app |
+| **`nvs bindgen`** | One subprocess per module | A typed Python module for one NvS file |
+| **raw `nvs bridge`** | One subprocess | Full control, any protocol detail |
+
+Minimal ctypes example (full version: `examples/python_embed.py`):
+
+```python
+import ctypes, json
+
+nvs = ctypes.CDLL("./libnvs.so")
+# IMPORTANT: restype must be c_void_p, NOT c_char_p — with c_char_p,
+# ctypes copies the string and drops the original pointer, so nvs_free
+# would free the wrong address and abort.
+nvs.nvs_eval.restype = ctypes.c_void_p
+nvs.nvs_eval.argtypes = [ctypes.c_char_p]
+nvs.nvs_call.restype = ctypes.c_void_p
+nvs.nvs_call.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+nvs.nvs_free.restype = None
+nvs.nvs_free.argtypes = [ctypes.c_void_p]
+
+def nvs_eval(src: str):
+    ptr = nvs.nvs_eval(src.encode())
+    try:
+        env = json.loads(ctypes.string_at(ptr))
+    finally:
+        nvs.nvs_free(ptr)
+    if not env.get("ok"):
+        raise RuntimeError(env["error"])
+    return env["result"]
+
+print(nvs_eval("6 * 7"))   # 42
+```
