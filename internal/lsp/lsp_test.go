@@ -472,7 +472,7 @@ func TestLSPUnknownMethod(t *testing.T) {
 	c, _ := newTestClient(t)
 	initialize(t, c)
 
-	id := c.request("workspace/symbol", map[string]any{"query": "x"})
+	id := c.request("workspace/definitelyNotAMethod", map[string]any{"query": "x"})
 	raw := c.nextReply(id)
 	var v struct {
 		Error *rpcError `json:"error"`
