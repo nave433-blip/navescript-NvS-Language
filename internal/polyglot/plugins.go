@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -35,9 +36,14 @@ func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-// Python runs python3 -c
+// Python runs python3 -c, falling back to python (stock Windows installs
+// provide python.exe, not python3.exe).
 func Python(code string) Result {
-	return runCmd("python3", "-c", code)
+	bin := "python3"
+	if _, err := exec.LookPath(bin); err != nil {
+		bin = "python"
+	}
+	return runCmd(bin, "-c", code)
 }
 
 // JS runs node -e
@@ -55,6 +61,9 @@ func Rust(code string) Result {
 	return withTempDir("nvs-rust-", func(dir string) Result {
 		src := filepath.Join(dir, "main.rs")
 		bin := filepath.Join(dir, "main")
+		if runtime.GOOS == "windows" {
+			bin += ".exe" // rustc emits main.exe on NT; without the suffix exec fails
+		}
 		body := code
 		if !strings.Contains(code, "fn main") {
 			body = "fn main() {\n" + code + "\n}\n"
