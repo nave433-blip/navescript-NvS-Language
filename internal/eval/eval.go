@@ -1729,6 +1729,9 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 				broke = true
 				break loopArr
 			case sigContinueMatched:
+				// The iteration produced no value; a trailing continue
+				// must not leak the signal object as the loop's value.
+				result = NULL
 				continue
 			}
 		}
@@ -1746,6 +1749,9 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 				broke = true
 				break loopTup
 			case sigContinueMatched:
+				// The iteration produced no value; a trailing continue
+				// must not leak the signal object as the loop's value.
+				result = NULL
 				continue
 			}
 		}
@@ -1763,6 +1769,9 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 				broke = true
 				break loopRec
 			case sigContinueMatched:
+				// The iteration produced no value; a trailing continue
+				// must not leak the signal object as the loop's value.
+				result = NULL
 				continue
 			}
 		}
@@ -1779,6 +1788,9 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 				broke = true
 				break loopStr
 			case sigContinueMatched:
+				// The iteration produced no value; a trailing continue
+				// must not leak the signal object as the loop's value.
+				result = NULL
 				continue
 			}
 		}
@@ -1795,6 +1807,9 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 				broke = true
 				break loopHash
 			case sigContinueMatched:
+				// The iteration produced no value; a trailing continue
+				// must not leak the signal object as the loop's value.
+				result = NULL
 				continue
 			}
 		}
@@ -1817,6 +1832,9 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 				broke = true
 				break loopGen
 			case sigContinueMatched:
+				// The iteration produced no value; a trailing continue
+				// must not leak the signal object as the loop's value.
+				result = NULL
 				continue
 			}
 		}
@@ -1837,6 +1855,15 @@ var loadedModules = map[string]bool{}
 
 func evalImportStatement(node *ast.ImportStatement, env *object.Environment) object.Object {
 	path := node.Path.Value
+	// Wave 14: resolve a relative import against the importing file's
+	// directory when that file exists there; otherwise keep the historic
+	// behavior of resolving against the working directory.
+	if !filepath.IsAbs(path) && CurrentFile != "" {
+		cand := filepath.Join(filepath.Dir(CurrentFile), path)
+		if _, err := os.Stat(cand); err == nil {
+			path = cand
+		}
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return newError("import: %s", err.Error())
@@ -1856,7 +1883,11 @@ func evalImportStatement(node *ast.ImportStatement, env *object.Environment) obj
 	if len(p.Errors()) > 0 {
 		return newError("import parse errors in %s: %v", path, p.Errors())
 	}
+	// Nested imports resolve against this file's directory; restore after.
+	prevFile := CurrentFile
+	CurrentFile = abs
 	result := Eval(program, env)
+	CurrentFile = prevFile
 	if isError(result) {
 		return result
 	}
