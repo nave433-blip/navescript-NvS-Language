@@ -1,0 +1,60 @@
+// SIMULATED quantum computing — classical state-vector simulation, not hardware.
+// Grover's search on 3 qubits, marked state |111> (index 7).
+// Oracle: multi-controlled Z via H-X-H on the Toffoli target:
+//   H(2); Toffoli(0,1,2); H(2) flips the phase of |111> only.
+// Diffuser: H^3 X^3 (H(2); Toffoli(0,1,2); H(2)) X^3 H^3.
+// Optimal iterations for 3 qubits: about 2 (pi/4 * sqrt(8) is about 2.2).
+
+fn oracle(r) {
+  q_h(r, 2)
+  q_toffoli(r, 0, 1, 2)
+  q_h(r, 2)
+}
+
+fn diffuser(r) {
+  q_h(r, 0)
+  q_h(r, 1)
+  q_h(r, 2)
+  q_x(r, 0)
+  q_x(r, 1)
+  q_x(r, 2)
+  q_h(r, 2)
+  q_toffoli(r, 0, 1, 2)
+  q_h(r, 2)
+  q_x(r, 0)
+  q_x(r, 1)
+  q_x(r, 2)
+  q_h(r, 0)
+  q_h(r, 1)
+  q_h(r, 2)
+}
+
+let r = qalloc(3)
+q_h(r, 0)
+q_h(r, 1)
+q_h(r, 2)
+print "initial (uniform 12.5% each):"
+print q_probs(r)
+
+oracle(r)
+diffuser(r)
+print "after 1 Grover iteration (marked |111> should be ~78%):"
+print q_probs(r)
+
+oracle(r)
+diffuser(r)
+print "after 2 Grover iterations (marked |111> should be ~94%):"
+print q_probs(r)
+
+// Reproducible shot demo: same seed -> identical histogram, and the
+// register is NOT collapsed by q_shots.
+q_seed(1234)
+let h1 = q_shots(r, 1000)
+q_seed(1234)
+let h2 = q_shots(r, 1000)
+print "seeded shots, marked-state count:"
+print h1[7]
+print "reproducible (h1 == h2):"
+print h1[7] == h2[7]
+print "register still coherent (prob of |111> unchanged):"
+print q_probs(r)[7]

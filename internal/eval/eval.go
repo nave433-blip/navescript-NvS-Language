@@ -6406,6 +6406,10 @@ func initBuiltins() {
 	registerWave7Builtins()
 	// Wave 8: quantum robbery — LOCAL state-vector simulator (not hardware).
 	registerWave8Builtins()
+	// Wave 17f: deeper quantum — Toffoli/CPhase gates, seeded shots, and a
+	// chainable circuit builder (LOCAL state-vector simulator, not
+	// quantum hardware).
+	registerWave17QuantumBuiltins()
 	// Ported from the 2.2–2.9 track: low-level quantum state-vector
 	// primitives (qubit/qzero/qgate/qtensor/qmeasure/qprob/qnormalize/
 	// qinner), physics_const(), and self_eval().
