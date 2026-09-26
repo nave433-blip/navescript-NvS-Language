@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/navescript/nvs/internal/bytecode"
+	"github.com/navescript/nvs/internal/checker"
 	"github.com/navescript/nvs/internal/nave"
 
 	"github.com/navescript/nvs/internal/eval"
@@ -59,6 +60,8 @@ func main() {
 		runFmt(os.Args[2:])
 	case "lint":
 		runLint(os.Args[2:])
+	case "check":
+		runCheck(os.Args[2:])
 	case "doc":
 		runDoc(os.Args[2:])
 	case "transpile":
@@ -116,6 +119,8 @@ Usage:
   nvs info                Language identity & capabilities
   nvs fmt [files...]      Format files (reads stdin if no files)
   nvs lint [files...]     Lint files (0 = clean, 1 = findings)
+  nvs check [files...]    Static type check (gradual; advisory — the
+                          runtime still enforces types; 0 = clean, 1 = errors)
   nvs doc [files...]      Extract doc comments as Markdown (minimal stub)
   nvs transpile --to=js|python <file>
                           Transpile the NvS subset to JavaScript or Python
@@ -345,6 +350,60 @@ func runLint(args []string) {
 	if len(all) > 0 {
 		os.Exit(1)
 	}
+}
+
+func checkHelp() {
+	fmt.Print(`nvs check — gradual static type checker (advisory)
+
+Usage:
+  nvs check <files...>
+  nvs check --help
+
+Checks annotated declarations without running the program:
+  - let/const annotations and reassignment
+  - function parameter and return annotations
+  - call arity (defaults-aware) and argument types
+  - unknown annotation names, union types
+  - class/interface structural satisfaction
+
+Unannotated code is never an error (gradual typing): ` + "`any`" + `
+is compatible with everything. The runtime still enforces types at
+run time; check is advisory and exits 0 when clean, 1 on errors.
+`)
+}
+
+func runCheck(args []string) {
+	var files []string
+	for _, a := range args {
+		switch a {
+		case "-h", "--help":
+			checkHelp()
+			return
+		default:
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nvs check <files...>")
+		os.Exit(1)
+	}
+	failed := false
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "check: %v\n", err)
+			failed = true
+			continue
+		}
+		for _, e := range checker.CheckSource(f, string(src)) {
+			fmt.Fprintln(os.Stderr, e.Error())
+			failed = true
+		}
+	}
+	if failed {
+		os.Exit(1)
+	}
+	fmt.Println("OK: no type errors")
 }
 
 func docHelp() {

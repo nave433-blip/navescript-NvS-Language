@@ -877,6 +877,13 @@ func (c *Checker) checkCall(n *ast.CallExpression) {
 			return
 		}
 	}
+	// Spread in the argument list: the callee's arity can't be known
+	// statically (e.g. f(...a, 10)), so skip arity and type checks.
+	for _, a := range n.Arguments {
+		if _, ok := a.(*ast.SpreadExpression); ok {
+			return
+		}
+	}
 	sig := c.calleeSig(n.Function)
 	if sig == nil {
 		return // unknown callee: gradual, no checks.

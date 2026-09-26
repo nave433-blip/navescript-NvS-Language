@@ -261,6 +261,16 @@ print f(1, 2)
 `)
 }
 
+func TestCheckSpreadCallSkipped(t *testing.T) {
+	// Spread argument counts are unknowable statically: no arity errors.
+	expectClean(t, `
+fn sum3(x, y, z) { return x + y + z }
+let a = [1, 2]
+print sum3(...a, 10)
+print sum3(...[1, 2, 3])
+`)
+}
+
 func TestCheckParseError(t *testing.T) {
 	msgs := check(t, "fn = =\n")
 	if len(msgs) == 0 || !strings.Contains(msgs[0], "parse error") {
