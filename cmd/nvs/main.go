@@ -72,6 +72,10 @@ func main() {
 		runExports(os.Args[2:])
 	case "bindgen":
 		runBindgen(os.Args[2:])
+	case "import":
+		runImport(os.Args[2:])
+	case "extract":
+		runExtract(os.Args[2:])
 	case "bc":
 		// Experimental bytecode compile+run, ported from the 2.8 track.
 		// Honest subset: arithmetic, strings, comparisons, let/const,
@@ -135,6 +139,10 @@ Usage:
                           Generate a Python client module wired through the
                           JSON bridge
   nvs nave <file.nave>    Run a JSON workflow document (also: nvs file.nave)
+  nvs import --from=python|js <file>
+                          Fold foreign source into NvS (documented subset;
+                          loud errors outside it — see docs/FOLDING.md)
+  nvs extract <file>      Run @nvs blocks embedded in a foreign source file
   nvs bc <file|--code>    Compile the bytecode subset and run it on the
                           stack VM (--disasm to print bytecode). Supports
                           arithmetic, strings, let/const, if/else, while
