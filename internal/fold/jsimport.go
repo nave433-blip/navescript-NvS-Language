@@ -664,6 +664,121 @@ func (p *jsParser) parseAssign() (string, error) {
 }
 
 // isJsLHS is a heuristic: emitted LHS strings from names/members/subscripts.
+// jsStrLike reports whether an emitted JS-import expression is known to
+// produce a string. Used to propagate JS's string+anything concatenation
+// coercion through chained + operators.
+func jsStrLike(s string) bool {
+	s = strings.TrimSpace(s)
+	if isJsStrLit(s) {
+		return true
+	}
+	for _, fn := range []string{"str(", "upper(", "lower(", "trim(", "join(", "repeat("} {
+		if strings.HasPrefix(s, fn) {
+			return true
+		}
+	}
+	if len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' && jsOuterParensMatch(s) {
+		inner := strings.TrimSpace(s[1 : len(s)-1])
+		if jsStrLike(inner) {
+			return true
+		}
+		if idx := jsTopLevelPlus(inner); idx >= 0 {
+			return jsStrLike(inner[:idx]) || jsStrLike(inner[idx+1:])
+		}
+		return false
+	}
+	if idx := jsTopLevelPlus(s); idx >= 0 {
+		return jsStrLike(s[:idx]) || jsStrLike(s[idx+1:])
+	}
+	return false
+}
+
+// jsOuterParensMatch reports whether s's first '(' matches its last ')'.
+func jsOuterParensMatch(s string) bool {
+	depth := 0
+	inStr, esc := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i == len(s)-1
+			}
+		}
+	}
+	return false
+}
+
+// jsTopLevelPlus finds a '+' at paren-depth 0 outside strings, or -1.
+func jsTopLevelPlus(s string) int {
+	depth := 0
+	inStr, esc := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '+':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// isJsStrLit reports whether s is a double-quoted string literal as emitted
+// by this importer (template literals are emitted as "...${...}..." forms,
+// which also qualify — interpolation is resolved by NvS itself).
+func isJsStrLit(s string) bool {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return false
+	}
+	esc := false
+	for i := 1; i < len(s)-1; i++ {
+		c := s[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if c == '\\' {
+			esc = true
+		}
+	}
+	return true
+}
+
 func isJsLHS(s string) bool {
 	if s == "" {
 		return false
@@ -860,6 +975,23 @@ func (p *jsParser) parseAdd() (string, error) {
 			right, err := p.parseMul()
 			if err != nil {
 				return "", err
+			}
+			if t.text == "+" {
+				// JS coerces: string + anything is concatenation. NvS
+				// rejects mixed + at runtime, so wrap the non-string
+				// side in str() when a string is present. Stringness
+				// propagates left through a + chain, matching JS
+				// left-associativity (1+2+"x" -> "3x", not "12x").
+				// (Divergence: arrays/objects stringify differently.)
+				lStr, rStr := jsStrLike(left), jsStrLike(right)
+				switch {
+				case lStr && !rStr:
+					left = "(" + left + " + str(" + right + "))"
+					continue
+				case rStr && !lStr:
+					left = "(str(" + left + ") + " + right + ")"
+					continue
+				}
 			}
 			left = "(" + left + " " + t.text + " " + right + ")"
 			continue

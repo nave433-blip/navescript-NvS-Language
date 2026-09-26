@@ -90,7 +90,8 @@ import error: invalid js syntax (line 4): expected ";", found OP(})
 ### Known divergences (documented, not bugs)
 
 - **Array printing:** Node prints long arrays multi-line; NvS prints
-  single-line. Values are identical.
+  single-line. Values are identical. Python's list repr also quotes
+  contained strings (`['a']`) where NvS prints them bare (`[a]`).
 - **`//` floor division:** NvS `/` truncates toward zero; Python `//`
   floors. Identical for non-negative operands; differs for negatives.
 - **Truthiness:** NvS truthiness rules apply to converted conditions
@@ -98,6 +99,10 @@ import error: invalid js syntax (line 4): expected ";", found OP(})
 - **`+` on two non-literal arrays** (Python): emits `+`, which NvS
   rejects at *runtime*. Prefer the supported literal forms, which fold
   to spread syntax.
+- **JS `+` with arrays/objects:** when a string is present, the
+  other side is wrapped in `str()` to match JS coercion. Scalars and
+  strings match exactly; arrays/objects stringify differently
+  (`[1,2] + ""` → `"1,2"` in JS, `"[1, 2]"` in NvS).
 - **JS `+` on arrays** is string coercion in JS; NvS rejects it at
   runtime. Write `.join()` or spread instead.
 

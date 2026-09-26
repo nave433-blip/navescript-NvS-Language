@@ -174,6 +174,18 @@ func TestJsTemplateAndMethods(t *testing.T) {
 	}
 }
 
+func TestJsStringConcatCoercion(t *testing.T) {
+	out := mustImport(t, "console.log(1 + 2 + \"x\");\nconsole.log(\"x\" + 1 + 2);\n", "js")
+	for _, want := range []string{
+		`print((str((1 + 2)) + "x"))`,
+		`print((("x" + str(1)) + str(2)))`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestJsLoudRejections(t *testing.T) {
 	cases := []struct {
 		src       string
