@@ -1,0 +1,125 @@
+{
+  "name": "NvS",
+  "scopeName": "source.nvs",
+  "fileTypes": [
+    "nvs",
+    "ns",
+    "nave"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#control"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#constants"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.nvs",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.documentation.nvs",
+          "begin": "///",
+          "end": "$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.nvs",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.nvs",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.nvs",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.nvs",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.nvs",
+      "match": "\\b\\d+(?:\\.\\d+)?\\b"
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.function.nvs",
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.function.nvs"
+            },
+            "2": {
+              "name": "entity.name.function.nvs"
+            }
+          }
+        },
+        {
+          "name": "meta.class.nvs",
+          "match": "\\b(class|enum|record|interface)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.type.nvs"
+            },
+            "2": {
+              "name": "entity.name.type.nvs"
+            }
+          }
+        }
+      ]
+    },
+    "control": {
+      "name": "keyword.control.nvs",
+      "match": "\\b(if|else|return|while|for|break|continue|in|new|this|extends|try|catch|throw|match|case|default|yield|defer|finally|switch)\\b"
+    },
+    "keywords": {
+      "name": "keyword.other.nvs",
+      "match": "\\b(let|const|true|false|import|print|null|and|or)\\b"
+    },
+    "builtins": {
+      "name": "support.function.builtin.nvs",
+      "match": "\\b(print|len|type|str|int|float|bool|push|pop|keys|values|os_name|os_kernel|os_sep|os_eol|os_shell|sh|system|qubit|qgate|qmeasure|qprob|q_shots|q_seed|q_circuit)\\b"
+    },
+    "constants": {
+      "name": "constant.language.nvs",
+      "match": "\\b(true|false|null)\\b"
+    }
+  },
+  "uuid": "7c9e6679-9869-4b6c-9e9c-1a2b3c4d5e6f"
+}
