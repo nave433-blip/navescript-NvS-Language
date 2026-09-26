@@ -3,6 +3,7 @@ package object
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -511,6 +512,20 @@ func (e *Environment) Set(name string, val Object) Object {
 	e.store[name] = val
 	e.mu.Unlock()
 	return val
+}
+
+// Names returns the sorted names bound in this environment frame only
+// (not outer scopes). Wave 17: used by the terminal debugger's `locals`.
+// The returned slice is a copy; the environment is not retained.
+func (e *Environment) Names() []string {
+	e.mu.RLock()
+	names := make([]string, 0, len(e.store))
+	for n := range e.store {
+		names = append(names, n)
+	}
+	e.mu.RUnlock()
+	sort.Strings(names)
+	return names
 }
 
 // DeclareType remembers the annotated type of a `let name: type = ...`
