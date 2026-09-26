@@ -24,6 +24,7 @@ const (
 	MINUS        TokenType = "-"
 	BANG         TokenType = "!"
 	ASTERISK     TokenType = "*"
+	POWER        TokenType = "**"
 	SLASH        TokenType = "/"
 	MOD          TokenType = "%"
 	LT           TokenType = "<"

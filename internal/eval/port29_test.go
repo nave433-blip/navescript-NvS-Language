@@ -143,3 +143,23 @@ func TestPort29SelfEval(t *testing.T) {
 		t.Fatalf("want self_eval parse error, got %s", out.Inspect())
 	}
 }
+
+func TestPort29PowerOperator(t *testing.T) {
+	cases := []struct{ src, want string }{
+		{`2 ** 3`, "8"},
+		{`2 ** 0`, "1"},
+		{`2 ** -1`, "0"},          // 2.9 semantics: negative int exponent -> 0
+		{`2 * 3 ** 2`, "18"},     // ** binds tighter than *
+		{`(2 ** 3) ** 2`, "64"},  // explicit grouping
+		{`2.0 ** 2.0`, "4"},
+	}
+	for _, c := range cases {
+		out := port29Run(t, c.src)
+		if out.Inspect() != c.want {
+			t.Errorf("%s = %s, want %s", c.src, out.Inspect(), c.want)
+		}
+	}
+	if f := port29Run(t, `2.0 ** 0.5`).(*object.Float).Value; math.Abs(f-1.4142135623730951) > 1e-12 {
+		t.Errorf(`2.0 ** 0.5 = %v, want ~1.4142135623730951`, f)
+	}
+}

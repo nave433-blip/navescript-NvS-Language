@@ -156,7 +156,12 @@ func (l *Lexer) NextToken() Token {
 			tok.Literal = string(l.ch)
 		}
 	case '*':
-		if l.peekChar() == '=' {
+		if l.peekChar() == '*' {
+			ch := l.ch
+			l.readChar()
+			tok.Type = POWER
+			tok.Literal = string(ch) + string(l.ch)
+		} else if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()
 			tok.Type = STAR_ASSIGN

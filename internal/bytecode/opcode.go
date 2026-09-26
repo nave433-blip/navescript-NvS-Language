@@ -26,6 +26,7 @@ const (
 	OpMul
 	OpDiv
 	OpMod
+	OpPow
 	OpEqual
 	OpNotEqual
 	OpGreater
@@ -50,7 +51,7 @@ const (
 
 var opNames = map[Opcode]string{
 	OpConstant: "Constant", OpAdd: "Add", OpSub: "Sub", OpMul: "Mul", OpDiv: "Div",
-	OpMod: "Mod", OpEqual: "Equal", OpNotEqual: "NotEqual", OpGreater: "Greater",
+	OpMod: "Mod", OpPow: "Pow", OpEqual: "Equal", OpNotEqual: "NotEqual", OpGreater: "Greater",
 	OpLess: "Less", OpGreaterEq: "GreaterEq", OpLessEq: "LessEq", OpMinus: "Minus",
 	OpBang: "Bang", OpTrue: "True", OpFalse: "False", OpNull: "Null", OpPop: "Pop",
 	OpJump: "Jump", OpJumpNotTruthy: "JumpNotTruthy", OpSetGlobal: "SetGlobal",

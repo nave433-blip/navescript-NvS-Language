@@ -225,6 +225,16 @@ function __div(a, b) {
   if (Number.isInteger(a) && Number.isInteger(b)) return Math.trunc(a / b);
   return a / b;
 }
+// NvS ** : integer power for ints (negative exponent -> 0), Math.pow otherwise.
+function __pow(a, b) {
+  if (Number.isInteger(a) && Number.isInteger(b)) {
+    if (b < 0) return 0;
+    let r = 1;
+    for (let i = 0; i < b; i++) r *= a;
+    return r;
+  }
+  return Math.pow(a, b);
+}
 // NvS % is the truncated remainder on integers only.
 function __mod(a, b) {
   if (!Number.isInteger(a) || !Number.isInteger(b)) throw new Error("unknown operator: non-integer %");
@@ -334,6 +344,18 @@ def __div(a, b):
         q = abs(a) // abs(b)
         return q if (a < 0) == (b < 0) else -q
     return a / b
+
+
+# NvS ** : integer power for ints (negative exponent -> 0), ** otherwise.
+def __pow(a, b):
+    if type(a) is int and type(b) is int:
+        if b < 0:
+            return 0
+        r = 1
+        for _ in range(b):
+            r *= a
+        return r
+    return a ** b
 
 
 # NvS % is the truncated remainder on integers only.
@@ -1236,6 +1258,8 @@ func (e *emitter) emitInfix(n *ast.InfixExpression) string {
 		return "(" + l + " - " + r + ")"
 	case "*":
 		return "(" + l + " * " + r + ")"
+	case "**":
+		return "__pow(" + l + ", " + r + ")"
 	case "/":
 		// NvS int/int truncates toward zero; the targets do float division.
 		return "__div(" + l + ", " + r + ")"

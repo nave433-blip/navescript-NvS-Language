@@ -371,3 +371,21 @@ func TestBytecodeDisassembleLoop(t *testing.T) {
 		}
 	}
 }
+
+func TestBytecodePower(t *testing.T) {
+	out, err := compileRun(t, "print 2 ** 10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "1024" {
+		t.Fatalf("got %q, want 1024", out)
+	}
+	// VM/tree-walker agreement on negative int exponent (NvS semantics: 0).
+	out, err = compileRun(t, "print 2 ** -1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "0" {
+		t.Fatalf("got %q, want 0", out)
+	}
+}

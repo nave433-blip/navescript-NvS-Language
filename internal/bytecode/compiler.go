@@ -103,6 +103,8 @@ func (c *Compiler) Compile(node ast.Node) error {
 			c.emit(OpDiv)
 		case "%":
 			c.emit(OpMod)
+		case "**":
+			c.emit(OpPow)
 		case "==":
 			c.emit(OpEqual)
 		case "!=":

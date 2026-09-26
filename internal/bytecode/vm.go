@@ -2,6 +2,7 @@ package bytecode
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -79,6 +80,9 @@ func (vm *VM) Run() (interface{}, error) {
 				return nil, err
 			}
 			vm.push(v)
+		case OpPow:
+			r, l := vm.pop(), vm.pop()
+			vm.push(numPow(l, r))
 		case OpEqual:
 			r, l := vm.pop(), vm.pop()
 			vm.push(eq(l, r))
@@ -115,7 +119,11 @@ func (vm *VM) Run() (interface{}, error) {
 			vm.push(v)
 		case OpMinus:
 			v := vm.pop()
-			vm.push(-toF(v))
+			if i, ok := v.(int64); ok {
+				vm.push(-i)
+			} else {
+				vm.push(-toF(v))
+			}
 		case OpBang:
 			v := vm.pop()
 			vm.push(!truthy(v))
@@ -276,6 +284,24 @@ func cmp(l, r interface{}, pred func(int) bool) (bool, error) {
 	default:
 		return pred(0), nil
 	}
+}
+
+func numPow(l, r interface{}) interface{} {
+	// Mirror the tree-walker: int**int is integer power (negative exponent -> 0),
+	// anything else goes through math.Pow.
+	if li, ok := l.(int64); ok {
+		if ri, ok := r.(int64); ok {
+			if ri < 0 {
+				return int64(0)
+			}
+			var p int64 = 1
+			for i := int64(0); i < ri; i++ {
+				p *= li
+			}
+			return p
+		}
+	}
+	return math.Pow(toF(l), toF(r))
 }
 
 func numBin(l, r interface{}, f func(a, b float64) float64) interface{} {

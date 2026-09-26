@@ -1091,7 +1091,7 @@ func (c *Checker) inferInfix(n *ast.InfixExpression) Type {
 			return simpleType("number")
 		}
 		return anyType()
-	case "-", "*", "%":
+	case "-", "*", "%", "**":
 		if l.Name == "int" && r.Name == "int" {
 			return simpleType("int")
 		}
