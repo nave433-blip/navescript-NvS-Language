@@ -86,6 +86,12 @@ func init() {
 }
 
 func Eval(node ast.Node, env *object.Environment) object.Object {
+	// Wave 17: debugger/profiler hook — one nil check when unused.
+	if ActiveDebugger != nil {
+		if line, ok := StmtLine(node); ok {
+			ActiveDebugger.BeforeStmt(line, env)
+		}
+	}
 	switch node := node.(type) {
 
 	// Statements
@@ -934,6 +940,15 @@ func evalExpressions(exps []ast.Expression, env *object.Environment) []object.Ob
 func applyFunction(fn object.Object, args []object.Object) object.Object {
 	switch fn := fn.(type) {
 	case *object.Function:
+		// Wave 17: debugger call-depth tracking.
+		if ActiveDebugger != nil {
+			name := fn.Name
+			if name == "" {
+				name = "<fn>"
+			}
+			ActiveDebugger.EnterCall(name)
+			defer ActiveDebugger.LeaveCall()
+		}
 		extendedEnv, errObj := extendFunctionEnv(fn, args)
 		if errObj != nil {
 			// Parameter annotation violation (or a bad default): the body
@@ -1856,6 +1871,13 @@ var loadedModules = map[string]bool{}
 
 func evalImportStatement(node *ast.ImportStatement, env *object.Environment) object.Object {
 	path := node.Path.Value
+	// Wave 17: bare package specs (installed via `nvs pkg`) resolve
+	// through the package resolver before file resolution.
+	if PackageResolver != nil && IsBarePackageSpec(path) {
+		if resolved, ok := PackageResolver(path); ok {
+			path = resolved
+		}
+	}
 	// Wave 14: resolve a relative import against the importing file's
 	// directory when that file exists there; otherwise keep the historic
 	// behavior of resolving against the working directory.
