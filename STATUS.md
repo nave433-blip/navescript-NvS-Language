@@ -309,3 +309,39 @@ nvs check examples/wave5_annotations.ns   # flags the intentional violations
 nvs doc --out docs/ examples/wave9_doc.ns
 nvs bc 'for (let i = 0; i < 3; i = i + 1) { print i }'
 ```
+
+## Wave 16 — NT/Unix kernel compatibility
+
+- [x] **Build matrix**: `go build ./...` clean on Linux; `GOOS=windows go build
+      ./...` and `GOOS=darwin go build ./...` clean. A commit breaking any
+      target is a bug.
+- [x] **Platform shell**: `sh()` and `system()` went through a build-tagged
+      `shellCommand` helper (`internal/eval/shell_unix.go`: `sh -c`;
+      `internal/eval/shell_windows.go`: `cmd /c`). Same NvS code runs on
+      both kernels. Tests: `TestShellCommandRuns`, `TestShellNameMatchesRuntime`.
+- [x] **Polyglot runners**: `python3` → `python` fallback (`polyglot.PythonBinary()`,
+      used by the `python` builtin, the polyglot runner, and the syntax
+      validator); rustc temp binary gets `.exe` on Windows.
+- [x] **OS introspection builtins**: `os_name()`, `os_kernel()` (`"nt"`/`"unix"`),
+      `os_sep()`, `os_eol()`, `os_shell()` — tested by `TestOsBuiltins`.
+- [x] **`stdlib/os.nvs`**: pure-NvS portability layer — `os_is_windows/unix`,
+      `os_exe_suffix`, `os_path_norm[_with]`, `os_is_abs[_with]`,
+      `os_path_join[_with]`; the `_with(sep, …)` forms take an explicit
+      separator so Windows path behavior is unit-tested on Linux
+      (`stdlib/tests/test_os.nvs`, all pass).
+- [x] **CRLF audit**: `lines()` normalizes `\r\n`; the lexer skips `\r`;
+      `@nvs` extract markers match after `TrimSpace`; `read_file`/`write_file`
+      preserve bytes exactly (Go does no text-mode translation).
+- [x] **Docs**: `docs/KERNELS.md` (support matrix, NT differences table, `os`
+      module reference, honest unverified list, porting notes incl. HybridOS
+      groundwork); `docs/STDLIB.md` catalog entry; `LANGUAGE.md` subprocess
+      row notes the platform shell.
+- [ ] **Honestly unverified**: no Windows/macOS hardware in this VM — NT code
+      paths are compile-verified + unit-tested where platform-independent,
+      but no NvS program has run on a real NT kernel yet.
+
+```bash
+GOOS=windows go build ./...   # must stay green
+GOOS=darwin go build ./...    # must stay green
+nvs -e 'print os_kernel() + " " + os_shell()'
+```

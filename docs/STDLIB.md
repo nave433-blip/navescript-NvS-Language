@@ -162,6 +162,21 @@ The builtins `regex_find` / `regex_match` / `regex_replace` take
 in the input, then splitting on it; a pattern that matches the sentinel
 itself is a degenerate case.
 
+### `stdlib/os.nvs` — kernel/OS portability (Wave 16)
+
+Pure-NvS adaptation layer over the Go builtins `os_name()`, `os_kernel()`,
+`os_sep()`, `os_eol()`, `os_shell()`. Lets NvS programs detect their kernel
+(`"nt"` vs `"unix"`) and adapt instead of hardcoding Unix assumptions.
+
+| Function | One-liner |
+|---|---|
+| `os_is_windows()` / `os_is_unix()` | kernel predicates |
+| `os_exe_suffix()` | `".exe"` on NT, `""` on Unix |
+| `os_path_norm(p)` | `os_path_norm("/a//b/../c")` → `"/a/c"` |
+| `os_path_norm_with(sep, p)` | `os_path_norm_with("\\", "C:/a\\b")` → `"C:\\a\\b"` (drive letters understood; explicit separator is injectable, so Windows behavior is testable on Linux) |
+| `os_is_abs(p)` / `os_is_abs_with(sep, p)` | `/x`, `C:\x`, `\\server\x` recognized |
+| `os_path_join(parts)` / `os_path_join_with(sep, parts)` | join an array of parts with native or explicit separator |
+
 ## Testing
 
 Each module has `stdlib/tests/test_<module>.nvs`, runnable from the repo root:
