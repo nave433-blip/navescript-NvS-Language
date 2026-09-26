@@ -42,6 +42,10 @@ func main() {
 	case "get":
 		// Alias for `nvs pkg install`.
 		runPkgCmd(append([]string{"install"}, os.Args[2:]...))
+	case "lsp":
+		runLspCmd()
+	case "debug":
+		runDebugCmd(os.Args[2:])
 	case "run":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: nvs run <file (.ns or .nvs)> [--watch] [--profile]")
@@ -159,6 +163,8 @@ Usage:
   nvs test [dir...]       Run test_*.nvs / *_test.nvs files (exit 0 = pass)
   nvs pkg <subcommand>    Package manager: init/install/list/remove/publish
                           (alias: nvs get <spec> = nvs pkg install <spec>)
+  nvs lsp                 Language Server Protocol server (stdio) for editors
+  nvs debug <file>        Interactive terminal debugger
   nvs eval '<code>'       Evaluate a snippet (also: nvs -e '<code>')
   nvs init                Scaffold a new NvS project
   nvs info                Language identity & capabilities

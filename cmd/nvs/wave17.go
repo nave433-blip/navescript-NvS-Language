@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/navescript/nvs/internal/eval"
+	"github.com/navescript/nvs/internal/lsp"
+	"github.com/navescript/nvs/internal/debug"
 	"github.com/navescript/nvs/internal/pkg"
 	"github.com/navescript/nvs/internal/tools"
 )
@@ -141,7 +143,23 @@ Uses assert(cond, msg) or any runtime error to fail.`)
 	}
 }
 
-// runWatch re-runs a program whenever it (or nearby .nvs/.ns files)
+// runLspCmd starts the Language Server Protocol server on stdio.
+func runLspCmd() {
+	lsp.Serve(os.Stdin, os.Stdout)
+}
+
+// runDebugCmd starts an interactive debugging session for a program.
+func runDebugCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nvs debug <file (.ns or .nvs)>")
+		os.Exit(1)
+	}
+	sess := debug.New(os.Stdin, os.Stdout)
+	if err := sess.RunFile(args[0]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
 // changes. Polling-based: no new dependencies, works everywhere.
 func runWatch(path string) {
 	dir := filepath.Dir(path)
