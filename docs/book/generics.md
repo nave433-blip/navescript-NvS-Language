@@ -66,7 +66,13 @@ Type arguments are **inferred** from value arguments whenever possible:
 ```ns
 let n: int = identity(42);      // T = int
 let b = new Box(42);            // T = int, from init(v: T)
+let v = new Vector([1, 2, 3]);  // T = int, from the literal's elements
 ```
+
+Array literals carry their element type for inference (`[1, 2]` is
+`array<int>` to the checker); mixed or empty literals stay erased. At
+runtime every array is just an array — the element type never affects
+execution.
 
 When a parameter can't be inferred (it appears only in the return type),
 say it explicitly — turbofish for methods, bare for functions:
@@ -81,6 +87,33 @@ let g = new Box(1).get::<string>();
 
 Bare `v.map<string>(f)` on a method call is a parse error suggesting
 turbofish — it keeps `<` unambiguous with less-than.
+
+## Function types flow both ways (Go 1.27)
+
+A **generic function** assigned to a declared function type gets its type
+arguments inferred from the target — in `let` bindings, arguments, and
+returns:
+
+```ns
+fn id<T>(x: T) -> T { return x; }
+let g: fn(int) -> int = id;      // T = int, checked
+fn apply(cb: fn(int) -> int) -> int { return cb(1); }
+apply(id);                        // also fine
+let bad: fn(int) -> string = id;  // error: inferred T = int,
+                                  // but return: got int, want string
+```
+
+A **function literal** is body-checked against the target type —
+unannotated parameters take the target's types, and the return is verified:
+
+```ns
+let f: fn(int) -> string = fn(x) { return 42; };
+// error: return type mismatch: got int, want string
+```
+
+(Go 1.27's third change — struct-literal keys as field selectors — has no
+NvS analogue: NvS has no keyed struct literals and no embedding. Records
+construct with named arguments, hashes take arbitrary key expressions.)
 
 ## The interface boundary
 

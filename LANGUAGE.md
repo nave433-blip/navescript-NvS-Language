@@ -787,6 +787,13 @@ namespaces), class fields (`let x: T = v;`), `T[]`/`[T]` annotations,
 `fn(A) -> R` type annotations, `x++`/`x--`, braceless `if`/`while`/`for`
 bodies, and `->` return annotations.
 
+Follow-ups: **19b** stole Go 1.27's other two language changes — generalized
+function type inference in assignment contexts and contextual typing for
+function literals (struct-literal field selectors have no NvS analogue).
+**19c** put generics in the stdlib: `std/collections/{vector,set,map}.ns`
+are pure-NvS on real type parameters, with `Vector<T>` gaining generic
+`map<U>`/`filter` methods.
+
 ## Example
 ```ns
 enum Status { Ok, Err }

@@ -241,3 +241,19 @@ Deviations from the sketch:*
   `::`, class fields, `++`/`--`, braceless bodies, `->` returns —
   `std/*.ns` files now parse (module loading and `ffi` remain future work;
   see PLACEHOLDERS.md).*
+
+*Wave 19b (2026-10-09, commit `582118b`): Go 1.27's other two language
+changes. (1) Generalized function type inference — a generic function
+assigned to a declared fn type (`let`, argument, return) gets type args
+inferred from the target, bounds enforced, sharp mismatch reasons.
+(2) Contextual typing for fn literals — bodies checked against the target
+fn type. (3) Struct-literal field selectors: NOT applicable to NvS (no
+keyed struct literals, no embedding) — documented, not built.*
+
+*Wave 19c (2026-10-09, commit `a27d00f`): stdlib generics.
+`std/collections/{vector,set,map}.ns` rewritten as pure-NvS on real type
+parameters (the `ffi` native layer never existed). `Vector<T>` has generic
+`map<U>`/`filter`; `Set<T>` is array-backed O(n); `Map<K,V>` is hash-backed
+(int/string/bool keys). Checker: array element types preserved for
+inference (`[T]` keeps T; literals infer); erased at runtime;
+assignability stays shape-based.*

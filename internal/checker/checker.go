@@ -1473,6 +1473,19 @@ func (c *Checker) checkCall(n *ast.CallExpression) {
 
 // ---- Wave 19: generic call resolution (checker rules 5, 6) ----
 
+// calleeName renders a call target for error messages.
+func calleeName(e ast.Expression) string {
+	switch t := e.(type) {
+	case *ast.Identifier:
+		return t.Value
+	case *ast.MemberExpression:
+		if id, ok := t.Object.(*ast.Identifier); ok {
+			return id.Value + "." + t.Property.Value
+		}
+	}
+	return "function"
+}
+
 // resolveCall returns the instantiated signature for a call: explicit type
 // arguments are validated, otherwise type parameters are inferred from the
 // value arguments. Errors are reported exactly once per call node (results
@@ -1489,7 +1502,8 @@ func (c *Checker) resolveCall(n *ast.CallExpression) *FuncSig {
 		return nil // unknown callee: gradual, no checks.
 	}
 	if len(n.TypeArgs) > 0 && len(base.TypeParams) == 0 {
-		c.errorf(lineOf(n), "not a generic function: got %d type arguments", len(n.TypeArgs))
+		c.errorf(lineOf(n), "function '%s' is not generic: got %d type argument(s)",
+			calleeName(n.Function), len(n.TypeArgs))
 		c.resolveFailed[n] = true
 		return nil
 	}

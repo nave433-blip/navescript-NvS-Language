@@ -359,7 +359,7 @@ func TestWave19ExplicitOnNonGeneric(t *testing.T) {
 	expectErrors(t, `
 fn f(x) { return x; }
 f<int>(1);
-`, "not a generic function")
+`, "function 'f' is not generic")
 }
 
 // Chained generic methods (the Go 1.27 killer use).
