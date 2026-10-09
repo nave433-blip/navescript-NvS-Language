@@ -158,11 +158,12 @@ supersedes it.
 
 ## Wave 5 — types robbery (2.2.0-dev)
 
-**There is no static type checker in NvS, and wave 5 does not add one.**
 Every feature below is a *runtime* contract: annotations are parsed, stored on
 the function/binding, and enforced while the program runs — at call time, at
 binding time, or on return. A violation is a runtime error, catchable with
-`try`/`catch`. Unannotated code behaves exactly as before.
+`try`/`catch`. Unannotated code behaves exactly as before. (Wave 9 later added
+`nvs check`, an advisory static checker that verifies these contracts without
+running the program; wave 19 extended it to generics.)
 
 | Feature | Syntax | Inspired by |
 |---------|--------|-------------|
@@ -449,12 +450,17 @@ negative tests wrapped in `try`/`catch`.
 | Union types | `let x: int \| string = true` |
 | Class/interface satisfaction | assigning a `Cat` to a `Speaker`-annotated binding; structural checks mirror the runtime (arity first, then signature compatibility, `any`-tolerant) |
 | Class hierarchy | `let d: Dog = new Animal()` rejected; `let a: Animal = new Dog()` fine |
+| Generic type parameters | `fn f<T, T>(x: T)` → duplicate type parameter; `Box<int>` vs `Box<string>` invariance |
+| Generic call inference | `identity(42)` infers `T = int`; uninferrable `T` must be explicit (`f::<int>()`) |
+| Generic bounds | `add<T: Numeric>(...)` — inferred/explicit types must satisfy the bound |
+| Interface boundary | interface methods cannot declare type params; generic methods don't satisfy interfaces |
 | A few builtins | `len` arity and `int` return |
 
 Builtin annotation names are case-insensitive, exactly like the runtime.
 Spread calls (`f(...a, 10)`) and named arguments skip arity checks — the
-count is unknowable statically. What is NOT claimed: dataflow/narrowing,
-generics, cross-file analysis, macros.
+count is unknowable statically. Type-parameter shadowing (`fn map<T>` inside
+`class Box<T>`) is a warning, never an error. What is NOT claimed:
+dataflow/narrowing, cross-file analysis, macros.
 
 ### `nvs doc` — doc-comment extractor
 
@@ -738,6 +744,48 @@ nvs nave examples/nave/hello.nave
   collecting the yields. Yields are now collected through a per-call sink
   on the scope chain (nearest-sink rule keeps nested function calls
   collecting into their own generator).
+
+## Wave 19 — generics robbery (2.2.0-dev)
+
+Robbed from Go 1.27's generic methods (Aug 2026): type parameters on
+classes, methods, and functions. See `docs/wave19-generics.md` for the
+design sketch and `docs/book/generics.md` for the full chapter.
+
+```ns
+class Box<T> {
+    fn init(v: T) { this.v = v; }
+    fn get() -> T { return this.v; }
+    fn map<U>(f: fn(T) -> U) -> Box<U> { return new Box(f(this.v)); }
+}
+fn identity<T>(x: T) -> T { return x; }
+
+let b = new Box<int>(42);   // explicit
+let c = new Box(42);        // inferred from init
+let n: int = identity(42);  // T = int, checked
+```
+
+**Semantics: full type erasure.** Generics are check-time only — the
+interpreter never sees type parameters (`new Box<int>(42)` runs exactly
+like `new Box(42)`). `nvs check` enforces 10 rules: scoping, shadowing
+warnings, no duplicates, bound names, bound checking (explicit and
+inferred), call-site inference, the interface boundary, `any`-escapes, and
+invariance (`Box<int>` is not `Box<string>`).
+
+**The honest boundary** (copied from Go): interface methods cannot declare
+type parameters, and a generic method cannot satisfy an interface method —
+a generic method is an infinite family, not one dispatch-table entry.
+
+Bounds use `T: Bound` syntax: `fn add<T: Numeric>(a: T, b: T) -> T`.
+Constraint builtins: `Numeric` (int/float/number), `Comparable` and
+`Printable` (every NvS value honestly satisfies both). Uninferrable type
+parameters must be explicit: `make::<int>()` (turbofish) or
+`make<int>()`.
+
+The same wave closed the std-dialect parser gaps so `std/*.ns` files
+parse: `pub`, `module std.x;`, `import std.x;`, `ffi::call(...)` (`::`
+namespaces), class fields (`let x: T = v;`), `T[]`/`[T]` annotations,
+`fn(A) -> R` type annotations, `x++`/`x--`, braceless `if`/`while`/`for`
+bodies, and `->` return annotations.
 
 ## Example
 ```ns

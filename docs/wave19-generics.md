@@ -225,4 +225,19 @@ Lexer needs no new tokens: `LT`, `GT`, `COLON` (for `::`) all exist.
    into 19a (classes) / 19b (methods)? Proposed: one wave, phased per §6.
 
 ---
-*Sketch written 2026-10-09. Awaiting Evan's call on §7 before implementation.*
+*Sketch written 2026-10-09. §7 greenlit by Evan same day — built with the
+proposed defaults (`T: Numeric`, Go's interface boundary copied exactly,
+single phased wave). Implemented in commit `7ab7e27` (phases 1–4 + tests).
+Deviations from the sketch:*
+- *`[T]` array sugar also accepted (the sketch used `[T]` in §2b examples
+  but only specified `T[]`).*
+- *`Numeric`/`Comparable`/`Printable` added as real builtin constraint
+  names (`Numeric` → the `number` tower; the other two honestly accept
+  every value since NvS `==` never errors and everything stringifies).*
+- *`new C(args)` infers class type args from `init` (the sketch left this
+  dynamic); uninferred params become `any`, never an error.*
+- *`pub` accepted on interface methods' `fn` prefix for consistent errors.*
+- *Parser gaps closed beyond generics: `pub`, `module`, `import std.x`,
+  `::`, class fields, `++`/`--`, braceless bodies, `->` returns —
+  `std/*.ns` files now parse (module loading and `ffi` remain future work;
+  see PLACEHOLDERS.md).*
