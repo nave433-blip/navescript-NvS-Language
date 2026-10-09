@@ -1,36 +1,55 @@
-// Native Navescript Map Collection
+// NvS standard collection: Map<K, V> — a generic key/value map.
+//
+// Pure-NvS implementation backed by the native hash type. Keys must be
+// hashable (int, string, or bool) — anything else fails honestly at
+// runtime with the hash-key error. (The `ffi::call("nasi.map.*")` native
+// layer does not exist yet — see PLACEHOLDERS.md.)
+//
+// Usage:
+//   import "std/collections/map.ns";
+//   let m = new Map<string, int>();
+//   m.set("a", 1);
 module std.collections.map;
 
-import std.core;
-
 pub class Map<K, V> {
-    let internal_handle: any;
+    let store: hash;
     pub let size: number = 0;
 
     pub fn init() {
-        this.internal_handle = ffi::call("nasi.map.new", []);
+        this.store = {};
     }
 
     pub fn set(key: K, value: V) {
-        ffi::call("nasi.map.set", [this.internal_handle, key, value]);
-        this.size = ffi::call("nasi.map.len", [this.internal_handle]);
+        let isNew = !has(this.store, key);
+        this.store[key] = value;
+        if (isNew) {
+            this.size = this.size + 1;
+        }
     }
 
     pub fn get(key: K) -> V {
-        return ffi::call("nasi.map.get", [this.internal_handle, key]);
+        return this.store[key];
     }
 
     pub fn has(key: K) -> bool {
-        return ffi::call("nasi.map.contains", [this.internal_handle, key]);
+        return has(this.store, key);
     }
 
     pub fn delete(key: K) -> bool {
-        let res = ffi::call("nasi.map.remove", [this.internal_handle, key]);
-        this.size = ffi::call("nasi.map.len", [this.internal_handle]);
-        return res;
+        if (!has(this.store, key)) {
+            return false;
+        }
+        delete(this.store, key);
+        this.size = this.size - 1;
+        return true;
     }
 
     pub fn keys() -> K[] {
-        return ffi::call("nasi.map.keys", [this.internal_handle]);
+        return keys(this.store);
+    }
+
+    pub fn clear() {
+        this.store = {};
+        this.size = 0;
     }
 }

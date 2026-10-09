@@ -6,6 +6,33 @@ import (
 
 // ---- Wave 19: generics erasure + std-dialect runtime features ----
 
+func TestWave19StdCollections(t *testing.T) {
+	// The stdlib collections use real type parameters and run on pure NvS.
+	// (One script per collection: imports are cached per process.)
+	expectInspect(t, `
+import "../../std/collections/vector.ns";
+let v = new Vector([1, 2, 3]);
+v.push(4);
+let names: Vector<string> = v.map(fn(x: int) -> string { return "n" + str(x); });
+let evens = v.filter(fn(x: int) -> bool { return x % 2 == 0; });
+[v.length, v.get(0), v.pop(), names.get(2), evens.get(0)];
+`, "[4, 1, 4, n3, 2]")
+	expectInspect(t, `
+import "../../std/collections/set.ns";
+let s = new Set<string>();
+s.add("a");
+s.add("a");
+[s.size, s.has("a"), s.delete("a"), s.size];
+`, "[1, true, true, 0]")
+	expectInspect(t, `
+import "../../std/collections/map.ns";
+let m = new Map<string, int>();
+m.set("x", 10);
+m.set("y", 20);
+[m.get("x"), m.size, m.has("z")];
+`, "[10, 2, false]")
+}
+
 func TestWave19GenericClassRuns(t *testing.T) {
 	// Erasure: `new Box<int>(42)` runs exactly like `new Box(42)`.
 	expectInspect(t, `

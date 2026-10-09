@@ -64,6 +64,7 @@ type Type struct {
 	ClassName string // for Name=="instance": the class of `new C()`
 	TypeParam string // wave 19: non-empty = reference to type parameter `T`
 	TypeArgs  []Type // wave 19: `Vec<int>` → [int]
+	Elem      *Type  // wave 19b: array element type (`[T]`, `[1,2]`); nil = erased
 }
 
 // FuncArity is the static shape of a callable: total parameters and how
@@ -173,6 +174,17 @@ func annotationType(ann *ast.TypeAnnotation, c *Checker) (Type, string) {
 	if ann == nil {
 		return anyType(), ""
 	}
+	// Wave 19b: preserve the array element type for inference (`[T]` keeps
+	// T; the runtime still erases it). assignableTo stays shape-based.
+	if ann.IsArray {
+		elemAnn := *ann
+		elemAnn.IsArray = false
+		et, unk := annotationType(&elemAnn, c)
+		if unk != "" {
+			return simpleType("array"), unk
+		}
+		return Type{Name: "array", Elem: &et}, ""
+	}
 	if len(ann.Union) > 0 {
 		var members []Type
 		for _, m := range ann.Union {
@@ -198,9 +210,6 @@ func annotationType(ann *ast.TypeAnnotation, c *Checker) (Type, string) {
 		if len(ann.TypeArgs) > 0 {
 			return anyType(), fmt.Sprintf("type parameter '%s' cannot take type arguments", name)
 		}
-		if ann.IsArray {
-			return simpleType("array"), ""
-		}
 		return Type{TypeParam: name}, ""
 	}
 	canon := canonicalName(name)
@@ -209,10 +218,6 @@ func annotationType(ann *ast.TypeAnnotation, c *Checker) (Type, string) {
 		// nonsense; say `[int]`/`string[]` for arrays of int).
 		if len(ann.TypeArgs) > 0 {
 			return anyType(), fmt.Sprintf("only classes can take type arguments, not '%s'", name)
-		}
-		// `string[]` etc: the element type is erased, the shape is array.
-		if ann.IsArray {
-			return simpleType("array"), ""
 		}
 		return simpleType(canon), ""
 	}
@@ -232,13 +237,7 @@ func annotationType(ann *ast.TypeAnnotation, c *Checker) (Type, string) {
 				}
 				targs = append(targs, t)
 			}
-			if ann.IsArray {
-				return simpleType("array"), ""
-			}
 			return Type{Name: "instance", ClassName: name, TypeArgs: targs}, ""
-		}
-		if ann.IsArray {
-			return simpleType("array"), ""
 		}
 		return simpleType(name), ""
 	}
@@ -1601,6 +1600,20 @@ func (c *Checker) inferTypeArgs(n *ast.CallExpression, sig *FuncSig, subst map[s
 // unifyTypeParam matches a (possibly generic) parameter type against an
 // argument type, recording inferred type arguments. First inference wins;
 // inconsistencies surface later as ordinary argument-type errors.
+// typeEquals is a shallow structural equality for inference bookkeeping.
+func typeEquals(a, b Type) bool {
+	if a.Name != b.Name || a.TypeParam != b.TypeParam || a.ClassName != b.ClassName {
+		return false
+	}
+	if (a.Elem == nil) != (b.Elem == nil) {
+		return false
+	}
+	if a.Elem != nil && b.Elem != nil && !typeEquals(*a.Elem, *b.Elem) {
+		return false
+	}
+	return true
+}
+
 func (c *Checker) unifyTypeParam(pt, at Type, indexOf map[string]int, targs []Type, inferred []bool) {
 	if pt.TypeParam != "" {
 		if i, ok := indexOf[pt.TypeParam]; ok && !inferred[i] {
@@ -1626,6 +1639,12 @@ func (c *Checker) unifyTypeParam(pt, at Type, indexOf map[string]int, targs []Ty
 		if pt.Sig.Return != nil && at.Sig.Return != nil {
 			c.unifyTypeParam(*pt.Sig.Return, *at.Sig.Return, indexOf, targs, inferred)
 		}
+		return
+	}
+	// Through arrays: [T] against [int] unifies the element types.
+	// (Element types are inference-only; assignableTo stays shape-based.)
+	if pt.Name == "array" && at.Name == "array" && pt.Elem != nil && at.Elem != nil {
+		c.unifyTypeParam(*pt.Elem, *at.Elem, indexOf, targs, inferred)
 		return
 	}
 	// Through parameterized instances: Vec<T> against Vec<int>.
@@ -1822,7 +1841,23 @@ func (c *Checker) infer(e ast.Expression) Type {
 	case *ast.InterpolatedString:
 		return simpleType("string")
 	case *ast.ArrayLiteral:
-		return simpleType("array")
+		// Wave 19b: infer a common element type for inference (nil = mixed
+		// or empty → erased). assignableTo stays shape-based.
+		t := simpleType("array")
+		if len(n.Elements) > 0 {
+			et := c.infer(n.Elements[0])
+			uniform := !isAny(et)
+			for _, el := range n.Elements[1:] {
+				if !typeEquals(c.infer(el), et) {
+					uniform = false
+					break
+				}
+			}
+			if uniform {
+				t.Elem = &et
+			}
+		}
+		return t
 	case *ast.TupleLiteral:
 		return simpleType("tuple")
 	case *ast.HashLiteral:

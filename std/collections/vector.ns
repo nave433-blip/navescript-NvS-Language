@@ -1,37 +1,69 @@
-// Native Navescript Vector Collection
+// NvS standard collection: Vector<T> — a generic growable array.
+//
+// Pure-NvS implementation backed by the native array type. (The
+// `ffi::call("nasi.vector.*")` native layer does not exist yet — see
+// PLACEHOLDERS.md. When it does, these methods can gain native
+// accelerators behind this same API.)
+//
+// Usage:
+//   import "std/collections/vector.ns";
+//   let v = new Vector([1, 2, 3]);
+//   let names: Vector<string> = v.map(fn(x: int) -> string { return str(x); });
 module std.collections.vector;
 
-import std.core;
-
 pub class Vector<T> {
-    let internal_handle: any;
+    let items: T[];
     pub let length: number = 0;
 
-    pub fn init() {
-        this.internal_handle = ffi::call("nasi.vector.new", []);
+    pub fn init(items: [T] = []) {
+        this.items = items;
+        this.length = len(items);
     }
 
     pub fn push(element: T) {
-        ffi::call("nasi.vector.push", [this.internal_handle, element]);
-        this.length = ffi::call("nasi.vector.len", [this.internal_handle]);
+        this.items = push(this.items, element);
+        this.length = len(this.items);
     }
 
     pub fn pop() -> T {
-        let el = ffi::call("nasi.vector.pop", [this.internal_handle]);
-        this.length = ffi::call("nasi.vector.len", [this.internal_handle]);
+        if (this.length == 0) {
+            throw "pop from empty Vector";
+        }
+        let el = this.items[this.length - 1];
+        this.items = slice(this.items, 0, this.length - 1);
+        this.length = len(this.items);
         return el;
     }
 
     pub fn get(index: number) -> T {
-        return ffi::call("nasi.vector.get", [this.internal_handle, index]);
+        return this.items[index];
     }
 
     pub fn set(index: number, element: T) {
-        ffi::call("nasi.vector.set", [this.internal_handle, index, element]);
+        this.items[index] = element;
     }
 
     pub fn clear() {
-        ffi::call("nasi.vector.clear", [this.internal_handle]);
+        this.items = [];
         this.length = 0;
+    }
+
+    // Generic method (Go 1.27 style): the receiver's T is fixed, U is fresh.
+    pub fn map<U>(f: fn(T) -> U) -> Vector<U> {
+        let out = [];
+        for (x in this.items) {
+            out = push(out, f(x));
+        }
+        return new Vector(out);
+    }
+
+    pub fn filter(f: fn(T) -> bool) -> Vector<T> {
+        let out = [];
+        for (x in this.items) {
+            if (f(x)) {
+                out = push(out, x);
+            }
+        }
+        return new Vector(out);
     }
 }

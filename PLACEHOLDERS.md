@@ -8,15 +8,18 @@ compiling and tests stay green.
 ## Active placeholders
 
 ### 1. `ffi` native-binding layer (needs Evan's design call)
-- **What:** `std/*.ns` files call `ffi::call("nasi.vector.new", [...])`.
+- **What:** `std/*.ns` files used to call `ffi::call("nasi.vector.new", ...)`.
   Wave 19 made `a::b` parse (as member access), so those files read — but
   `ffi` is not defined in the runtime. Calling one fails honestly with
   `identifier not found: ffi`.
-- **Until he decides:** the parser, checker, and interpreter are complete
-  around it; std files parse but can't execute their native calls.
+- **Status 2026-10-09 (Wave 19b):** `std/collections/{vector,set,map}.ns`
+  were rewritten as pure-NvS implementations (array/hash-backed) with real
+  type parameters — they work today with no `ffi` dependency. The remaining
+  `ffi` placeholder is only for a future *native accelerator* behind the
+  same API, plus the other `std/*` files that still call `ffi::call`.
 - **Options for Evan:** (a) spec a real `ffi` bridge to the nasi-core native
-  layer; (b) bless pure-NvS fallbacks (arrays/hashes) as the default stdlib
-  with `ffi` as an optional accelerator; (c) defer.
+  layer; (b) continue the pure-NvS stdlib and treat `ffi` as an optional
+  accelerator; (c) defer.
 
 ### 2. Module resolution — `import std.core` / `module std.x;` (future wave)
 - **What:** Wave 19 parses `module` declarations and bare-path imports, but

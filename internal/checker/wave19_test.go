@@ -11,6 +11,56 @@ import (
 
 // ---- Wave 19b: Go 1.27 companion steals ----
 
+// Array element types are preserved for inference (erased at runtime,
+// shape-based in assignability).
+func TestWave19bArrayElementInference(t *testing.T) {
+	// `new Vector([1,2,3])` infers T = int from the literal's elements.
+	expectCleanW(t, `
+class Vector<T> {
+    fn init(items: [T] = []) { this.items = items; }
+    fn get(i: int) -> T { return this.items[i]; }
+    fn push(x: T) { this.items = push(this.items, x); }
+}
+let v = new Vector([1, 2, 3]);
+let n: int = v.get(0);
+`)
+	expectErrors(t, `
+class Vector<T> {
+    fn init(items: [T] = []) { this.items = items; }
+    fn get(i: int) -> T { return this.items[i]; }
+    fn push(x: T) { this.items = push(this.items, x); }
+}
+let v = new Vector([1, 2, 3]);
+let s: string = v.get(0);
+`, "cannot assign int to variable 's' of type string")
+	expectErrors(t, `
+class Vector<T> {
+    fn init(items: [T] = []) { this.items = items; }
+    fn push(x: T) { this.items = push(this.items, x); }
+}
+let v = new Vector([1, 2, 3]);
+v.push("nope");
+`, "argument 1: got string, want int")
+	// Mixed/empty literals stay erased (gradual).
+	expectCleanW(t, `
+class Vector<T> {
+    fn init(items: [T] = []) { this.items = items; }
+    fn push(x: T) { this.items = push(this.items, x); }
+}
+let v = new Vector([]);
+v.push("anything");
+let w = new Vector([1, "mixed"]);
+w.push(3.5);
+`)
+	// Invariance still holds through inference.
+	expectErrors(t, `
+class Vector<T> {
+    fn init(items: [T] = []) { this.items = items; }
+}
+let v: Vector<string> = new Vector([1, 2, 3]);
+`, "cannot assign Vector<int> to variable 'v' of type Vector<string>")
+}
+
 // Generalized function type inference: a generic function assigned to a
 // declared fn type gets its type arguments from the target.
 func TestWave19bGenericFnTargetInference(t *testing.T) {

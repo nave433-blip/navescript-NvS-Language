@@ -1,33 +1,64 @@
-// Native Navescript Set Collection
+// NvS standard collection: Set<T> — a generic set of unique values.
+//
+// Pure-NvS implementation backed by an array with linear scan. O(n)
+// membership — honest and correct for every T; a native hash-set can
+// accelerate it later behind this same API (see PLACEHOLDERS.md).
+//
+// Usage:
+//   import "std/collections/set.ns";
+//   let s = new Set<string>();
+//   s.add("a");
 module std.collections.set;
 
-import std.core;
+import "vector.ns";
 
 pub class Set<T> {
-    let internalSet: any;
+    let items: T[];
     pub let size: number = 0;
 
     pub fn init() {
-        this.internalSet = ffi::call("nasi.set.create", []);
+        this.items = [];
     }
 
-    pub fn add(value: T) {
-        let isNew = ffi::call("nasi.set.add", [this.internalSet, value]);
-        if (isNew) this.size++;
+    pub fn add(value: T) -> bool {
+        if (this.has(value)) {
+            return false;
+        }
+        this.items = push(this.items, value);
+        this.size = len(this.items);
+        return true;
     }
 
     pub fn has(value: T) -> bool {
-        return ffi::call("nasi.set.has", [this.internalSet, value]);
+        for (x in this.items) {
+            if (x == value) {
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn delete(value: T) -> bool {
-        let deleted = ffi::call("nasi.set.delete", [this.internalSet, value]);
-        if (deleted) this.size--;
-        return deleted;
+        let out = [];
+        let found = false;
+        for (x in this.items) {
+            if (x == value) {
+                found = true;
+            } else {
+                out = push(out, x);
+            }
+        }
+        this.items = out;
+        this.size = len(this.items);
+        return found;
     }
 
     pub fn clear() {
-        ffi::call("nasi.set.clear", [this.internalSet]);
+        this.items = [];
         this.size = 0;
+    }
+
+    pub fn toVector() -> Vector<T> {
+        return new Vector(this.items);
     }
 }
