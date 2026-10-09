@@ -7,6 +7,79 @@ import (
 
 // ---- Wave 19: generics — the 10 checker rules ----
 
+// (rules 1-10 tests follow)
+
+// ---- Wave 19b: Go 1.27 companion steals ----
+
+// Generalized function type inference: a generic function assigned to a
+// declared fn type gets its type arguments from the target.
+func TestWave19bGenericFnTargetInference(t *testing.T) {
+	// Clean: T = int inferred from the target.
+	expectCleanW(t, `
+fn id<T>(x: T) -> T { return x; }
+let g: fn(int) -> int = id;
+`)
+	// Error: T = int, but the target wants string back.
+	expectErrors(t, `
+fn id<T>(x: T) -> T { return x; }
+let f: fn(int) -> string = id;
+`, "inferred T = int, but return: got int, want string")
+	// Arity mismatch still errors.
+	expectErrors(t, `
+fn id<T>(x: T) -> T { return x; }
+let h: fn(int, int) -> int = id;
+`, "arity mismatch")
+	// Bounds are enforced on target-inferred arguments.
+	expectErrors(t, `
+fn add<T: Numeric>(a: T, b: T) -> T { return a + b; }
+let f: fn(string, string) -> string = add;
+`, "does not satisfy bound")
+	// Uninferrable params become any (gradual).
+	expectCleanW(t, `
+fn make<T>() -> T { return null; }
+let f: fn() -> int = make;
+`)
+}
+
+// Generic functions as call arguments: inference from the parameter type.
+func TestWave19bGenericFnAsArgument(t *testing.T) {
+	expectCleanW(t, `
+fn id<T>(x: T) -> T { return x; }
+fn apply(cb: fn(int) -> int) -> int { return cb(1); }
+let n: int = apply(id);
+`)
+	expectErrors(t, `
+fn id<T>(x: T) -> T { return x; }
+fn apply(cb: fn(int) -> string) -> string { return cb(1); }
+apply(id);
+`, "return: got int, want string")
+}
+
+// Contextual typing: fn literals are body-checked against the target type.
+func TestWave19bFnLiteralContextual(t *testing.T) {
+	// Return mismatch caught.
+	expectErrors(t, `
+let f: fn(int) -> string = fn(x) { return 42; };
+`, "return type mismatch: got int, want string")
+	// Clean when the body agrees; the unannotated param takes the target type.
+	expectCleanW(t, `
+let f: fn(int) -> string = fn(x) { return str(x); };
+`)
+	// Argument position.
+	expectErrors(t, `
+fn apply(cb: fn(int) -> string) -> string { return cb(1); }
+apply(fn(x) { return 42; });
+`, "return type mismatch: got int, want string")
+	// Explicit annotations on the literal win over the target.
+	expectErrors(t, `
+let f: fn(int) -> string = fn(x: string) -> string { return x; };
+`, "parameter 1: got string, want int")
+	// Non-fn targets are unaffected.
+	expectCleanW(t, `
+let g = fn(x) { return x; };
+`)
+}
+
 // checkW is like check but also returns warnings.
 func checkW(t *testing.T, src string) (errs []string, warns []string) {
 	t.Helper()

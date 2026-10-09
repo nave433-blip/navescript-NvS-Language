@@ -475,6 +475,12 @@ func (c *Checker) assignableTo(src, dst Type) bool {
 	// Wave 19: function types — arity must match; parameters are checked
 	// bivariantly (gradual), returns covariantly.
 	if src.Name == "function" && dst.Name == "function" {
+		// Wave 19b (Go 1.27 steal): generalized function type inference —
+		// a generic function flowing into a declared function type gets its
+		// type arguments inferred from the target.
+		if src.Sig != nil && dst.Sig != nil && len(src.Sig.TypeParams) > 0 {
+			return c.genericFnFitsTarget(src.Sig, dst.Sig)
+		}
 		return c.funcTypesCompatible(src, dst)
 	}
 	// Union destination: every source member must match some dest member.
@@ -583,6 +589,133 @@ func (c *Checker) typesEqual(a, b Type) bool {
 
 // funcTypesCompatible checks function-type assignability: same arity,
 // bivariant parameters (gradual), covariant return.
+// inferFnTargetArgs infers a generic signature's type arguments by unifying
+// against a target function type. Returns the args (uninferred → any) and a
+// reason string ("" = success; otherwise why inference failed).
+func (c *Checker) inferFnTargetArgs(src, dst *FuncSig) ([]Type, string) {
+	if len(src.Params) != len(dst.Params) {
+		return nil, fmt.Sprintf("arity mismatch: got %d parameters, want %d",
+			len(src.Params), len(dst.Params))
+	}
+	indexOf := map[string]int{}
+	for i, tp := range src.TypeParams {
+		indexOf[tp.Name] = i
+	}
+	targs := make([]Type, len(src.TypeParams))
+	inferred := make([]bool, len(src.TypeParams))
+	for i := range src.Params {
+		sp, dp := src.Params[i].Type, dst.Params[i].Type
+		if sp != nil && dp != nil {
+			c.unifyTypeParam(*sp, *dp, indexOf, targs, inferred)
+		}
+	}
+	if src.Return != nil && dst.Return != nil {
+		c.unifyTypeParam(*src.Return, *dst.Return, indexOf, targs, inferred)
+	}
+	subst := map[string]Type{}
+	for i, tp := range src.TypeParams {
+		if !inferred[i] {
+			targs[i] = anyType()
+		} else {
+			subst[tp.Name] = targs[i]
+		}
+		if err := c.checkBound(targs[i], tp, subst); err != "" {
+			return targs, err
+		}
+	}
+	return targs, ""
+}
+
+// instantiateSig substitutes inferred type args into a generic signature.
+func (c *Checker) instantiateSig(sig *FuncSig, targs []Type) *FuncSig {
+	subst := map[string]Type{}
+	for i, tp := range sig.TypeParams {
+		if i < len(targs) {
+			subst[tp.Name] = targs[i]
+		}
+	}
+	inst := &FuncSig{}
+	for _, p := range sig.Params {
+		ip := p
+		if p.Type != nil {
+			st := c.substType(*p.Type, subst)
+			ip.Type = &st
+		}
+		inst.Params = append(inst.Params, ip)
+	}
+	if sig.Return != nil {
+		rt := c.substType(*sig.Return, subst)
+		inst.Return = &rt
+	}
+	return inst
+}
+
+// genericFnFitsTarget implements Go 1.27's generalized function type
+// inference for NvS: when a generic function value flows into a position
+// with a declared function type (let/const binding, argument, return),
+// its type arguments are inferred by unifying the generic signature
+// against the target. The instantiated signature must then satisfy the
+// target under the normal (bivariant-param, covariant-return) rules.
+func (c *Checker) genericFnFitsTarget(src, dst *FuncSig) bool {
+	targs, reason := c.inferFnTargetArgs(src, dst)
+	if reason != "" {
+		return false
+	}
+	inst := c.instantiateSig(src, targs)
+	return c.funcTypesCompatible(
+		Type{Name: "function", Sig: inst},
+		Type{Name: "function", Sig: dst},
+	)
+}
+
+// fnMismatchReason explains a function-type assignment failure for error
+// messages (task c: sharpened errors).
+func (c *Checker) fnMismatchReason(src, dst Type) string {
+	if src.Sig == nil || dst.Sig == nil {
+		return ""
+	}
+	ssig := src.Sig
+	// For generic sources, explain in terms of the inferred instantiation.
+	if len(ssig.TypeParams) > 0 {
+		targs, reason := c.inferFnTargetArgs(ssig, dst.Sig)
+		var parts []string
+		for i, tp := range ssig.TypeParams {
+			if i < len(targs) {
+				parts = append(parts, fmt.Sprintf("%s = %s", tp.Name, targs[i]))
+			}
+		}
+		inferred := ""
+		if len(parts) > 0 {
+			inferred = "inferred " + strings.Join(parts, ", ") + ", but "
+		}
+		if reason != "" {
+			return inferred + reason
+		}
+		inst := c.instantiateSig(ssig, targs)
+		if r := c.fnMismatchReason(Type{Name: "function", Sig: inst}, dst); r != "" {
+			return inferred + r
+		}
+		return ""
+	}
+	if len(ssig.Params) != len(dst.Sig.Params) {
+		return fmt.Sprintf("arity mismatch: got %d parameters, want %d",
+			len(ssig.Params), len(dst.Sig.Params))
+	}
+	for i := range ssig.Params {
+		sp, dp := ssig.Params[i].Type, dst.Sig.Params[i].Type
+		if sp != nil && dp != nil && !isAny(*sp) && !isAny(*dp) {
+			if !c.assignableTo(*sp, *dp) && !c.assignableTo(*dp, *sp) {
+				return fmt.Sprintf("parameter %d: got %s, want %s", i+1, sp, dp)
+			}
+		}
+	}
+	if ssig.Return != nil && dst.Sig.Return != nil &&
+		!c.assignableTo(*ssig.Return, *dst.Sig.Return) {
+		return fmt.Sprintf("return: got %s, want %s", ssig.Return, dst.Sig.Return)
+	}
+	return ""
+}
+
 func (c *Checker) funcTypesCompatible(src, dst Type) bool {
 	if src.Sig == nil || dst.Sig == nil {
 		return true // unknown signature: gradual
@@ -900,7 +1033,16 @@ func (c *Checker) checkStatement(s ast.Statement) {
 			return
 		}
 		vt := c.infer(n.Value)
-		c.checkExpression(n.Value)
+		// Wave 19b: contextual typing — a non-generic fn literal assigned to
+		// a declared fn type is body-checked against that type. (Generic
+		// literals were already fully checked; the permissive pass over a
+		// non-generic literal cannot error, so no double-reporting.)
+		if fl, ok := n.Value.(*ast.FunctionLiteral); ok && len(fl.TypeParams) == 0 &&
+			t.Name == "function" && t.Sig != nil {
+			c.checkFunctionBodyTargeted("", fl, t.Sig)
+		} else {
+			c.checkExpression(n.Value)
+		}
 		if !c.assignableTo(vt, t) {
 			c.assignErrorf(lineOf(n), vt, t, fmt.Sprintf("variable '%s'", n.Name.Value))
 		}
@@ -1047,7 +1189,30 @@ func (c *Checker) checkBlock(b *ast.BlockStatement) {
 // Wave 19: the literal's type parameters are in scope for the body; rules
 // 2 (shadowing warning), 3 (duplicates), 4 (bound names) are enforced.
 func (c *Checker) checkFunctionBody(name string, fl *ast.FunctionLiteral) {
+	c.checkFunctionBodyTargeted(name, fl, nil)
+}
+
+// checkFunctionBodyTargeted checks a function literal's body, optionally
+// against a target signature (Wave 19b contextual typing, in the spirit of
+// Go 1.27's generalized inference): unannotated parameters and a missing
+// return annotation are filled from the target, so
+// `let f: fn(int) -> string = fn(x) { return 42; }` reports the return
+// mismatch. Only applies to non-generic literals with matching arity;
+// explicit annotations on the literal always win.
+func (c *Checker) checkFunctionBodyTargeted(name string, fl *ast.FunctionLiteral, target *FuncSig) {
 	sig := c.funcSigOf(fl)
+	if target != nil && len(sig.TypeParams) == 0 && len(target.Params) == len(sig.Params) {
+		for i := range sig.Params {
+			if sig.Params[i].Type == nil && target.Params[i].Type != nil {
+				tt := *target.Params[i].Type
+				sig.Params[i].Type = &tt
+			}
+		}
+		if sig.Return == nil && target.Return != nil {
+			rt := *target.Return
+			sig.Return = &rt
+		}
+	}
 	// Rule 2: warn when a type parameter shadows one from an outer scope
 	// (e.g. a method's `T` shadowing the class's `T`).
 	outer := map[string]bool{}
@@ -1220,7 +1385,8 @@ func (c *Checker) checkExpression(e ast.Expression) {
 }
 
 // assignErrorf reports a failed assignment, sharpening interface mismatches
-// with the specific reason (wave 19, rule 8).
+// with the specific reason (wave 19, rule 8) and function-type mismatches
+// with the signature detail (wave 19b).
 func (c *Checker) assignErrorf(line int, vt, t Type, what string) {
 	msg := fmt.Sprintf("cannot assign %s to %s of type %s", vt, what, t)
 	if t.Name != "" && vt.Name == "instance" {
@@ -1228,6 +1394,11 @@ func (c *Checker) assignErrorf(line int, vt, t Type, what string) {
 			if r := c.ifaceMismatchReason(vt, t.Name); r != "" {
 				msg += ": " + r
 			}
+		}
+	}
+	if vt.Name == "function" && t.Name == "function" {
+		if r := c.fnMismatchReason(vt, t); r != "" {
+			msg += ": " + r
 		}
 	}
 	c.errorf(line, "%s", msg)
@@ -1278,9 +1449,25 @@ func (c *Checker) checkCall(n *ast.CallExpression) {
 		if i >= len(sig.Params) || sig.Params[i].Type == nil {
 			continue
 		}
+		pt := *sig.Params[i].Type
+		// Wave 19b: contextual typing — a non-generic fn literal argument is
+		// body-checked against the parameter's declared fn type. (Generic
+		// literals were already fully checked by checkExpression above, and
+		// a permissive pass over a non-generic literal cannot error, so
+		// there is no double-reporting.)
+		if fl, ok := a.(*ast.FunctionLiteral); ok && len(fl.TypeParams) == 0 &&
+			pt.Name == "function" && pt.Sig != nil {
+			c.checkFunctionBodyTargeted("", fl, pt.Sig)
+		}
 		at := c.infer(a)
-		if !c.assignableTo(at, *sig.Params[i].Type) {
-			c.errorf(lineOf(a), "argument %d: got %s, want %s", i+1, at, *sig.Params[i].Type)
+		if !c.assignableTo(at, pt) {
+			msg := fmt.Sprintf("argument %d: got %s, want %s", i+1, at, pt)
+			if at.Name == "function" && pt.Name == "function" {
+				if r := c.fnMismatchReason(at, pt); r != "" {
+					msg += ": " + r
+				}
+			}
+			c.errorf(lineOf(a), "%s", msg)
 		}
 	}
 }
