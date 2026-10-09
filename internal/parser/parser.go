@@ -23,6 +23,7 @@ const (
 	PREFIX      // -X or !X
 	CALL        // myFunction(X)
 	INDEX       // array[index]
+	POSTFIX     // x++ / x-- — wave 19: binds tightest
 )
 
 var precedences = map[lexer.TokenType]int{
@@ -56,6 +57,9 @@ var precedences = map[lexer.TokenType]int{
 	lexer.LPAREN:         CALL,
 	lexer.LBRACKET:       INDEX,
 	lexer.DOT:            INDEX,
+	lexer.DCOLON:         INDEX, // wave 19: a::b / a::\<T\>(...)
+	lexer.PLUS_PLUS:      POSTFIX,
+	lexer.MINUS_MINUS:     POSTFIX,
 	lexer.OPTIONAL_CHAIN: INDEX,
 	lexer.AND:            ANDOR,
 	lexer.OR:             ANDOR,
@@ -75,6 +79,12 @@ type Parser struct {
 
 	prefixParseFns map[lexer.TokenType]prefixParseFn
 	infixParseFns  map[lexer.TokenType]infixParseFn
+
+	// Wave 19: pendingCloses counts extra `>` closes consumed via a `>>`
+	// (SHR) token inside nested type-argument lists. `A<B<C>>` lexes the
+	// final `>>` as one SHR token; the inner list consumes it and records
+	// one pending close so the outer list knows its `>` is already gone.
+	pendingCloses int
 }
 
 func New(l *lexer.Lexer) *Parser {
@@ -134,6 +144,9 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(lexer.NULL_COAL, p.parseInfixExpression)
 	p.registerInfix(lexer.IN, p.parseInfixExpression)
 	p.registerInfix(lexer.DOT, p.parseDotInfix)
+	p.registerInfix(lexer.DCOLON, p.parseDColonInfix)
+	p.registerInfix(lexer.PLUS_PLUS, p.parsePostfixExpression)
+	p.registerInfix(lexer.MINUS_MINUS, p.parsePostfixExpression)
 	p.registerInfix(lexer.OPTIONAL_CHAIN, p.parseOptionalChainExpression)
 	p.registerInfix(lexer.PIPE, p.parsePipelineExpression)
 	p.registerInfix(lexer.ELLIPSIS, p.parseExclusiveRangeExpression)
@@ -203,6 +216,10 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseRecordStatement()
 	case lexer.INTERFACE:
 		return p.parseInterfaceStatement()
+	case lexer.PUB:
+		return p.parsePubStatement()
+	case lexer.MODULE:
+		return p.parseModuleStatement()
 	case lexer.DEFER:
 		return p.parseDeferStatement()
 	case lexer.THROW:
@@ -218,7 +235,90 @@ func (p *Parser) parseStatement() ast.Statement {
 	}
 }
 
-// parseLabeledStatement: label: for (...) { ... }  (labels only apply to loops)
+// parsePubStatement: `pub` visibility prefix (wave 19, std dialect).
+// `pub` is advisory — the interpreter has one flat namespace — but it is
+// recorded on the AST for tooling. Supports pub fn/class/let/const/
+// interface/enum/record.
+func (p *Parser) parsePubStatement() ast.Statement {
+	tok := p.curToken
+	p.nextToken() // consume `pub`
+	var stmt ast.Statement
+	switch p.curToken.Type {
+	case lexer.FUNCTION:
+		stmt = p.parseFunctionStatement()
+	case lexer.CLASS:
+		stmt = p.parseClassStatement()
+	case lexer.LET:
+		stmt = p.parseLetStatement()
+	case lexer.CONST:
+		stmt = p.parseConstStatement()
+	case lexer.INTERFACE:
+		stmt = p.parseInterfaceStatement()
+	case lexer.ENUM:
+		stmt = p.parseEnumStatement()
+	case lexer.RECORD:
+		stmt = p.parseRecordStatement()
+	default:
+		p.errors = append(p.errors, "pub can only prefix fn/class/let/const/interface/enum/record")
+		return nil
+	}
+	if stmt == nil {
+		return nil
+	}
+	switch n := stmt.(type) {
+	case *ast.LetStatement:
+		n.Public = true
+	case *ast.TypedLetStatement:
+		n.Public = true
+	case *ast.ConstStatement:
+		n.Public = true
+	case *ast.ClassStatement:
+		n.Public = true
+	case *ast.InterfaceDecl:
+		n.Public = true
+	case *ast.EnumStatement:
+		n.Public = true
+	case *ast.RecordStatement:
+		n.Public = true
+	default:
+		p.errors = append(p.errors, fmt.Sprintf("pub is not supported on %T (line %d)", stmt, tok.Line))
+		return nil
+	}
+	return stmt
+}
+
+// parseModuleStatement: `module std.collections.vector;` (wave 19, std dialect).
+// Recorded on the AST; module resolution/loading is a future wave.
+func (p *Parser) parseModuleStatement() ast.Statement {
+	tok := p.curToken
+	name := p.parseDottedPath()
+	if name == "" {
+		return nil
+	}
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
+	return &ast.ModuleStatement{Token: tok, Name: name}
+}
+
+// parseDottedPath parses `a.b.c` — curToken is the first token before the
+// path (e.g. `module` or `import`). Returns "" on error.
+func (p *Parser) parseDottedPath() string {
+	if !p.expectPeek(lexer.IDENT) {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(p.curToken.Literal)
+	for p.peekTokenIs(lexer.DOT) {
+		p.nextToken() // .
+		if !p.expectPeek(lexer.IDENT) {
+			return ""
+		}
+		sb.WriteString(".")
+		sb.WriteString(p.curToken.Literal)
+	}
+	return sb.String()
+}
 func (p *Parser) parseLabeledStatement() ast.Statement {
 	label := p.curToken.Literal
 	p.nextToken() // consume label
@@ -318,11 +418,12 @@ func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 	if !p.expectPeek(lexer.RPAREN) {
 		return nil
 	}
-	if !p.expectPeek(lexer.LBRACE) {
+
+	// Wave 19: braceless single-statement bodies (`while (c) x++;`).
+	stmt.Body = p.parseBodyBlock()
+	if stmt.Body == nil {
 		return nil
 	}
-
-	stmt.Body = p.parseBlockStatement()
 	stmt.OrElse = p.parseLoopElse()
 	return stmt
 }
@@ -338,6 +439,15 @@ func (p *Parser) parseFunctionStatement() ast.Statement {
 	}
 	name := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 
+	// Wave 19: `fn identity<T>(x: T) -> T` type parameters.
+	var typeParams []*ast.TypeParam
+	if p.peekTokenIs(lexer.LT) {
+		typeParams = p.parseTypeParamList()
+		if typeParams == nil {
+			return nil
+		}
+	}
+
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
 	}
@@ -346,15 +456,8 @@ func (p *Parser) parseFunctionStatement() ast.Statement {
 
 	// Wave 5: optional return annotation — `fn name(params): type { body }`.
 	// A `:` here was a parse error before, so this is non-breaking.
-	var returnType *ast.TypeAnnotation
-	if p.peekTokenIs(lexer.COLON) {
-		p.nextToken() // :
-		p.nextToken() // first token of the type
-		returnType = p.parseTypeAnnotation()
-		if returnType == nil {
-			return nil
-		}
-	}
+	// Wave 19: also `-> type` (std dialect).
+	returnType := p.parseReturnAnnotation()
 
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -368,6 +471,7 @@ func (p *Parser) parseFunctionStatement() ast.Statement {
 		Defaults:   defaults,
 		ParamTypes: paramTypes,
 		ReturnType: returnType,
+		TypeParams: typeParams,
 		Body:       body,
 	}
 
@@ -418,6 +522,30 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	leftExp := prefix()
 
 	for !p.peekTokenIs(lexer.SEMICOLON) && precedence < p.peekPrecedence() {
+		// Wave 19: `f<int>(x)` explicit type-argument call. The probe
+		// distinguishes it from a less-than comparison; a member target
+		// (`v.map<int>(f)`) is rejected in favor of turbofish `::<>`.
+		if p.peekTokenIs(lexer.LT) {
+			if _, ok := leftExp.(*ast.MemberExpression); ok && p.probeTypeArgsCall() {
+				p.errors = append(p.errors,
+					"explicit type arguments on method calls use turbofish syntax: v.map::<T>(...)")
+				return nil
+			}
+			if _, ok := leftExp.(*ast.Identifier); ok && p.probeTypeArgsCall() {
+				targs := p.parseTypeArgList()
+				if targs == nil {
+					return nil
+				}
+				if !p.expectPeek(lexer.LPAREN) {
+					p.errors = append(p.errors, "type arguments must be followed by a call: f<T>(...)")
+					return nil
+				}
+				call := &ast.CallExpression{Token: p.curToken, Function: leftExp, TypeArgs: targs}
+				call.Arguments = p.parseCallArguments()
+				leftExp = call
+				continue
+			}
+		}
 		infix := p.infixParseFns[p.peekToken.Type]
 		if infix == nil {
 			return leftExp
@@ -545,11 +673,11 @@ func (p *Parser) parseIfExpression() ast.Expression {
 	if !p.expectPeek(lexer.RPAREN) {
 		return nil
 	}
-	if !p.expectPeek(lexer.LBRACE) {
+
+	expression.Consequence = p.parseBodyBlock()
+	if expression.Consequence == nil {
 		return nil
 	}
-
-	expression.Consequence = p.parseBlockStatement()
 
 	if p.peekTokenIs(lexer.ELSE) {
 		p.nextToken()
@@ -562,18 +690,44 @@ func (p *Parser) parseIfExpression() ast.Expression {
 				},
 			}
 		} else {
-			if !p.expectPeek(lexer.LBRACE) {
+			expression.Alternative = p.parseBodyBlock()
+			if expression.Alternative == nil {
 				return nil
 			}
-			expression.Alternative = p.parseBlockStatement()
 		}
 	}
 
 	return expression
 }
 
+// parseBodyBlock parses a `{ ... }` block or — wave 19 (std dialect) — a
+// single statement without braces (`if (c) return x;`). The single statement
+// is wrapped in a BlockStatement so the evaluator needs no changes.
+// Call with curToken on the token before the body (`)` of the condition).
+func (p *Parser) parseBodyBlock() *ast.BlockStatement {
+	if p.peekTokenIs(lexer.LBRACE) {
+		p.nextToken() // consume {
+		return p.parseBlockStatement()
+	}
+	p.nextToken() // move to the single statement
+	tok := p.curToken
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	return &ast.BlockStatement{Token: tok, Statements: []ast.Statement{stmt}}
+}
+
 func (p *Parser) parseFunctionLiteral() ast.Expression {
 	lit := &ast.FunctionLiteral{Token: p.curToken}
+
+	// Wave 19: `fn<T>(x: T) -> T` type parameters on anonymous literals.
+	if p.peekTokenIs(lexer.LT) {
+		lit.TypeParams = p.parseTypeParamList()
+		if lit.TypeParams == nil {
+			return nil
+		}
+	}
 
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
@@ -582,16 +736,8 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 	lit.Parameters, lit.Defaults, lit.ParamTypes = p.parseFunctionParameters()
 
 	// Wave 5: optional return annotation — `fn (params): type { body }`.
-	var returnType *ast.TypeAnnotation
-	if p.peekTokenIs(lexer.COLON) {
-		p.nextToken() // :
-		p.nextToken() // first token of the type
-		returnType = p.parseTypeAnnotation()
-		if returnType == nil {
-			return nil
-		}
-	}
-	lit.ReturnType = returnType
+	// Wave 19: also `-> type` (std dialect).
+	lit.ReturnType = p.parseReturnAnnotation()
 
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -663,13 +809,21 @@ func (p *Parser) parseParamAnnotation() *ast.TypeAnnotation {
 // first token of the type; the `|` spelling is only special here — everywhere
 // else it keeps its usual (bitwise-or) meaning.
 func (p *Parser) parseTypeAnnotation() *ast.TypeAnnotation {
+	// Wave 19: `fn(A, B) -> R` function-type annotations.
+	if p.curTokenIs(lexer.FUNCTION) {
+		return p.parseFnTypeAnnotation()
+	}
 	// `null` is a keyword token, but it's a legitimate type name.
-	if !p.curTokenIs(lexer.IDENT) && !p.curTokenIs(lexer.NULL) {
+	// Wave 19: `[T]` array sugar is also a valid start.
+	if !p.curTokenIs(lexer.IDENT) && !p.curTokenIs(lexer.NULL) && !p.curTokenIs(lexer.LBRACKET) {
 		p.errors = append(p.errors, "expected type name in annotation")
 		return nil
 	}
 	tok := p.curToken
-	members := []*ast.TypeAnnotation{{Token: tok, Name: tok.Literal}}
+	members := []*ast.TypeAnnotation{p.parseSingleTypeAnnotation()}
+	if members[0] == nil {
+		return nil
+	}
 	// `T?` sugar for `T | null`.
 	if p.peekTokenIs(lexer.QUESTION) {
 		p.nextToken()
@@ -677,13 +831,12 @@ func (p *Parser) parseTypeAnnotation() *ast.TypeAnnotation {
 	}
 	for p.peekTokenIs(lexer.BIT_OR) {
 		p.nextToken() // |
-		if !p.peekTokenIs(lexer.IDENT) && !p.peekTokenIs(lexer.NULL) {
-			p.errors = append(p.errors, "expected type name after '|' in annotation")
+		p.nextToken() // first token of the member type
+		m := p.parseSingleTypeAnnotation()
+		if m == nil {
 			return nil
 		}
-		p.nextToken()
-		mtok := p.curToken
-		members = append(members, &ast.TypeAnnotation{Token: mtok, Name: mtok.Literal})
+		members = append(members, m)
 		if p.peekTokenIs(lexer.QUESTION) {
 			p.nextToken()
 			members = append(members, &ast.TypeAnnotation{Token: p.curToken, Name: "null"})
@@ -693,6 +846,83 @@ func (p *Parser) parseTypeAnnotation() *ast.TypeAnnotation {
 		return members[0]
 	}
 	return &ast.TypeAnnotation{Token: tok, Union: members}
+}
+
+// parseSingleTypeAnnotation parses one non-union type: `int`, `Vec<T>`,
+// `Map<string, int>`, `string[]`, `[string]`. curToken is the first token
+// of the type; on success curToken is the last token of the type.
+func (p *Parser) parseSingleTypeAnnotation() *ast.TypeAnnotation {
+	// Wave 19: `fn(A, B) -> R` function-type annotations.
+	if p.curTokenIs(lexer.FUNCTION) {
+		return p.parseFnTypeAnnotation()
+	}
+	// Wave 19: `[T]` array sugar (equivalent to `T[]`; the sketch uses both).
+	if p.curTokenIs(lexer.LBRACKET) {
+		p.nextToken() // [
+		elem := p.parseTypeAnnotation()
+		if elem == nil {
+			return nil
+		}
+		if !p.expectPeek(lexer.RBRACKET) {
+			return nil
+		}
+		elem.IsArray = true
+		return elem
+	}
+	if !p.curTokenIs(lexer.IDENT) && !p.curTokenIs(lexer.NULL) {
+		p.errors = append(p.errors, "expected type name in annotation")
+		return nil
+	}
+	tok := p.curToken
+	ann := &ast.TypeAnnotation{Token: tok, Name: tok.Literal}
+	// Wave 19: parameterized types — `Vec<int>`, `Map<string, Vec<int>>`.
+	if p.peekTokenIs(lexer.LT) {
+		ann.TypeArgs = p.parseTypeArgList()
+		if ann.TypeArgs == nil {
+			return nil
+		}
+	}
+	// Wave 19: `T[]` array sugar — `string[]`. A `[` here was a parse error
+	// before, so requiring `[]` is non-breaking.
+	if p.peekTokenIs(lexer.LBRACKET) {
+		p.nextToken() // [
+		if !p.expectPeek(lexer.RBRACKET) {
+			return nil
+		}
+		ann.IsArray = true
+	}
+	return ann
+}
+
+// parseFnTypeAnnotation parses `fn(A, B) -> R` / `fn(A, B): R` — wave 19.
+// curToken is `fn`; on success curToken is the last token of the return type
+// (or `)` when unannotated).
+func (p *Parser) parseFnTypeAnnotation() *ast.TypeAnnotation {
+	tok := p.curToken
+	if !p.expectPeek(lexer.LPAREN) {
+		return nil
+	}
+	sig := &ast.FnTypeSig{}
+	if !p.peekTokenIs(lexer.RPAREN) {
+		for {
+			p.nextToken() // first token of the parameter type
+			pt := p.parseTypeAnnotation()
+			if pt == nil {
+				return nil
+			}
+			sig.Params = append(sig.Params, pt)
+			if p.peekTokenIs(lexer.COMMA) {
+				p.nextToken()
+				continue
+			}
+			break
+		}
+	}
+	if !p.expectPeek(lexer.RPAREN) {
+		return nil
+	}
+	sig.Return = p.parseReturnAnnotation()
+	return &ast.TypeAnnotation{Token: tok, Name: "function", FnSig: sig}
 }
 
 func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
@@ -846,10 +1076,11 @@ func (p *Parser) parseForStatement() ast.Statement {
 			if !p.expectPeek(lexer.RPAREN) {
 				return nil
 			}
-			if !p.expectPeek(lexer.LBRACE) {
+			// Wave 19: braceless single-statement bodies.
+			body := p.parseBodyBlock()
+			if body == nil {
 				return nil
 			}
-			body := p.parseBlockStatement()
 			stmt := &ast.ForInStatement{
 				Token:    tok,
 				Name:     name,
@@ -907,10 +1138,11 @@ func (p *Parser) parseCStyleFor(tok lexer.Token, alreadyConsumed bool) *ast.ForS
 	if !p.expectPeek(lexer.RPAREN) {
 		return nil
 	}
-	if !p.expectPeek(lexer.LBRACE) {
+	// Wave 19: braceless single-statement bodies.
+	stmt.Body = p.parseBodyBlock()
+	if stmt.Body == nil {
 		return nil
 	}
-	stmt.Body = p.parseBlockStatement()
 	stmt.OrElse = p.parseLoopElse()
 	return stmt
 }
@@ -1162,12 +1394,24 @@ func (p *Parser) parseInterfaceStatement() *ast.InterfaceDecl {
 			p.nextToken()
 			continue
 		}
+		// Wave 19: optional `fn` prefix (consistent with classes).
+		if p.curTokenIs(lexer.FUNCTION) {
+			p.nextToken()
+		}
 		if !p.curTokenIs(lexer.IDENT) {
 			p.errors = append(p.errors, "expected method name in interface body")
 			return nil
 		}
 		method := &ast.InterfaceMethod{Token: p.curToken}
 		method.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		// Wave 19 (checker rule 7 / Go's honest boundary): interface methods
+		// cannot declare type parameters. Parse-time error, not a silent skip.
+		// We consume the <...> and continue so one bad method doesn't
+		// cascade into noise.
+		if p.peekTokenIs(lexer.LT) {
+			p.errors = append(p.errors, "interface methods cannot declare type parameters")
+			p.parseTypeParamList()
+		}
 		if !p.expectPeek(lexer.LPAREN) {
 			return nil
 		}
@@ -1193,14 +1437,8 @@ func (p *Parser) parseInterfaceStatement() *ast.InterfaceDecl {
 		if !p.expectPeek(lexer.RPAREN) {
 			return nil
 		}
-		if p.peekTokenIs(lexer.COLON) {
-			p.nextToken() // :
-			p.nextToken() // first token of the type
-			method.ReturnType = p.parseTypeAnnotation()
-			if method.ReturnType == nil {
-				return nil
-			}
-		}
+		// Wave 19: `: T` or `-> T` return annotations.
+		method.ReturnType = p.parseReturnAnnotation()
 		stmt.Methods = append(stmt.Methods, method)
 		if p.peekTokenIs(lexer.SEMICOLON) {
 			p.nextToken()
@@ -1220,6 +1458,14 @@ func (p *Parser) parseClassStatement() *ast.ClassStatement {
 	}
 	stmt.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 
+	// Wave 19: `class Box<T, U: Bound>` type parameters.
+	if p.peekTokenIs(lexer.LT) {
+		stmt.TypeParams = p.parseTypeParamList()
+		if stmt.TypeParams == nil {
+			return nil
+		}
+	}
+
 	if p.peekTokenIs(lexer.EXTENDS) {
 		p.nextToken()
 		if !p.expectPeek(lexer.IDENT) {
@@ -1233,8 +1479,26 @@ func (p *Parser) parseClassStatement() *ast.ClassStatement {
 	}
 
 	stmt.Methods = []*ast.ClassMethod{}
+	stmt.Fields = []*ast.ClassField{}
 	p.nextToken()
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		// Wave 19: `pub` visibility on methods and fields (std dialect).
+		isPub := false
+		if p.curTokenIs(lexer.PUB) {
+			isPub = true
+			p.nextToken()
+		}
+		// Wave 19: field declarations — `let x: T;`, `let x: T = v;`
+		// (also `const`). A field was a parse error here before.
+		if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) {
+			field := p.parseClassField(isPub)
+			if field == nil {
+				return nil
+			}
+			stmt.Fields = append(stmt.Fields, field)
+			p.nextToken()
+			continue
+		}
 		// method: name(params) { body }  or  fn name(params) { body }
 		if p.curTokenIs(lexer.FUNCTION) {
 			p.nextToken()
@@ -1243,21 +1507,22 @@ func (p *Parser) parseClassStatement() *ast.ClassStatement {
 			p.nextToken()
 			continue
 		}
-		method := &ast.ClassMethod{Token: p.curToken}
+		method := &ast.ClassMethod{Token: p.curToken, Public: isPub}
 		method.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		// Wave 19: method-level type parameters — `fn map<U>(...)`.
+		if p.peekTokenIs(lexer.LT) {
+			method.TypeParams = p.parseTypeParamList()
+			if method.TypeParams == nil {
+				return nil
+			}
+		}
 		if !p.expectPeek(lexer.LPAREN) {
 			return nil
 		}
 		method.Parameters, _, method.ParamTypes = p.parseFunctionParameters()
 		// Wave 5: optional return annotation on methods — `area(): float { ... }`.
-		if p.peekTokenIs(lexer.COLON) {
-			p.nextToken() // :
-			p.nextToken() // first token of the type
-			method.ReturnType = p.parseTypeAnnotation()
-			if method.ReturnType == nil {
-				return nil
-			}
-		}
+		// Wave 19: also `-> float` (std dialect).
+		method.ReturnType = p.parseReturnAnnotation()
 		if !p.expectPeek(lexer.LBRACE) {
 			return nil
 		}
@@ -1268,17 +1533,111 @@ func (p *Parser) parseClassStatement() *ast.ClassStatement {
 	return stmt
 }
 
+// parseClassField parses `let name[: type] [= value];` inside a class body —
+// wave 19 (std dialect). curToken is `let`/`const`; on success curToken is
+// the last token of the field (caller advances).
+func (p *Parser) parseClassField(isPub bool) *ast.ClassField {
+	tok := p.curToken
+	if !p.expectPeek(lexer.IDENT) {
+		return nil
+	}
+	field := &ast.ClassField{
+		Token:  tok,
+		Name:   &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
+		Public: isPub,
+	}
+	if p.peekTokenIs(lexer.COLON) {
+		p.nextToken() // :
+		p.nextToken() // first token of the type
+		field.Type = p.parseTypeAnnotation()
+		if field.Type == nil {
+			return nil
+		}
+	}
+	if p.peekTokenIs(lexer.ASSIGN) {
+		p.nextToken() // =
+		p.nextToken() // first token of the default
+		field.Default = p.parseExpression(LOWEST)
+	}
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
+	return field
+}
+
 func (p *Parser) parseNewExpression() ast.Expression {
 	expr := &ast.NewExpression{Token: p.curToken}
 	if !p.expectPeek(lexer.IDENT) {
 		return nil
 	}
 	expr.ClassName = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+	// Wave 19: `new Box<int>(42)`. The probe keeps `(new Box) < 3`
+	// parsing as a comparison: `<` is only type args when `<types>(` follows.
+	if p.peekTokenIs(lexer.LT) && p.probeTypeArgsCall() {
+		expr.TypeArgs = p.parseTypeArgList()
+		if expr.TypeArgs == nil {
+			return nil
+		}
+	}
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
 	}
 	expr.Arguments = p.parseCallArguments()
 	return expr
+}
+
+// probeTypeArgsCall reports whether the upcoming tokens match
+// `<` type (, type)* `>` `(` — i.e. an explicit-type-argument call like
+// `f<int>(x)` or `new Box<int>(x)`. Call with curToken on the identifier
+// before `<` and peek == LT. Never advances the real parser/lexer state.
+//
+// This is the standard `f<T>(x)` vs `(f < T) > (x)` disambiguation: when the
+// token pattern matches, `<...>` is type arguments; otherwise `<` stays the
+// less-than operator (gradual, honest — a weird-but-valid comparison still
+// parses as a comparison).
+func (p *Parser) probeTypeArgsCall() bool {
+	if !p.peekTokenIs(lexer.LT) {
+		return false
+	}
+	// Snapshot the lexer and the two-token window; restore on return.
+	savedLexer := *p.l
+	savedCur, savedPeek := p.curToken, p.peekToken
+	defer func() {
+		*p.l = savedLexer
+		p.curToken, p.peekToken = savedCur, savedPeek
+	}()
+	depth := 0
+	// Bound the scan: a type-argument list is short; bail out rather than
+	// scanning to EOF on adversarial input.
+	for i := 0; i < 64; i++ {
+		p.nextToken()
+		switch p.curToken.Type {
+		case lexer.LT:
+			depth++
+		case lexer.GT:
+			depth--
+			if depth == 0 {
+				return p.peekTokenIs(lexer.LPAREN)
+			}
+		case lexer.SHR:
+			// `>>` closes two levels (see parseTypeArgList).
+			depth -= 2
+			if depth == 0 {
+				return p.peekTokenIs(lexer.LPAREN)
+			}
+			if depth < 0 {
+				return false
+			}
+		case lexer.IDENT, lexer.NULL, lexer.COMMA, lexer.BIT_OR, lexer.QUESTION,
+			lexer.LBRACKET, lexer.RBRACKET, lexer.FUNCTION, lexer.LPAREN, lexer.RPAREN,
+			lexer.COLON, lexer.ARROW:
+			// Plausible inside a type argument list: names, `|`, `?`,
+			// `[]`, `fn(...) -> ...`, bounds with `:`.
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func (p *Parser) parseThisExpression() ast.Expression {
@@ -1322,10 +1681,18 @@ func (p *Parser) parseContinueStatement() *ast.ContinueStatement {
 
 func (p *Parser) parseImportStatement() *ast.ImportStatement {
 	stmt := &ast.ImportStatement{Token: p.curToken}
-	if !p.expectPeek(lexer.STRING) {
-		return nil
+	if p.peekTokenIs(lexer.STRING) {
+		p.nextToken()
+		stmt.Path = &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
+	} else {
+		// Wave 19: bare module path — `import std.core;` (std dialect).
+		// Resolution/loading of module paths is a future wave; the
+		// evaluator reports a clean error (see PLACEHOLDERS.md).
+		stmt.ModulePath = p.parseDottedPath()
+		if stmt.ModulePath == "" {
+			return nil
+		}
 	}
-	stmt.Path = &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
 	if p.peekTokenIs(lexer.SEMICOLON) {
 		p.nextToken()
 	}
@@ -1610,6 +1977,47 @@ func (p *Parser) parseDotInfix(left ast.Expression) ast.Expression {
 	return p.parseMemberExpression(left)
 }
 
+// parseDColonInfix handles `::` — wave 19:
+//   - `ffi::call("x", [])`: namespace access, parsed exactly like `.`
+//     member access (zero evaluator changes; `ffi` simply isn't defined).
+//   - `v.map::<string>(f)`: turbofish explicit type arguments on a call.
+//     Bare `v.map<string>(f)` is rejected with a helpful message (the `<`
+//     stays less-than there); plain `f<string>(x)` keeps working via the
+//     probe in parseExpression.
+func (p *Parser) parseDColonInfix(left ast.Expression) ast.Expression {
+	tok := p.curToken
+	if p.peekTokenIs(lexer.LT) {
+		targs := p.parseTypeArgList()
+		if targs == nil {
+			return nil
+		}
+		if !p.expectPeek(lexer.LPAREN) {
+			p.errors = append(p.errors, "turbofish type arguments must be followed by a call: v.map::<T>(...)")
+			return nil
+		}
+		call := &ast.CallExpression{Token: tok, Function: left, TypeArgs: targs}
+		call.Arguments = p.parseCallArguments()
+		return call
+	}
+	if !p.expectPeek(lexer.IDENT) {
+		return nil
+	}
+	return &ast.MemberExpression{
+		Token:    tok,
+		Object:   left,
+		Property: &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
+	}
+}
+
+// parsePostfixExpression handles `x++` / `x--` — wave 19.
+func (p *Parser) parsePostfixExpression(left ast.Expression) ast.Expression {
+	return &ast.PostfixExpression{
+		Token:    p.curToken,
+		Operator: p.curToken.Literal,
+		Operand:  left,
+	}
+}
+
 // parseInclusiveRangeExpression: 1..10 — curToken is the first DOT.
 func (p *Parser) parseInclusiveRangeExpression(left ast.Expression) ast.Expression {
 	tok := p.curToken
@@ -1640,6 +2048,107 @@ func (p *Parser) parseLoopElse() *ast.BlockStatement {
 		return nil
 	}
 	return p.parseBlockStatement()
+}
+
+// ---- Wave 19: generics ----
+
+// parseTypeParamList parses `<T, U: Bound, V>` — a type *parameter* list.
+// Call with peek == LT. On success curToken is the closing `>` (a `>>`
+// closing two levels is consumed and recorded via pendingCloses).
+func (p *Parser) parseTypeParamList() []*ast.TypeParam {
+	p.nextToken() // consume `<`
+	var params []*ast.TypeParam
+	for {
+		p.nextToken() // first token of the parameter name
+		if !p.curTokenIs(lexer.IDENT) {
+			p.errors = append(p.errors, "expected type parameter name")
+			return nil
+		}
+		tp := &ast.TypeParam{
+			Token: p.curToken,
+			Name:  &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
+		}
+		if p.peekTokenIs(lexer.COLON) {
+			p.nextToken() // :
+			p.nextToken() // first token of the bound
+			tp.Bound = p.parseTypeAnnotation()
+			if tp.Bound == nil {
+				return nil
+			}
+			// A nested `>>` inside the bound may have eaten our close.
+			if p.pendingCloses > 0 {
+				p.pendingCloses--
+				params = append(params, tp)
+				return params
+			}
+		}
+		params = append(params, tp)
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+			continue
+		}
+		if p.peekTokenIs(lexer.GT) {
+			p.nextToken()
+			return params
+		}
+		if p.peekTokenIs(lexer.SHR) {
+			// `>>` closes this list and the enclosing one.
+			p.nextToken()
+			p.pendingCloses++
+			return params
+		}
+		p.errors = append(p.errors, "expected ',' or '>' in type parameter list")
+		return nil
+	}
+}
+
+// parseTypeArgList parses `<A, B<C>, D>` — a type *argument* list.
+// Call with peek == LT. On success curToken is the closing `>`.
+func (p *Parser) parseTypeArgList() []*ast.TypeAnnotation {
+	p.nextToken() // consume `<`
+	var args []*ast.TypeAnnotation
+	for {
+		p.nextToken() // first token of the argument
+		arg := p.parseTypeAnnotation()
+		if arg == nil {
+			return nil
+		}
+		args = append(args, arg)
+		// A nested `>>` inside the argument may have eaten our close.
+		if p.pendingCloses > 0 {
+			p.pendingCloses--
+			return args
+		}
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+			continue
+		}
+		if p.peekTokenIs(lexer.GT) {
+			p.nextToken()
+			return args
+		}
+		if p.peekTokenIs(lexer.SHR) {
+			// `>>` closes this list and the enclosing one.
+			p.nextToken()
+			p.pendingCloses++
+			return args
+		}
+		p.errors = append(p.errors, "expected ',' or '>' in type argument list")
+		return nil
+	}
+}
+
+// parseReturnAnnotation parses an optional `: T` / `-> T` return annotation.
+// Call with curToken on the token before the annotation (`)` of the params).
+// Returns nil when no annotation is present.
+func (p *Parser) parseReturnAnnotation() *ast.TypeAnnotation {
+	if !p.peekTokenIs(lexer.COLON) && !p.peekTokenIs(lexer.ARROW) {
+		return nil
+	}
+	p.nextToken() // : or ->
+	p.nextToken() // first token of the type
+	ann := p.parseTypeAnnotation()
+	return ann
 }
 
 // ---- Wave 1: string interpolation ----

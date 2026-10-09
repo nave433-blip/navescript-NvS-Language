@@ -108,6 +108,18 @@ var builtinAnnotationChecks = map[string]func(object.Object) bool{
 	"fn":       func(o object.Object) bool { return isCallable(o) },
 	"callable": func(o object.Object) bool { return isCallable(o) },
 	"record":   func(o object.Object) bool { _, ok := o.(*object.Record); return ok },
+	// Wave 19: generic constraint builtins (see the wave-19 generics doc).
+	// `numeric` is int-or-float; `comparable`/`printable` accept every
+	// value honestly — NvS `==` never errors and every value stringifies.
+	"numeric": func(o object.Object) bool {
+		switch o.(type) {
+		case *object.Integer, *object.Float:
+			return true
+		}
+		return false
+	},
+	"comparable": func(o object.Object) bool { return true },
+	"printable":  func(o object.Object) bool { return true },
 }
 
 // checkAnnotation tests obj against the runtime contract ann.
@@ -143,6 +155,20 @@ func checkAnnotation(ann *ast.TypeAnnotation, obj object.Object, env *object.Env
 	if strings.EqualFold(name, "any") {
 		return true, "any", ""
 	}
+	// Wave 19: erasure — a type parameter in scope is `any` at runtime.
+	// Generics are check-time only (see internal/checker); the evaluator
+	// never sees type arguments.
+	if env != nil && env.TypeParamInScope(name) {
+		return true, "any", ""
+	}
+	// Wave 19: `T[]` checks the outer shape only (array); the element
+	// type is erased like everything else.
+	if ann.IsArray {
+		_, isArr := obj.(*object.Array)
+		return isArr, "array", ""
+	}
+	// Wave 19: `Box<int>` — the type arguments are erased; only the base
+	// type participates in the runtime contract.
 	if pred, found := builtinAnnotationChecks[strings.ToLower(name)]; found {
 		return pred(obj), name, ""
 	}
@@ -214,8 +240,10 @@ func paramWhat(fn *object.Function, paramName string) string {
 
 // checkReturnType enforces a function's return annotation. Errors and
 // generator functions are never checked (a thrown error is not a return
-// value, and generator results flow through yield).
-func checkReturnType(fn *object.Function, val object.Object) object.Object {
+// value, and generator results flow through yield). env is the call's
+// environment — wave 19: it carries the in-scope type parameters, and
+// lexical name resolution still works through its outer chain.
+func checkReturnType(fn *object.Function, val object.Object, env *object.Environment) object.Object {
 	if fn.ReturnType == nil || isError(val) {
 		return nil
 	}
@@ -223,7 +251,7 @@ func checkReturnType(fn *object.Function, val object.Object) object.Object {
 	if n := fnDisplayName(fn); n != "" {
 		what = fmt.Sprintf("return value of function '%s'", n)
 	}
-	return checkValueAnnotation(fn.ReturnType, val, fn.Env, what)
+	return checkValueAnnotation(fn.ReturnType, val, env, what)
 }
 
 // ---- structural interfaces ----

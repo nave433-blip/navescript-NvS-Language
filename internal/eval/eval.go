@@ -217,6 +217,8 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			Env:        env,
 			// Wave 17: remember the defining file for hook attribution.
 			SourceFile: currentSourceFile(env),
+			// Wave 19: erasure — type parameter names are `any` at runtime.
+			TypeParams: typeParamNames(node.TypeParams),
 		}
 	case *ast.CallExpression:
 		// Method call: obj.method(args)
@@ -278,8 +280,14 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalHashLiteral(node, env)
 	case *ast.IndexAssignExpression:
 		return evalIndexAssignExpression(node, env)
+	case *ast.PostfixExpression:
+		return evalPostfixExpression(node, env)
 	case *ast.ImportStatement:
 		return evalImportStatement(node, env)
+	case *ast.ModuleStatement:
+		// Wave 19: `module std.x;` is recorded by the parser; the module
+		// system (resolution/loading) is a future wave — no runtime effect.
+		return NULL
 	case *ast.ClassStatement:
 		return evalClassStatement(node, env)
 	case *ast.InterfaceDecl:
@@ -968,8 +976,7 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 			// Parameter annotation violation (or a bad default): the body
 			// never ran, so there is nothing to defer or unwrap.
 			return errObj
-		}
-		// Collect yields for generator functions
+		}		// Collect yields for generator functions
 		values, isGen, result := evalCollectingYields(fn.Body, extendedEnv)
 		runDefers(extendedEnv)
 		if isGen {
@@ -980,7 +987,7 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 		val := unwrapReturnValue(result)
 		// Wave 5: enforce the return annotation (thrown errors propagate
 		// untouched — an error is not a return value).
-		if errObj := checkReturnType(fn, val); errObj != nil {
+		if errObj := checkReturnType(fn, val, extendedEnv); errObj != nil {
 			return errObj
 		}
 		return val
@@ -1051,6 +1058,8 @@ func applyCallArgsNamed(function object.Object, args []object.Object, name strin
 // defaults fill the rest, and a missing required parameter is an error.
 func applyFunctionNamed(fn *object.Function, positional []object.Object, named []*object.NamedArg) object.Object {
 	extendedEnv := object.NewEnclosedEnvironment(fn.Env)
+	// Wave 19: erasure — type parameters are `any` at runtime.
+	extendedEnv.SetTypeParams(fn.TypeParams)
 	if errObj := bindNamedParams(fn, extendedEnv, positional, named); errObj != nil {
 		return errObj
 	}
@@ -1061,7 +1070,7 @@ func applyFunctionNamed(fn *object.Function, positional []object.Object, named [
 	}
 	val := unwrapReturnValue(result)
 	// Wave 5: enforce the return annotation.
-	if errObj := checkReturnType(fn, val); errObj != nil {
+	if errObj := checkReturnType(fn, val, extendedEnv); errObj != nil {
 		return errObj
 	}
 	return val
@@ -1076,8 +1085,9 @@ func bindNamedParams(fn *object.Function, env *object.Environment, positional []
 	filled := make([]bool, len(fn.Parameters))
 	checkParam := func(idx int, val object.Object) object.Object {
 		if idx < len(fn.ParamTypes) && fn.ParamTypes[idx] != nil {
-			// Annotations resolve lexically where the function was defined.
-			return checkValueAnnotation(fn.ParamTypes[idx], val, fn.Env, paramWhat(fn, fn.Parameters[idx].Value))
+			// Annotations resolve lexically where the function was defined
+			// (via env's outer chain); env also carries wave-19 type params.
+			return checkValueAnnotation(fn.ParamTypes[idx], val, env, paramWhat(fn, fn.Parameters[idx].Value))
 		}
 		return nil
 	}
@@ -1192,6 +1202,8 @@ func evalCollectingYields(body *ast.BlockStatement, env *object.Environment) ([]
 // violation returns a runtime error as the second value.
 func extendFunctionEnv(fn *object.Function, args []object.Object) (*object.Environment, object.Object) {
 	env := object.NewEnclosedEnvironment(fn.Env)
+	// Wave 19: erasure — type parameters are `any` at runtime.
+	env.SetTypeParams(fn.TypeParams)
 	// Wave 17: the call's scope belongs to the file where the function
 	// was defined, so hooks attribute nested statements correctly.
 	if fn.SourceFile != "" {
@@ -1213,8 +1225,9 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) (*object.Envir
 			val = NULL
 		}
 		if bound && paramIdx < len(fn.ParamTypes) && fn.ParamTypes[paramIdx] != nil {
-			// Annotations resolve lexically where the function was defined.
-			if errObj := checkValueAnnotation(fn.ParamTypes[paramIdx], val, fn.Env, paramWhat(fn, param.Value)); errObj != nil {
+			// Annotations resolve lexically where the function was defined
+			// (via env's outer chain); env also carries wave-19 type params.
+			if errObj := checkValueAnnotation(fn.ParamTypes[paramIdx], val, env, paramWhat(fn, param.Value)); errObj != nil {
 				return nil, errObj
 			}
 		}
@@ -1704,6 +1717,12 @@ func evalIndexAssignExpression(node *ast.IndexAssignExpression, env *object.Envi
 	if isError(val) {
 		return val
 	}
+	return assignToIndex(left, index, val)
+}
+
+// assignToIndex implements `container[index] = val` for already-evaluated
+// operands. Shared by index assignment and wave-19 postfix `++`/`--`.
+func assignToIndex(left, index, val object.Object) object.Object {
 
 	switch {
 	case left.Type() == object.ARRAY_OBJ && index.Type() == object.INTEGER_OBJ:
@@ -1888,7 +1907,83 @@ func evalForInStatement(fs *ast.ForInStatement, env *object.Environment) object.
 // Module loading — tracks loaded files to avoid cycles
 var loadedModules = map[string]bool{}
 
+// evalPostfixExpression implements `x++` / `x--` (wave 19). Postfix
+// semantics: the expression evaluates to the value BEFORE the update.
+// Works on identifiers, member expressions, and index expressions;
+// anything else is a runtime error.
+func evalPostfixExpression(node *ast.PostfixExpression, env *object.Environment) object.Object {
+	old := Eval(node.Operand, env)
+	if isError(old) {
+		return old
+	}
+	var updated object.Object
+	switch o := old.(type) {
+	case *object.Integer:
+		if node.Operator == "++" {
+			updated = &object.Integer{Value: o.Value + 1}
+		} else {
+			updated = &object.Integer{Value: o.Value - 1}
+		}
+	case *object.Float:
+		if node.Operator == "++" {
+			updated = &object.Float{Value: o.Value + 1}
+		} else {
+			updated = &object.Float{Value: o.Value - 1}
+		}
+	default:
+		return newError("%s requires a number, got %s", node.Operator, friendlyTypeName(old))
+	}
+	switch t := node.Operand.(type) {
+	case *ast.Identifier:
+		if ok := env.Assign(t.Value, updated); !ok {
+			// Not found in scope chain, or const: mirror assignment errors.
+			if _, found := env.Get(t.Value); found {
+				return newError("cannot assign to constant: %s", t.Value)
+			}
+			return newError("identifier not found: %s", t.Value)
+		}
+	case *ast.MemberExpression:
+		obj := Eval(t.Object, env)
+		if isError(obj) {
+			return obj
+		}
+		if inst, ok := obj.(*object.Instance); ok {
+			inst.Set(t.Property.Value, updated)
+		} else if hash, ok := obj.(*object.Hash); ok {
+			if hash.Frozen {
+				return newError("cannot assign member of frozen hash: .%s", t.Property.Value)
+			}
+			key := &object.String{Value: t.Property.Value}
+			hash.Pairs[key.HashKey()] = object.HashPair{Key: key, Value: updated}
+		} else {
+			return newError("cannot assign member of %s", friendlyTypeName(obj))
+		}
+	case *ast.IndexExpression:
+		// Assign via the normal index-assignment path.
+		left := Eval(t.Left, env)
+		if isError(left) {
+			return left
+		}
+		index := Eval(t.Index, env)
+		if isError(index) {
+			return index
+		}
+		if errObj := assignToIndex(left, index, updated); isError(errObj) {
+			return errObj
+		}
+	default:
+		return newError("%s requires an assignable target", node.Operator)
+	}
+	return old
+}
+
 func evalImportStatement(node *ast.ImportStatement, env *object.Environment) object.Object {
+	// Wave 19: bare module paths (`import std.core;`) parse, but module
+	// resolution/loading is a future wave — see PLACEHOLDERS.md. Fail
+	// cleanly instead of treating the dotted path as a filename.
+	if node.ModulePath != "" {
+		return newError("import: module path '%s' is not yet supported (module resolution is a future wave)", node.ModulePath)
+	}
 	path := node.Path.Value
 	// Wave 17: bare package specs (installed via `nvs pkg`) resolve
 	// through the package resolver before file resolution.
@@ -1940,9 +2035,25 @@ func evalImportStatement(node *ast.ImportStatement, env *object.Environment) obj
 	return NULL
 }
 
+// typeParamNames extracts the declared names from AST type parameters —
+// wave 19 (generics erasure: the runtime only needs the names).
+func typeParamNames(params []*ast.TypeParam) []string {
+	if len(params) == 0 {
+		return nil
+	}
+	names := make([]string, len(params))
+	for i, tp := range params {
+		names[i] = tp.Name.Value
+	}
+	return names
+}
+
 func evalClassStatement(node *ast.ClassStatement, env *object.Environment) object.Object {
+	// Wave 19: erasure — methods see the class's type params plus their own.
+	classTP := typeParamNames(node.TypeParams)
 	methods := map[string]*object.Function{}
 	for _, m := range node.Methods {
+		tp := append(append([]string{}, classTP...), typeParamNames(m.TypeParams)...)
 		methods[m.Name.Value] = &object.Function{
 			Name:       m.Name.Value,
 			Parameters: m.Parameters,
@@ -1953,6 +2064,8 @@ func evalClassStatement(node *ast.ClassStatement, env *object.Environment) objec
 			Env:        env,
 			// Wave 17: remember the defining file for hook attribution.
 			SourceFile: currentSourceFile(env),
+			// Wave 19: erasure.
+			TypeParams: tp,
 		}
 	}
 	var parent *object.Class
@@ -1970,6 +2083,8 @@ func evalClassStatement(node *ast.ClassStatement, env *object.Environment) objec
 		Name:    node.Name.Value,
 		Parent:  parent,
 		Methods: methods,
+		// Wave 19: field declarations (defaults run at instantiation).
+		Fields: node.Fields,
 	}
 	env.Set(node.Name.Value, class)
 	return class
@@ -1992,6 +2107,22 @@ func evalNewExpression(node *ast.NewExpression, env *object.Environment) object.
 	if len(args) == 1 && isError(args[0]) {
 		return args[0]
 	}
+	// Wave 19: initialize field defaults (parent fields first, so a child
+	// field with the same name overrides). Defaults evaluate in the scope
+	// enclosing the `new` expression, with `this` bound to the instance,
+	// before init runs. Type arguments on `new Box<int>(...)` are erased.
+	for _, f := range collectClassFields(class) {
+		if f.Default == nil {
+			continue
+		}
+		fieldEnv := object.NewEnclosedEnvironment(env)
+		fieldEnv.Set("this", instance)
+		val := Eval(f.Default, fieldEnv)
+		if isError(val) {
+			return val
+		}
+		instance.Fields[f.Name.Value] = val
+	}
 	// Call constructor if present
 	if init, ok := class.GetMethod("init"); ok {
 		result := applyMethod(init, instance, args)
@@ -2000,6 +2131,17 @@ func evalNewExpression(node *ast.NewExpression, env *object.Environment) object.
 		}
 	}
 	return instance
+}
+
+// collectClassFields returns field declarations parent-first (wave 19).
+func collectClassFields(class *object.Class) []*ast.ClassField {
+	if class == nil {
+		return nil
+	}
+	var out []*ast.ClassField
+	out = append(out, collectClassFields(class.Parent)...)
+	out = append(out, class.Fields...)
+	return out
 }
 
 func evalThisExpression(env *object.Environment) object.Object {
@@ -2062,6 +2204,8 @@ func evalMethodCall(obj object.Object, name string, args []object.Object, env *o
 func applyMethod(fn *object.Function, inst *object.Instance, args []object.Object) object.Object {
 	extended := object.NewEnclosedEnvironment(fn.Env)
 	extended.Set("this", inst)
+	// Wave 19: erasure — type parameters are `any` at runtime.
+	extended.SetTypeParams(fn.TypeParams)
 	// Wave 2: method calls accept `name: value` arguments too
 	// (obj.m(x: 1), new C(x: 1)).
 	positional, named := splitArgs(args)
@@ -2074,7 +2218,7 @@ func applyMethod(fn *object.Function, inst *object.Instance, args []object.Objec
 			if i < len(args) {
 				// Wave 5: method parameter annotations are enforced.
 				if i < len(fn.ParamTypes) && fn.ParamTypes[i] != nil {
-					if errObj := checkValueAnnotation(fn.ParamTypes[i], args[i], fn.Env, paramWhat(fn, param.Value)); errObj != nil {
+					if errObj := checkValueAnnotation(fn.ParamTypes[i], args[i], extended, paramWhat(fn, param.Value)); errObj != nil {
 						return errObj
 					}
 				}
@@ -2085,7 +2229,7 @@ func applyMethod(fn *object.Function, inst *object.Instance, args []object.Objec
 	result := Eval(fn.Body, extended)
 	val := unwrapReturnValue(result)
 	// Wave 5: enforce the method's return annotation.
-	if errObj := checkReturnType(fn, val); errObj != nil {
+	if errObj := checkReturnType(fn, val, extended); errObj != nil {
 		return errObj
 	}
 	return val

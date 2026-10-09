@@ -46,10 +46,14 @@ func (p *Program) String() string {
 }
 
 // LetStatement: let x = expr;
+// Wave 19: Public records a leading `pub` (std dialect). Visibility is
+// advisory in the interpreter — one flat namespace per file — but tooling
+// (docgen, lsp) can use it.
 type LetStatement struct {
-	Token lexer.Token
-	Name  *Identifier
-	Value Expression
+	Token  lexer.Token
+	Name   *Identifier
+	Value  Expression
+	Public bool
 }
 
 func (ls *LetStatement) statementNode()       {}
@@ -236,13 +240,37 @@ func (ws *WhileStatement) String() string {
 
 // TypeAnnotation is a parsed type annotation: `int`, `string | null`,
 // `Shape`, `int?` (parsed as `int | null`). Annotations are RUNTIME
-// contracts — NvS has no static type checker; every annotation is enforced
-// when a call happens, a value is bound, or a return executes.
+// contracts — every annotation is enforced when a call happens, a value is
+// bound, or a return executes — and `nvs check` verifies them statically
+// (see internal/checker).
+//
+// Wave 19: TypeArgs holds `<...>` parameterizations (`Vec<int>`,
+// `Map<string, Vec<int>>`); IsArray marks the `T[]` suffix sugar
+// (`string[]` ≡ array of string, checked as `array` at runtime).
 type TypeAnnotation struct {
-	Token lexer.Token
-	Name  string            // simple name: "int", "Shape", ...
-	Union []*TypeAnnotation // non-nil for `A | B | ...`; nil = simple named type
+	Token    lexer.Token
+	Name     string            // simple name: "int", "Shape", ...
+	Union    []*TypeAnnotation // non-nil for `A | B | ...`; nil = simple named type
+	TypeArgs []*TypeAnnotation // wave 19: `Name<A, B>`; nil = not parameterized
+	IsArray  bool              // wave 19: trailing `[]` — `string[]`
+	FnSig    *FnTypeSig        // wave 19: `fn(A, B) -> R` annotations; nil otherwise
 }
+
+// TypeParam is one declared type parameter: `T` or `T: Bound`.
+// Bound is a full *TypeAnnotation (nil = unbounded, i.e. `any`).
+type TypeParam struct {
+	Token lexer.Token // the parameter name token
+	Name  *Identifier
+	Bound *TypeAnnotation // nil = unbounded
+}
+
+// FnTypeSig is the signature carried by a `fn(A, B) -> R` type annotation.
+type FnTypeSig struct {
+	Params []*TypeAnnotation
+	Return *TypeAnnotation // nil = unannotated
+}
+
+func (t *TypeAnnotation) TokenLiteral() string { return t.Token.Literal }
 
 func (t *TypeAnnotation) String() string {
 	if t == nil {
@@ -255,17 +283,41 @@ func (t *TypeAnnotation) String() string {
 		}
 		return strings.Join(parts, " | ")
 	}
-	return t.Name
+	out := t.Name
+	if t.FnSig != nil {
+		params := make([]string, len(t.FnSig.Params))
+		for i, a := range t.FnSig.Params {
+			params[i] = a.String()
+		}
+		out = "fn(" + strings.Join(params, ", ") + ")"
+		if t.FnSig.Return != nil {
+			out += " -> " + t.FnSig.Return.String()
+		}
+		return out
+	}
+	if len(t.TypeArgs) > 0 {
+		args := make([]string, len(t.TypeArgs))
+		for i, a := range t.TypeArgs {
+			args[i] = a.String()
+		}
+		out += "<" + strings.Join(args, ", ") + ">"
+	}
+	if t.IsArray {
+		out += "[]"
+	}
+	return out
 }
 
 // FunctionLiteral: fn(x, y) { ... }  (optional defaults: fn(x, y=1))
 // Wave 5: optional runtime-checked annotations: fn add(a: int, b: int): int { ... }
+// Wave 19: optional type parameters: fn identity<T>(x: T) -> T { ... }
 type FunctionLiteral struct {
 	Token      lexer.Token
 	Parameters []*Identifier
 	Defaults   []Expression      // parallel to Parameters; nil entry = required
 	ParamTypes []*TypeAnnotation // parallel to Parameters; nil entry = unannotated
 	ReturnType *TypeAnnotation   // nil = unannotated
+	TypeParams []*TypeParam      // wave 19: fn<T, U: Bound>; nil = not generic
 	Body       *BlockStatement
 }
 
@@ -285,10 +337,13 @@ func (fl *FunctionLiteral) String() string {
 }
 
 // CallExpression: f(a, b)
+// Wave 19: TypeArgs holds explicit `<>` type arguments — `f::<int>(x)` or
+// `f<int>(x)` — nil when the call relies on inference.
 type CallExpression struct {
 	Token     lexer.Token
 	Function  Expression
 	Arguments []Expression
+	TypeArgs  []*TypeAnnotation
 }
 
 func (ce *CallExpression) expressionNode()      {}
@@ -300,6 +355,13 @@ func (ce *CallExpression) String() string {
 		args = append(args, a.String())
 	}
 	out.WriteString(ce.Function.String())
+	if len(ce.TypeArgs) > 0 {
+		ta := []string{}
+		for _, t := range ce.TypeArgs {
+			ta = append(ta, t.String())
+		}
+		out.WriteString("<" + strings.Join(ta, ", ") + ">")
+	}
 	out.WriteString("(")
 	out.WriteString(strings.Join(args, ", "))
 	out.WriteString(")")
@@ -465,16 +527,47 @@ func (fs *ForInStatement) String() string {
 	return "for (" + fs.Name.String() + " in " + fs.Iterable.String() + ") " + fs.Body.String()
 }
 
-// ImportStatement: import "path.ns"
+// ImportStatement: import "path.ns" or import std.core (wave 19: bare
+// module paths from the std dialect; ModulePath is set instead of Path).
 type ImportStatement struct {
-	Token lexer.Token
-	Path  *StringLiteral
+	Token      lexer.Token
+	Path       *StringLiteral // quoted form: import "path.ns"
+	ModulePath string         // wave 19: dotted form: import std.core
 }
 
 func (is *ImportStatement) statementNode()       {}
 func (is *ImportStatement) TokenLiteral() string { return is.Token.Literal }
 func (is *ImportStatement) String() string {
+	if is.ModulePath != "" {
+		return "import " + is.ModulePath
+	}
 	return "import " + is.Path.String()
+}
+
+// ModuleStatement: module std.core; — wave 19 (std dialect). Declares the
+// module this file belongs to. Recorded by the parser; the module *system*
+// (resolution, loading) is a future wave — see PLACEHOLDERS.md.
+type ModuleStatement struct {
+	Token lexer.Token
+	Name  string // dotted path: "std.collections.vector"
+}
+
+func (ms *ModuleStatement) statementNode()       {}
+func (ms *ModuleStatement) TokenLiteral() string { return ms.Token.Literal }
+func (ms *ModuleStatement) String() string       { return "module " + ms.Name + ";" }
+
+// PostfixExpression: x++ / x-- — wave 19. Operand must be assignable
+// (identifier, member, or index); evaluates to the value BEFORE the update.
+type PostfixExpression struct {
+	Token    lexer.Token // the ++ or -- token
+	Operator string      // "++" or "--"
+	Operand  Expression
+}
+
+func (pe *PostfixExpression) expressionNode()      {}
+func (pe *PostfixExpression) TokenLiteral() string { return pe.Token.Literal }
+func (pe *PostfixExpression) String() string {
+	return "(" + pe.Operand.String() + pe.Operator + ")"
 }
 
 // IndexAssignExpression: arr[i] = value  or  map[key] = value
@@ -491,11 +584,27 @@ func (ia *IndexAssignExpression) String() string {
 }
 
 // ClassStatement: class Name { methods... }  or  class Name extends Parent { ... }
+// Wave 19: class Box<T> { ... } — TypeParams declares type parameters;
+// Fields holds `let`/`const` field declarations; Public records `pub class`.
 type ClassStatement struct {
+	Token      lexer.Token
+	Name       *Identifier
+	Parent     *Identifier // optional
+	TypeParams []*TypeParam // wave 19: class Box<T, U: Bound>
+	Methods    []*ClassMethod
+	Fields     []*ClassField // wave 19: `let x: T;` / `pub let x: T = v;`
+	Public     bool          // wave 19: `pub class`
+}
+
+// ClassField: a field declared in a class body — wave 19 (std dialect).
+// `let size: number = 0;` — Default is evaluated at instantiation, before
+// init runs. A nil Default means "declared only" (dynamic).
+type ClassField struct {
 	Token   lexer.Token
 	Name    *Identifier
-	Parent  *Identifier // optional
-	Methods []*ClassMethod
+	Type    *TypeAnnotation // nil = unannotated
+	Default Expression      // nil = no default
+	Public  bool            // `pub let`
 }
 
 // ---- Wave 5: interfaces (Go/Python Protocol/TS inspired) ----
@@ -507,6 +616,7 @@ type InterfaceDecl struct {
 	Token   lexer.Token
 	Name    *Identifier
 	Methods []*InterfaceMethod
+	Public  bool // wave 19: `pub interface`
 }
 
 type InterfaceMethod struct {
@@ -533,6 +643,8 @@ type ClassMethod struct {
 	Parameters []*Identifier
 	ParamTypes []*TypeAnnotation // wave 5: parallel to Parameters; nil entry = unannotated
 	ReturnType *TypeAnnotation   // wave 5: nil = unannotated
+	TypeParams []*TypeParam      // wave 19: fn map<U>(...); nil = not generic
+	Public     bool              // wave 19: `pub fn`
 	Body       *BlockStatement
 }
 
@@ -551,9 +663,12 @@ func (cs *ClassStatement) String() string {
 }
 
 // NewExpression: new ClassName(args)
+// Wave 19: new Box<int>(42) — TypeArgs holds explicit type arguments;
+// nil = infer (or dynamic).
 type NewExpression struct {
 	Token     lexer.Token
 	ClassName *Identifier
+	TypeArgs  []*TypeAnnotation
 	Arguments []Expression
 }
 
@@ -648,9 +763,10 @@ func (me *MatchExpression) String() string       { return "match (...) { ... }" 
 
 // ConstStatement: const x = expr (non-reassignable)
 type ConstStatement struct {
-	Token lexer.Token
-	Name  *Identifier
-	Value Expression
+	Token  lexer.Token
+	Name   *Identifier
+	Value  Expression
+	Public bool // wave 19: `pub const`
 }
 
 func (cs *ConstStatement) statementNode()       {}
@@ -695,10 +811,11 @@ func (ds *DecoratorStatement) String() string {
 // remembered in the environment, and later assignments to the variable are
 // checked too.
 type TypedLetStatement struct {
-	Token lexer.Token
-	Name  *Identifier
-	Type  *TypeAnnotation
-	Value Expression
+	Token  lexer.Token
+	Name   *Identifier
+	Type   *TypeAnnotation
+	Value  Expression
+	Public bool // wave 19: `pub let x: T`
 }
 
 func (tl *TypedLetStatement) statementNode()       {}
@@ -735,6 +852,7 @@ type EnumStatement struct {
 	Token   lexer.Token
 	Name    *Identifier
 	Members []*Identifier
+	Public  bool // wave 19: `pub enum`
 }
 
 func (es *EnumStatement) statementNode()       {}
@@ -769,6 +887,7 @@ type RecordStatement struct {
 	Token  lexer.Token
 	Name   *Identifier
 	Fields []*Identifier
+	Public bool // wave 19: `pub record`
 }
 
 func (rs *RecordStatement) statementNode()       {}

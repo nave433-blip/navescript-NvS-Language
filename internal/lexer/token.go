@@ -49,6 +49,11 @@ const (
 	NULL_COAL      TokenType = "??"
 	OPTIONAL_CHAIN TokenType = "?."
 	PIPE           TokenType = "|>"
+	// Wave 19: namespace/type-argument syntax and postfix operators.
+	DCOLON     TokenType = "::"
+	ARROW      TokenType = "->"
+	PLUS_PLUS  TokenType = "++"
+	MINUS_MINUS TokenType = "--"
 	LPAREN         TokenType = "("
 	RPAREN         TokenType = ")"
 	LBRACE         TokenType = "{"
@@ -93,6 +98,9 @@ const (
 	ELLIPSIS TokenType = "..."
 	// Wave 5: `interface Name { method(): type }` declarations.
 	INTERFACE TokenType = "interface"
+	// Wave 19: visibility and module declarations (std dialect).
+	PUB    TokenType = "pub"
+	MODULE TokenType = "module"
 )
 
 // Token represents a single lexical token.
@@ -136,6 +144,8 @@ var keywords = map[string]TokenType{
 	"defer":     DEFER,
 	"finally":   FINALLY,
 	"interface": INTERFACE,
+	"pub":       PUB,
+	"module":    MODULE,
 	"switch":    MATCH, // alias for match
 	"and":       AND,
 	"or":        OR,

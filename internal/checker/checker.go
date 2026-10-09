@@ -53,12 +53,17 @@ import (
 // A non-empty Union means the union of the members. Sig carries a known
 // function signature; HashFuncs records function-valued keys of a hash
 // literal (name -> arity) for structural interface checks.
+// Wave 19: TypeParam (non-empty) is a reference to an in-scope generic
+// type parameter — a named hole, `any`-compatible; TypeArgs carries
+// explicit type arguments on instance types (`Vec<int>`).
 type Type struct {
 	Name      string
 	Union     []Type
 	Sig       *FuncSig
 	HashFuncs map[string]FuncArity
 	ClassName string // for Name=="instance": the class of `new C()`
+	TypeParam string // wave 19: non-empty = reference to type parameter `T`
+	TypeArgs  []Type // wave 19: `Vec<int>` → [int]
 }
 
 // FuncArity is the static shape of a callable: total parameters and how
@@ -70,9 +75,21 @@ type FuncArity struct {
 }
 
 // FuncSig is a statically known function signature.
+// Wave 19: TypeParams holds the declared generic parameters (`fn<T>`);
+// a nil/empty list means the function is not generic.
 type FuncSig struct {
-	Params []ParamSig
-	Return *Type // nil = any
+	Params     []ParamSig
+	Return     *Type // nil = any
+	TypeParams []*GenericParam
+}
+
+// GenericParam is one declared type parameter: `T` or `T: Bound`.
+// A nil Bound means unbounded (any). BoundSrc is the original AST bound,
+// used to report unknown bound names exactly once in pass 2.
+type GenericParam struct {
+	Name     string
+	Bound    *Type
+	BoundSrc *ast.TypeAnnotation
 }
 
 // ParamSig is one parameter: a nil Type means unannotated (any).
@@ -86,6 +103,9 @@ func anyType() Type            { return Type{Name: "any"} }
 func simpleType(n string) Type { return Type{Name: n} }
 
 func (t Type) String() string {
+	if t.TypeParam != "" {
+		return t.TypeParam
+	}
 	if len(t.Union) > 0 {
 		parts := make([]string, len(t.Union))
 		for i, u := range t.Union {
@@ -94,7 +114,15 @@ func (t Type) String() string {
 		return strings.Join(parts, " | ")
 	}
 	if t.Name == "instance" && t.ClassName != "" {
-		return t.ClassName
+		s := t.ClassName
+		if len(t.TypeArgs) > 0 {
+			args := make([]string, len(t.TypeArgs))
+			for i, a := range t.TypeArgs {
+				args[i] = a.String()
+			}
+			s += "<" + strings.Join(args, ", ") + ">"
+		}
+		return s
 	}
 	return t.Name
 }
@@ -104,6 +132,7 @@ func isAny(t Type) bool { return t.Name == "any" && len(t.Union) == 0 }
 // builtinTypes mirrors internal/eval's builtinAnnotationChecks (lowercased).
 var builtinTypes = map[string]bool{
 	"int": true, "integer": true, "float": true, "number": true,
+	"numeric": true, "comparable": true, "printable": true,
 	"string": true, "str": true, "bool": true, "boolean": true,
 	"null": true, "array": true, "list": true, "hash": true,
 	"map": true, "dict": true, "tuple": true, "function": true,
@@ -116,6 +145,13 @@ func canonicalName(name string) string {
 	switch strings.ToLower(name) {
 	case "integer":
 		return "int"
+	case "numeric":
+		// Wave 19: `numeric` is the `number` tower (int/float/number).
+		return "number"
+	case "comparable", "printable":
+		// Wave 19: every NvS value is comparable (`==` never errors) and
+		// printable (every value stringifies) — honestly `any`.
+		return "any"
 	case "str":
 		return "string"
 	case "boolean":
@@ -152,16 +188,126 @@ func annotationType(ann *ast.TypeAnnotation, c *Checker) (Type, string) {
 	if strings.EqualFold(name, "any") {
 		return anyType(), ""
 	}
+	// Wave 19: `fn(A, B) -> R` function-type annotations.
+	if ann.FnSig != nil {
+		return c.fnTypeAnnotation(ann)
+	}
+	// Wave 19: a reference to an in-scope generic type parameter — a named
+	// hole, `any`-compatible (gradual typing, rule 9).
+	if gp := c.lookupTypeParam(name); gp != nil {
+		if len(ann.TypeArgs) > 0 {
+			return anyType(), fmt.Sprintf("type parameter '%s' cannot take type arguments", name)
+		}
+		if ann.IsArray {
+			return simpleType("array"), ""
+		}
+		return Type{TypeParam: name}, ""
+	}
 	canon := canonicalName(name)
 	if builtinTypes[canon] {
+		// Wave 19: builtins don't take type arguments (`int<string>` is
+		// nonsense; say `[int]`/`string[]` for arrays of int).
+		if len(ann.TypeArgs) > 0 {
+			return anyType(), fmt.Sprintf("only classes can take type arguments, not '%s'", name)
+		}
+		// `string[]` etc: the element type is erased, the shape is array.
+		if ann.IsArray {
+			return simpleType("array"), ""
+		}
 		return simpleType(canon), ""
 	}
 	// Declared type names (class/interface/record/enum) are case-sensitive,
 	// exactly like the runtime's lexical lookup.
 	if c.isDeclaredType(name) {
+		// Wave 19: parameterized types — `Vec<int>`.
+		if len(ann.TypeArgs) > 0 {
+			if _, ok := c.classes[name]; !ok {
+				return anyType(), fmt.Sprintf("only classes can take type arguments, not '%s'", name)
+			}
+			var targs []Type
+			for _, ta := range ann.TypeArgs {
+				t, unk := annotationType(ta, c)
+				if unk != "" {
+					return anyType(), unk
+				}
+				targs = append(targs, t)
+			}
+			if ann.IsArray {
+				return simpleType("array"), ""
+			}
+			return Type{Name: "instance", ClassName: name, TypeArgs: targs}, ""
+		}
+		if ann.IsArray {
+			return simpleType("array"), ""
+		}
 		return simpleType(name), ""
 	}
 	return anyType(), fmt.Sprintf("unknown type '%s'", name)
+}
+
+// fnTypeAnnotation converts a `fn(A, B) -> R` annotation into a static
+// function type. Wave 19.
+func (c *Checker) fnTypeAnnotation(ann *ast.TypeAnnotation) (Type, string) {
+	sig := &FuncSig{}
+	for _, p := range ann.FnSig.Params {
+		t, unk := annotationType(p, c)
+		if unk != "" {
+			return anyType(), unk
+		}
+		tt := t
+		sig.Params = append(sig.Params, ParamSig{Type: &tt, Required: true})
+	}
+	if ann.FnSig.Return != nil {
+		t, unk := annotationType(ann.FnSig.Return, c)
+		if unk != "" {
+			return anyType(), unk
+		}
+		tt := t
+		sig.Return = &tt
+	}
+	return Type{Name: "function", Sig: sig}, ""
+}
+
+// genericParamsOf converts AST type parameters to checker GenericParams,
+// resolving bounds left-to-right with earlier params in scope
+// (`<T, U: Vec<T>>`). Unknown bound names resolve to any here and are
+// reported exactly once by checkTypeParamDecls in pass 2.
+func (c *Checker) genericParamsOf(tps []*ast.TypeParam) []*GenericParam {
+	var out []*GenericParam
+	for _, tp := range tps {
+		gp := &GenericParam{Name: tp.Name.Value, BoundSrc: tp.Bound}
+		if tp.Bound != nil {
+			if bt, unk := annotationType(tp.Bound, c); unk == "" {
+				b := bt
+				gp.Bound = &b
+			}
+		}
+		out = append(out, gp)
+		// This param is in scope for the bounds of later params.
+		c.pushTypeParams([]*GenericParam{gp})
+	}
+	for range out {
+		c.popTypeParams()
+	}
+	return out
+}
+
+// checkTypeParamDecls enforces checker rules 3 (no duplicates) and 4
+// (bounds must name known types) for one declaration's type parameters.
+// Call with the params' own scope pushed (plus any outer scopes).
+func (c *Checker) checkTypeParamDecls(tps []*GenericParam, line int) {
+	seen := map[string]bool{}
+	for _, tp := range tps {
+		if seen[tp.Name] {
+			c.errorf(line, "duplicate type parameter '%s'", tp.Name)
+		}
+		seen[tp.Name] = true
+		if tp.BoundSrc != nil {
+			if _, unk := annotationType(tp.BoundSrc, c); unk != "" {
+				c.errorf(line, "%s in bound of type parameter '%s'", unk, tp.Name)
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -193,10 +339,12 @@ type varInfo struct {
 	declared *Type // non-nil when an annotation was written
 }
 
-// classInfo is a declared class: its methods and parent.
+// classInfo is a declared class: its methods, parent, and (wave 19)
+// generic type parameters.
 type classInfo struct {
-	methods map[string]*FuncSig
-	parent  string
+	methods    map[string]*FuncSig
+	parent     string
+	typeParams []*GenericParam
 }
 
 // ifaceInfo is a declared interface: its methods in order.
@@ -216,6 +364,7 @@ type ifaceMethod struct {
 type Checker struct {
 	file    string
 	errs    []CheckError
+	warns   []CheckError // wave 19: advisory warnings (e.g. type-param shadowing)
 	scopes  []map[string]varInfo
 	classes map[string]*classInfo
 	ifaces  map[string]*ifaceInfo
@@ -223,21 +372,58 @@ type Checker struct {
 	enums   map[string]map[string]bool
 	// fnStack tracks enclosing functions' declared return types (nil = any).
 	fnStack []*Type
+	// Wave 19: tparamStack is the stack of in-scope generic type parameters
+	// (innermost last); resolvedCalls caches instantiated call signatures
+	// per call node so inference runs once; resolveFailed marks calls whose
+	// generic resolution already reported an error.
+	tparamStack   []map[string]*GenericParam
+	resolvedCalls map[*ast.CallExpression]*FuncSig
+	resolveFailed map[*ast.CallExpression]bool
 }
 
 func newChecker(file string) *Checker {
 	return &Checker{
-		file:    file,
-		scopes:  []map[string]varInfo{{}},
-		classes: map[string]*classInfo{},
-		ifaces:  map[string]*ifaceInfo{},
-		records: map[string]bool{},
-		enums:   map[string]map[string]bool{},
+		file:          file,
+		scopes:        []map[string]varInfo{{}},
+		classes:       map[string]*classInfo{},
+		ifaces:        map[string]*ifaceInfo{},
+		records:       map[string]bool{},
+		enums:         map[string]map[string]bool{},
+		resolvedCalls: map[*ast.CallExpression]*FuncSig{},
+		resolveFailed: map[*ast.CallExpression]bool{},
 	}
 }
 
 func (c *Checker) errorf(line int, format string, args ...interface{}) {
 	c.errs = append(c.errs, CheckError{File: c.file, Line: line, Msg: fmt.Sprintf(format, args...)})
+}
+
+// warnf records an advisory warning. Warnings never fail `nvs check`.
+func (c *Checker) warnf(line int, format string, args ...interface{}) {
+	c.warns = append(c.warns, CheckError{File: c.file, Line: line, Msg: "warning: " + fmt.Sprintf(format, args...)})
+}
+
+// pushTypeParams pushes one scope of generic type parameters.
+func (c *Checker) pushTypeParams(params []*GenericParam) {
+	m := map[string]*GenericParam{}
+	for _, gp := range params {
+		m[gp.Name] = gp
+	}
+	c.tparamStack = append(c.tparamStack, m)
+}
+
+func (c *Checker) popTypeParams() {
+	c.tparamStack = c.tparamStack[:len(c.tparamStack)-1]
+}
+
+// lookupTypeParam finds an in-scope type parameter (innermost first).
+func (c *Checker) lookupTypeParam(name string) *GenericParam {
+	for i := len(c.tparamStack) - 1; i >= 0; i-- {
+		if gp, ok := c.tparamStack[i][name]; ok {
+			return gp
+		}
+	}
+	return nil
 }
 
 func (c *Checker) pushScope() { c.scopes = append(c.scopes, map[string]varInfo{}) }
@@ -280,6 +466,17 @@ func (c *Checker) assignableTo(src, dst Type) bool {
 	if isAny(src) || isAny(dst) {
 		return true
 	}
+	// Wave 19: a type parameter is a named hole — `any`-compatible in both
+	// directions (rule 9's spirit: never error on generic code paths the
+	// checker cannot see through).
+	if src.TypeParam != "" || dst.TypeParam != "" {
+		return true
+	}
+	// Wave 19: function types — arity must match; parameters are checked
+	// bivariantly (gradual), returns covariantly.
+	if src.Name == "function" && dst.Name == "function" {
+		return c.funcTypesCompatible(src, dst)
+	}
 	// Union destination: every source member must match some dest member.
 	// (When src is not a union this reduces to "matches a member".)
 	if len(dst.Union) > 0 {
@@ -315,7 +512,12 @@ func (c *Checker) assignableTo(src, dst Type) bool {
 		// Named class/interface/record/enum: same declaration.
 		// Instances: allow subclass -> parent via the extends chain.
 		if src.Name == "instance" {
-			return c.instanceOf(src.ClassName, dst.ClassName)
+			if !c.instanceOf(src.ClassName, dst.ClassName) {
+				return false
+			}
+			// Wave 19, rule 10: invariance — `Box<int>` is not
+			// `Box<number>`. Unknown (nil) type args are gradual wildcards.
+			return c.typeArgsInvariant(src.TypeArgs, dst.TypeArgs)
 		}
 		return true
 	}
@@ -332,6 +534,74 @@ func (c *Checker) assignableTo(src, dst Type) bool {
 		return src.Name == "instance" && c.instanceOf(src.ClassName, dst.Name)
 	}
 	return false
+}
+
+// typeArgsInvariant enforces wave-19 rule 10 (invariance): two
+// parameterized types are compatible only when their type arguments match
+// exactly. A side with unknown (nil) arguments is a gradual wildcard.
+func (c *Checker) typeArgsInvariant(src, dst []Type) bool {
+	if len(src) == 0 || len(dst) == 0 {
+		return true
+	}
+	if len(src) != len(dst) {
+		return false
+	}
+	for i := range src {
+		if !c.typesEqual(src[i], dst[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// typesEqual is exact type equality modulo gradual `any`.
+func (c *Checker) typesEqual(a, b Type) bool {
+	if isAny(a) || isAny(b) {
+		return true
+	}
+	if a.TypeParam != "" || b.TypeParam != "" {
+		return a.TypeParam == b.TypeParam
+	}
+	if a.Name != b.Name || a.ClassName != b.ClassName {
+		return false
+	}
+	if len(a.Union) != len(b.Union) || len(a.TypeArgs) != len(b.TypeArgs) {
+		return false
+	}
+	for i := range a.Union {
+		if !c.typesEqual(a.Union[i], b.Union[i]) {
+			return false
+		}
+	}
+	for i := range a.TypeArgs {
+		if !c.typesEqual(a.TypeArgs[i], b.TypeArgs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// funcTypesCompatible checks function-type assignability: same arity,
+// bivariant parameters (gradual), covariant return.
+func (c *Checker) funcTypesCompatible(src, dst Type) bool {
+	if src.Sig == nil || dst.Sig == nil {
+		return true // unknown signature: gradual
+	}
+	if len(src.Sig.Params) != len(dst.Sig.Params) {
+		return false
+	}
+	for i := range src.Sig.Params {
+		sp, dp := src.Sig.Params[i].Type, dst.Sig.Params[i].Type
+		if sp != nil && dp != nil && !isAny(*sp) && !isAny(*dp) {
+			if !c.assignableTo(*sp, *dp) && !c.assignableTo(*dp, *sp) {
+				return false
+			}
+		}
+	}
+	if src.Sig.Return != nil && dst.Sig.Return != nil {
+		return c.assignableTo(*src.Sig.Return, *dst.Sig.Return)
+	}
+	return true
 }
 
 // instanceOf walks the extends chain: is child the same class as, or a
@@ -385,6 +655,12 @@ func (c *Checker) satisfiesIface(src Type, ifaceName string) bool {
 			if sig == nil {
 				return false
 			}
+			// Wave 19, rule 8 (Go's honest boundary): a generic method is
+			// an infinite family of methods, not one entry in a dispatch
+			// table — it cannot satisfy an interface method.
+			if len(sig.TypeParams) > 0 {
+				return false
+			}
 			if !c.arityCompatible(sig, im.arity) {
 				return false
 			}
@@ -392,6 +668,33 @@ func (c *Checker) satisfiesIface(src Type, ifaceName string) bool {
 		return true
 	}
 	return false
+}
+
+// ifaceMismatchReason explains why an instance doesn't satisfy an interface
+// ("" when it does). Used to sharpen the assignment error.
+func (c *Checker) ifaceMismatchReason(src Type, ifaceName string) string {
+	iface, ok := c.ifaces[ifaceName]
+	if !ok || src.Name != "instance" {
+		return ""
+	}
+	ci, ok := c.classes[src.ClassName]
+	if !ok {
+		return ""
+	}
+	for _, mname := range iface.order {
+		im := iface.methods[mname]
+		sig := c.lookupMethod(ci, mname)
+		if sig == nil {
+			return fmt.Sprintf("method '%s' is missing", mname)
+		}
+		if len(sig.TypeParams) > 0 {
+			return fmt.Sprintf("method '%s' is generic and cannot satisfy interface method '%s'", mname, mname)
+		}
+		if !c.arityCompatible(sig, im.arity) {
+			return fmt.Sprintf("method '%s' has incompatible arity", mname)
+		}
+	}
+	return ""
 }
 
 // arityCompatible mirrors the runtime implements() rule: a function with
@@ -476,9 +779,14 @@ func (c *Checker) collectDecls(prog *ast.Program) {
 			if n.Parent != nil {
 				ci.parent = n.Parent.Value
 			}
+			// Wave 19: class type params are in scope for every method
+			// signature (rule 1).
+			ci.typeParams = c.genericParamsOf(n.TypeParams)
+			c.pushTypeParams(ci.typeParams)
 			for _, m := range n.Methods {
 				ci.methods[m.Name.Value] = c.methodSigOf(m)
 			}
+			c.popTypeParams()
 			c.define(n.Name.Value, varInfo{typ: simpleType(n.Name.Value)})
 		case *ast.InterfaceDecl:
 			ii := c.ifaces[n.Name.Value]
@@ -518,8 +826,12 @@ func (c *Checker) collectDecls(prog *ast.Program) {
 // funcSigOf builds the static signature of a function literal. It is pure:
 // unknown annotation names resolve to any here; unknown names are reported
 // exactly once by the pass-2 validation in checkFunctionBody.
+// Wave 19: the literal's type parameters are in scope for its annotations.
 func (c *Checker) funcSigOf(fl *ast.FunctionLiteral) *FuncSig {
-	sig := &FuncSig{}
+	tparams := c.genericParamsOf(fl.TypeParams)
+	c.pushTypeParams(tparams)
+	defer c.popTypeParams()
+	sig := &FuncSig{TypeParams: tparams}
 	for i, p := range fl.Parameters {
 		ps := ParamSig{Name: p.Value, Required: true}
 		if i < len(fl.Defaults) && fl.Defaults[i] != nil {
@@ -551,6 +863,7 @@ func (c *Checker) methodSigOf(m *ast.ClassMethod) *FuncSig {
 		Parameters: m.Parameters,
 		ParamTypes: m.ParamTypes,
 		ReturnType: m.ReturnType,
+		TypeParams: m.TypeParams,
 	}
 	return c.funcSigOf(fl)
 }
@@ -589,7 +902,7 @@ func (c *Checker) checkStatement(s ast.Statement) {
 		vt := c.infer(n.Value)
 		c.checkExpression(n.Value)
 		if !c.assignableTo(vt, t) {
-			c.errorf(lineOf(n), "cannot assign %s to variable '%s' of type %s", vt, n.Name.Value, t)
+			c.assignErrorf(lineOf(n), vt, t, fmt.Sprintf("variable '%s'", n.Name.Value))
 		}
 		c.define(n.Name.Value, varInfo{typ: t, declared: &t})
 	case *ast.ConstStatement:
@@ -663,15 +976,23 @@ func (c *Checker) checkStatement(s ast.Statement) {
 		if n.Value != nil {
 			c.checkExpression(n.Value)
 		}
-	case *ast.ClassStatement, *ast.InterfaceDecl, *ast.RecordStatement, *ast.EnumStatement:
+	case *ast.ClassStatement, *ast.InterfaceDecl, *ast.RecordStatement, *ast.EnumStatement, *ast.ModuleStatement:
 		// Declarations: check method bodies for classes; validate
 		// interface method annotations (unknown names reported once here).
+		// Wave 19: `module std.x;` is recorded, nothing to check.
 		if cs, ok := s.(*ast.ClassStatement); ok {
+			ci := c.classes[cs.Name.Value]
+			// Wave 19, rule 1: class type params are in scope for every
+			// method signature and body.
+			c.pushTypeParams(ci.typeParams)
+			c.checkTypeParamDecls(ci.typeParams, lineOf(cs))
 			for _, m := range cs.Methods {
 				fl := &ast.FunctionLiteral{Token: m.Token, Parameters: m.Parameters,
-					ParamTypes: m.ParamTypes, ReturnType: m.ReturnType, Body: m.Body}
+					ParamTypes: m.ParamTypes, ReturnType: m.ReturnType,
+					TypeParams: m.TypeParams, Body: m.Body}
 				c.checkFunctionBody(m.Name.Value, fl)
 			}
+			c.popTypeParams()
 		}
 		if id, ok := s.(*ast.InterfaceDecl); ok {
 			for _, m := range id.Methods {
@@ -723,8 +1044,27 @@ func (c *Checker) checkBlock(b *ast.BlockStatement) {
 // checkFunctionBody checks a function literal's body with its parameters in
 // scope, enforcing the declared return type. Unknown annotation names are
 // reported here, exactly once per function literal.
+// Wave 19: the literal's type parameters are in scope for the body; rules
+// 2 (shadowing warning), 3 (duplicates), 4 (bound names) are enforced.
 func (c *Checker) checkFunctionBody(name string, fl *ast.FunctionLiteral) {
 	sig := c.funcSigOf(fl)
+	// Rule 2: warn when a type parameter shadows one from an outer scope
+	// (e.g. a method's `T` shadowing the class's `T`).
+	outer := map[string]bool{}
+	for i := 0; i < len(c.tparamStack); i++ {
+		for n := range c.tparamStack[i] {
+			outer[n] = true
+		}
+	}
+	for _, tp := range sig.TypeParams {
+		if outer[tp.Name] {
+			c.warnf(lineOf(fl), "type parameter '%s' shadows an outer type parameter", tp.Name)
+		}
+	}
+	c.pushTypeParams(sig.TypeParams)
+	defer c.popTypeParams()
+	// Rules 3 and 4.
+	c.checkTypeParamDecls(sig.TypeParams, lineOf(fl))
 	for i, p := range fl.Parameters {
 		if i < len(fl.ParamTypes) && fl.ParamTypes[i] != nil {
 			if _, unk := annotationType(fl.ParamTypes[i], c); unk != "" {
@@ -817,6 +1157,29 @@ func (c *Checker) checkExpression(e ast.Expression) {
 		for _, a := range n.Arguments {
 			c.checkExpression(a)
 		}
+		// Wave 19: `new Box<int, string>` for 1-param Box is an error.
+		if len(n.TypeArgs) > 0 {
+			if ci, ok := c.classes[n.ClassName.Value]; ok &&
+				len(ci.typeParams) != len(n.TypeArgs) {
+				c.errorf(lineOf(n), "wrong number of type arguments for class '%s': got %d, want %d",
+					n.ClassName.Value, len(n.TypeArgs), len(ci.typeParams))
+			}
+		}
+		// Wave 19: inferred constructor type arguments must satisfy bounds
+		// (rule 5); uninferred params are `any` (gradual, not an error).
+		if ci, ok := c.classes[n.ClassName.Value]; ok && len(n.TypeArgs) == 0 {
+			targs := c.newTypeArgs(n)
+			for i, tp := range ci.typeParams {
+				if i < len(targs) {
+					if err := c.checkBound(targs[i], tp, map[string]Type{}); err != "" {
+						c.errorf(lineOf(n), "%s", err)
+					}
+				}
+			}
+		}
+	case *ast.PostfixExpression:
+		// Wave 19: `x++` — just check the operand.
+		c.checkExpression(n.Operand)
 	case *ast.TernaryExpression:
 		c.checkExpression(n.Condition)
 		c.checkExpression(n.Consequence)
@@ -856,12 +1219,24 @@ func (c *Checker) checkExpression(e ast.Expression) {
 	}
 }
 
-// checkAssign enforces a declared annotation on re-assignment.
+// assignErrorf reports a failed assignment, sharpening interface mismatches
+// with the specific reason (wave 19, rule 8).
+func (c *Checker) assignErrorf(line int, vt, t Type, what string) {
+	msg := fmt.Sprintf("cannot assign %s to %s of type %s", vt, what, t)
+	if t.Name != "" && vt.Name == "instance" {
+		if _, ok := c.ifaces[t.Name]; ok {
+			if r := c.ifaceMismatchReason(vt, t.Name); r != "" {
+				msg += ": " + r
+			}
+		}
+	}
+	c.errorf(line, "%s", msg)
+}
 func (c *Checker) checkAssign(name string, value ast.Expression, line int) {
 	vt := c.infer(value)
 	if v, ok := c.lookup(name); ok && v.declared != nil {
 		if !c.assignableTo(vt, *v.declared) {
-			c.errorf(line, "cannot assign %s to variable '%s' of type %s", vt, name, *v.declared)
+			c.assignErrorf(line, vt, *v.declared, fmt.Sprintf("variable '%s'", name))
 		}
 	}
 }
@@ -884,9 +1259,9 @@ func (c *Checker) checkCall(n *ast.CallExpression) {
 			return
 		}
 	}
-	sig := c.calleeSig(n.Function)
+	sig := c.resolveCall(n)
 	if sig == nil {
-		return // unknown callee: gradual, no checks.
+		return // unknown callee (gradual), or resolution already errored.
 	}
 	required := 0
 	for _, p := range sig.Params {
@@ -908,6 +1283,292 @@ func (c *Checker) checkCall(n *ast.CallExpression) {
 			c.errorf(lineOf(a), "argument %d: got %s, want %s", i+1, at, *sig.Params[i].Type)
 		}
 	}
+}
+
+// ---- Wave 19: generic call resolution (checker rules 5, 6) ----
+
+// resolveCall returns the instantiated signature for a call: explicit type
+// arguments are validated, otherwise type parameters are inferred from the
+// value arguments. Errors are reported exactly once per call node (results
+// are cached; infer() shares this path quietly).
+func (c *Checker) resolveCall(n *ast.CallExpression) *FuncSig {
+	if sig, ok := c.resolvedCalls[n]; ok {
+		return sig
+	}
+	if c.resolveFailed[n] {
+		return nil
+	}
+	base := c.calleeSig(n.Function)
+	if base == nil {
+		return nil // unknown callee: gradual, no checks.
+	}
+	if len(n.TypeArgs) > 0 && len(base.TypeParams) == 0 {
+		c.errorf(lineOf(n), "not a generic function: got %d type arguments", len(n.TypeArgs))
+		c.resolveFailed[n] = true
+		return nil
+	}
+	// Wave 19: for method calls, the receiver's type arguments substitute
+	// the class's type parameters (rule 1).
+	classSubst := map[string]Type{}
+	if mem, ok := n.Function.(*ast.MemberExpression); ok {
+		ot := c.infer(mem.Object)
+		if ot.Name == "instance" && len(ot.TypeArgs) > 0 {
+			if ci, ok := c.classes[ot.ClassName]; ok && len(ci.typeParams) == len(ot.TypeArgs) {
+				for i, tp := range ci.typeParams {
+					classSubst[tp.Name] = ot.TypeArgs[i]
+				}
+			}
+		}
+	}
+	sig := base
+	if len(base.TypeParams) > 0 || len(classSubst) > 0 {
+		var ok bool
+		sig, ok = c.instantiateCall(n, base, classSubst)
+		if !ok {
+			c.resolveFailed[n] = true
+			return nil
+		}
+	}
+	c.resolvedCalls[n] = sig
+	return sig
+}
+
+// instantiateCall substitutes type parameters in sig: classSubst first,
+// then the function's own params via explicit args or inference.
+func (c *Checker) instantiateCall(n *ast.CallExpression, sig *FuncSig, classSubst map[string]Type) (*FuncSig, bool) {
+	subst := map[string]Type{}
+	for k, v := range classSubst {
+		subst[k] = v
+	}
+	if len(sig.TypeParams) > 0 {
+		var targs []Type
+		if len(n.TypeArgs) > 0 {
+			if len(n.TypeArgs) != len(sig.TypeParams) {
+				c.errorf(lineOf(n), "wrong number of type arguments: got %d, want %d",
+					len(n.TypeArgs), len(sig.TypeParams))
+				return nil, false
+			}
+			for i, ta := range n.TypeArgs {
+				t, unk := annotationType(ta, c)
+				if unk != "" {
+					c.errorf(lineOf(ta), "%s", unk)
+					return nil, false
+				}
+				if err := c.checkBound(t, sig.TypeParams[i], subst); err != "" {
+					c.errorf(lineOf(ta), "%s", err)
+					return nil, false
+				}
+				targs = append(targs, t)
+			}
+		} else {
+			var ok bool
+			targs, ok = c.inferTypeArgs(n, sig, subst)
+			if !ok {
+				return nil, false
+			}
+		}
+		for i, tp := range sig.TypeParams {
+			subst[tp.Name] = targs[i]
+		}
+	}
+	out := c.substFuncSig(sig, subst)
+	out.TypeParams = nil // instantiated: no longer generic
+	return out, true
+}
+
+// inferTypeArgs infers a generic signature's type parameters from the value
+// arguments (rule 6). subst carries already-known substitutions (class type
+// params) so inference sees through them.
+func (c *Checker) inferTypeArgs(n *ast.CallExpression, sig *FuncSig, subst map[string]Type) ([]Type, bool) {
+	targs := make([]Type, len(sig.TypeParams))
+	inferred := make([]bool, len(sig.TypeParams))
+	indexOf := map[string]int{}
+	for i, tp := range sig.TypeParams {
+		indexOf[tp.Name] = i
+	}
+	psig := c.substFuncSig(sig, subst)
+	for i, a := range n.Arguments {
+		if i >= len(psig.Params) {
+			break
+		}
+		pt := psig.Params[i].Type
+		if pt == nil {
+			continue
+		}
+		at := c.infer(a)
+		c.unifyTypeParam(*pt, at, indexOf, targs, inferred)
+	}
+	for i, tp := range sig.TypeParams {
+		if !inferred[i] {
+			c.errorf(lineOf(n), "cannot infer type parameter '%s'; provide it explicitly", tp.Name)
+			return nil, false
+		}
+		if err := c.checkBound(targs[i], tp, subst); err != "" {
+			c.errorf(lineOf(n), "%s", err)
+			return nil, false
+		}
+	}
+	return targs, true
+}
+
+// unifyTypeParam matches a (possibly generic) parameter type against an
+// argument type, recording inferred type arguments. First inference wins;
+// inconsistencies surface later as ordinary argument-type errors.
+func (c *Checker) unifyTypeParam(pt, at Type, indexOf map[string]int, targs []Type, inferred []bool) {
+	if pt.TypeParam != "" {
+		if i, ok := indexOf[pt.TypeParam]; ok && !inferred[i] {
+			targs[i] = at
+			inferred[i] = true
+		}
+		return
+	}
+	// Through function types: fn(T) -> U against fn(int) -> string.
+	if pt.Name == "function" && at.Name == "function" && pt.Sig != nil && at.Sig != nil {
+		for j := range pt.Sig.Params {
+			if j < len(at.Sig.Params) {
+				var ppt, aat Type = anyType(), anyType()
+				if pt.Sig.Params[j].Type != nil {
+					ppt = *pt.Sig.Params[j].Type
+				}
+				if at.Sig.Params[j].Type != nil {
+					aat = *at.Sig.Params[j].Type
+				}
+				c.unifyTypeParam(ppt, aat, indexOf, targs, inferred)
+			}
+		}
+		if pt.Sig.Return != nil && at.Sig.Return != nil {
+			c.unifyTypeParam(*pt.Sig.Return, *at.Sig.Return, indexOf, targs, inferred)
+		}
+		return
+	}
+	// Through parameterized instances: Vec<T> against Vec<int>.
+	if pt.Name == "instance" && at.Name == "instance" &&
+		pt.ClassName == at.ClassName &&
+		len(pt.TypeArgs) > 0 && len(pt.TypeArgs) == len(at.TypeArgs) {
+		for j := range pt.TypeArgs {
+			c.unifyTypeParam(pt.TypeArgs[j], at.TypeArgs[j], indexOf, targs, inferred)
+		}
+		return
+	}
+	// Through unions: try each member.
+	if len(pt.Union) > 0 {
+		for _, m := range pt.Union {
+			c.unifyTypeParam(m, at, indexOf, targs, inferred)
+		}
+	}
+}
+
+// newTypeArgs resolves a NewExpression's class type arguments: explicit
+// `<...>` first, otherwise inferred from the init signature's use of the
+// class's type parameters (uninferred → any; gradual, never an error here).
+// Bounds are checked by the caller (checkExpression).
+func (c *Checker) newTypeArgs(n *ast.NewExpression) []Type {
+	if len(n.TypeArgs) > 0 {
+		var targs []Type
+		for _, ta := range n.TypeArgs {
+			at, unk := annotationType(ta, c)
+			if unk != "" {
+				at = anyType()
+			}
+			targs = append(targs, at)
+		}
+		return targs
+	}
+	ci, ok := c.classes[n.ClassName.Value]
+	if !ok || len(ci.typeParams) == 0 {
+		return nil
+	}
+	initSig := c.lookupMethod(ci, "init")
+	if initSig == nil {
+		return nil
+	}
+	targs := make([]Type, len(ci.typeParams))
+	inferred := make([]bool, len(ci.typeParams))
+	indexOf := map[string]int{}
+	for i, tp := range ci.typeParams {
+		indexOf[tp.Name] = i
+	}
+	for i, a := range n.Arguments {
+		if i >= len(initSig.Params) {
+			break
+		}
+		pt := initSig.Params[i].Type
+		if pt == nil {
+			continue
+		}
+		c.unifyTypeParam(*pt, c.infer(a), indexOf, targs, inferred)
+	}
+	for i := range targs {
+		if !inferred[i] {
+			targs[i] = anyType()
+		}
+	}
+	return targs
+}
+
+// checkBound enforces rule 5: t must satisfy tp's bound ("" = ok).
+// subst lets bounds reference outer type params (e.g. class params).
+func (c *Checker) checkBound(t Type, tp *GenericParam, subst map[string]Type) string {
+	if tp.Bound == nil || isAny(t) {
+		return "" // unbounded, or gradual: anything goes (rule 9)
+	}
+	bound := c.substType(*tp.Bound, subst)
+	if !c.assignableTo(t, bound) {
+		return fmt.Sprintf("type %s does not satisfy bound %s of type parameter '%s'", t, bound, tp.Name)
+	}
+	return ""
+}
+
+// substType replaces type-parameter references using subst.
+func (c *Checker) substType(t Type, subst map[string]Type) Type {
+	if t.TypeParam != "" {
+		if s, ok := subst[t.TypeParam]; ok {
+			return s
+		}
+		return t
+	}
+	if len(t.Union) > 0 {
+		members := make([]Type, len(t.Union))
+		for i, m := range t.Union {
+			members[i] = c.substType(m, subst)
+		}
+		t.Union = members
+		return t
+	}
+	if t.Sig != nil {
+		t.Sig = c.substFuncSig(t.Sig, subst)
+		return t
+	}
+	if len(t.TypeArgs) > 0 {
+		args := make([]Type, len(t.TypeArgs))
+		for i, a := range t.TypeArgs {
+			args[i] = c.substType(a, subst)
+		}
+		t.TypeArgs = args
+		return t
+	}
+	return t
+}
+
+// substFuncSig substitutes type parameters throughout a signature.
+func (c *Checker) substFuncSig(sig *FuncSig, subst map[string]Type) *FuncSig {
+	if len(subst) == 0 {
+		return sig
+	}
+	out := &FuncSig{TypeParams: sig.TypeParams}
+	for _, p := range sig.Params {
+		np := p
+		if p.Type != nil {
+			t := c.substType(*p.Type, subst)
+			np.Type = &t
+		}
+		out.Params = append(out.Params, np)
+	}
+	if sig.Return != nil {
+		t := c.substType(*sig.Return, subst)
+		out.Return = &t
+	}
+	return out
 }
 
 // calleeSig resolves a call target to a static signature when possible.
@@ -1028,7 +1689,7 @@ func (c *Checker) infer(e ast.Expression) Type {
 	case *ast.TernaryExpression:
 		return unionOf(c.infer(n.Consequence), c.infer(n.Alternative))
 	case *ast.CallExpression:
-		if sig := c.calleeSig(n.Function); sig != nil && sig.Return != nil {
+		if sig := c.resolveCall(n); sig != nil && sig.Return != nil {
 			return *sig.Return
 		}
 		return anyType()
@@ -1036,7 +1697,10 @@ func (c *Checker) infer(e ast.Expression) Type {
 		return Type{Name: "function", Sig: c.funcSigOf(n)}
 	case *ast.NewExpression:
 		if c.isDeclaredType(n.ClassName.Value) {
-			return Type{Name: "instance", ClassName: n.ClassName.Value}
+			t := Type{Name: "instance", ClassName: n.ClassName.Value}
+			// Wave 19: explicit `new Box<int>(...)`, else infer from init.
+			t.TypeArgs = c.newTypeArgs(n)
+			return t
 		}
 		return anyType()
 	case *ast.MemberExpression:
@@ -1235,6 +1899,8 @@ func lineOf(n ast.Node) int {
 		return t.Token.Line
 	case *ast.TryStatement:
 		return t.Token.Line
+	case *ast.TypeAnnotation:
+		return t.Token.Line
 	}
 	return 0
 }
@@ -1246,6 +1912,14 @@ func lineOf(n ast.Node) int {
 // CheckSource parses src and returns the list of static type errors.
 // Parse errors are returned as CheckErrors too (line from the parser).
 func CheckSource(file, src string) []CheckError {
+	errs, _ := CheckWithWarnings(file, src)
+	return errs
+}
+
+// CheckWithWarnings parses src and returns static type errors and advisory
+// warnings (wave 19: e.g. type-parameter shadowing). Warnings never fail
+// `nvs check`; they are reported for tooling and `--strict` futures.
+func CheckWithWarnings(file, src string) ([]CheckError, []CheckError) {
 	p := parser.New(lexer.New(src))
 	prog := p.ParseProgram()
 	var errs []CheckError
@@ -1253,10 +1927,10 @@ func CheckSource(file, src string) []CheckError {
 		errs = append(errs, CheckError{File: file, Msg: "parse error: " + pe})
 	}
 	if len(errs) > 0 {
-		return errs
+		return errs, nil
 	}
 	c := newChecker(file)
 	c.collectDecls(prog)
 	c.checkProgram(prog)
-	return c.errs
+	return c.errs, c.warns
 }

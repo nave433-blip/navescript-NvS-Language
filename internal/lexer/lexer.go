@@ -131,6 +131,12 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 			tok.Type = PLUS_ASSIGN
 			tok.Literal = string(ch) + string(l.ch)
+		} else if l.peekChar() == '+' {
+			// Wave 19: postfix increment `x++`.
+			ch := l.ch
+			l.readChar()
+			tok.Type = PLUS_PLUS
+			tok.Literal = string(ch) + string(l.ch)
 		} else {
 			tok.Type = PLUS
 			tok.Literal = string(l.ch)
@@ -140,6 +146,18 @@ func (l *Lexer) NextToken() Token {
 			ch := l.ch
 			l.readChar()
 			tok.Type = MINUS_ASSIGN
+			tok.Literal = string(ch) + string(l.ch)
+		} else if l.peekChar() == '-' {
+			// Wave 19: postfix decrement `x--`.
+			ch := l.ch
+			l.readChar()
+			tok.Type = MINUS_MINUS
+			tok.Literal = string(ch) + string(l.ch)
+		} else if l.peekChar() == '>' {
+			// Wave 19: return-type arrow `-> T` (std dialect).
+			ch := l.ch
+			l.readChar()
+			tok.Type = ARROW
 			tok.Literal = string(ch) + string(l.ch)
 		} else {
 			tok.Type = MINUS
@@ -248,8 +266,16 @@ func (l *Lexer) NextToken() Token {
 		tok.Type = SEMICOLON
 		tok.Literal = string(l.ch)
 	case ':':
-		tok.Type = COLON
-		tok.Literal = string(l.ch)
+		if l.peekChar() == ':' {
+			// Wave 19: namespace separator `ffi::call` and turbofish `::<T>`.
+			ch := l.ch
+			l.readChar()
+			tok.Type = DCOLON
+			tok.Literal = string(ch) + string(l.ch)
+		} else {
+			tok.Type = COLON
+			tok.Literal = string(l.ch)
+		}
 	case '?':
 		if l.peekChar() == '?' {
 			ch := l.ch

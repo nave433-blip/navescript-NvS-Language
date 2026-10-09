@@ -457,9 +457,14 @@ func runCheck(args []string) {
 			failed = true
 			continue
 		}
-		for _, e := range checker.CheckSource(f, string(src)) {
+		errs, warns := checker.CheckWithWarnings(f, string(src))
+		for _, e := range errs {
 			fmt.Fprintln(os.Stderr, e.Error())
 			failed = true
+		}
+		// Wave 19: warnings are advisory — printed, but never fail.
+		for _, w := range warns {
+			fmt.Fprintln(os.Stderr, w.Error())
 		}
 	}
 	if failed {

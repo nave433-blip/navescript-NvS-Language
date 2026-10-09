@@ -102,7 +102,7 @@ type Function struct {
 	Defaults   []ast.Expression // optional default expressions (parallel to Parameters)
 	// Wave 5: runtime type contracts. ParamTypes is parallel to Parameters
 	// (nil entry = unannotated); ReturnType nil = unannotated. Enforced at
-	// call time / on return — NvS has no static checker.
+	// call time / on return; `nvs check` also verifies them statically.
 	ParamTypes []*ast.TypeAnnotation
 	ReturnType *ast.TypeAnnotation
 	Body       *ast.BlockStatement
@@ -112,6 +112,11 @@ type Function struct {
 	// debugger/profiler hooks and nested imports attribute correctly.
 	// "" when defined in a context without a file (REPL, -e).
 	SourceFile string
+	// Wave 19: type parameter names in scope for this function
+	// (`fn<T>`, method's own params + its class's params). Erasure:
+	// annotations naming a type parameter are treated as `any` at
+	// runtime — generics are check-time only (see internal/checker).
+	TypeParams []string
 }
 
 func (f *Function) Type() ObjectType { return FUNCTION_OBJ }
@@ -337,6 +342,9 @@ type Class struct {
 	Name    string
 	Parent  *Class
 	Methods map[string]*Function
+	// Wave 19: field declarations (`let x: T = v` in the class body).
+	// Defaults evaluate at instantiation, before init runs.
+	Fields []*ast.ClassField
 }
 
 func (c *Class) Type() ObjectType { return CLASS_OBJ }
@@ -449,6 +457,10 @@ type Environment struct {
 	// the imported file during nested imports. Access via GetSourceFile /
 	// SetSourceFile: spawned tasks evaluate on other goroutines.
 	sourceFile string
+	// Wave 19: type parameter names in scope (generics erasure). Set on a
+	// call's environment from the function's TypeParams; annotations
+	// naming a type parameter are treated as `any` at runtime.
+	typeParams map[string]bool
 	// Wave 11: yield collection for generator functions. When a function
 	// body is evaluated by evalCollectingYields, it installs a sink on the
 	// call's own environment; evalYieldStatement appends to the NEAREST
@@ -503,6 +515,39 @@ func (e *Environment) SetSourceFile(f string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.sourceFile = f
+}
+
+// SetTypeParams records generic type parameter names in scope for this
+// call's environment. Wave 19: erasure — the runtime treats annotations
+// naming a type parameter as `any`.
+func (e *Environment) SetTypeParams(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.typeParams == nil {
+		e.typeParams = map[string]bool{}
+	}
+	for _, n := range names {
+		e.typeParams[n] = true
+	}
+}
+
+// TypeParamInScope reports whether name is a generic type parameter visible
+// from this environment (walks the outer chain). Wave 19.
+func (e *Environment) TypeParamInScope(name string) bool {
+	e.mu.RLock()
+	ok := e.typeParams[name]
+	outer := e.outer
+	e.mu.RUnlock()
+	if ok {
+		return true
+	}
+	if outer != nil {
+		return outer.TypeParamInScope(name)
+	}
+	return false
 }
 
 func (e *Environment) SetConst(name string, val Object) Object {
