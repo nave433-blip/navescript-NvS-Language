@@ -6583,6 +6583,9 @@ func initBuiltins() {
 	// primitives (qubit/qzero/qgate/qtensor/qmeasure/qprob/qnormalize/
 	// qinner), physics_const(), and self_eval().
 	registerPort29Builtins()
+	// Wave 20: stdlib revival — real TCP sockets, env_all, AES-GCM.
+	// Go-standard-library only; no new external dependencies.
+	registerWave20Builtins()
 }
 
 func ensureBuiltins() {
