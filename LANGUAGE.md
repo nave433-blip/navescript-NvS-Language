@@ -794,6 +794,44 @@ function literals (struct-literal field selectors have no NvS analogue).
 are pure-NvS on real type parameters, with `Vector<T>` gaining generic
 `map<U>`/`filter` methods.
 
+## Wave 20 — stdlib revival: sockets, static methods, honest crypto (2.2.0-dev)
+
+**Static methods.** `static fn` in a class body is called on the class
+itself — `Sha256.hash("abc")` — with no `this` bound (using `this` inside
+a static method is a runtime error). `static` is a contextual keyword: it
+only acts as a modifier directly before `fn`/`pub`/a method name in a class
+body, so `static` stays a legal identifier everywhere else, and a method
+can even be *named* `static`. Calling a non-static method on the class is
+a clean error, not a crash.
+
+**New builtins** (all Go-standard-library-backed, no new dependencies):
+
+| Area | New builtins | Notes |
+|------|--------------|-------|
+| TCP | `tcp_connect(host, port)`, `tcp_listen(port)`, `tcp_accept(h)`, `tcp_read(h, n)`, `tcp_write(h, data)`, `tcp_close(h)` | Real sockets via Go's `net`. String handles (same pattern as `sqlite_*`). `tcp_read` returns up to n bytes (one Read call — may return fewer). |
+| Env | `env_all()` → hash | Full environment listing. |
+| AES-GCM | `aes_gcm_encrypt(key, plaintext)`, `aes_gcm_decrypt(key, b64)` | Keys must be 16, 24, or 32 bytes (AES-128/192/256). Wire format is base64(nonce \|\| ciphertext) with a fresh random 96-bit nonce per encryption; wrong key or corruption is an authentication error, never garbage. |
+| Ed25519 | `ed25519_generate()` → `{public_key, private_key}`, `ed25519_sign(priv, data)`, `ed25519_verify(pub, data, sig)` | Base64 wire format throughout. |
+
+**Stdlib rewritten pure-NvS.** The old `std/*.ns` files were `ffi::call`
+stubs for a native layer that never existed; they now run on real
+builtins: `std/core` (`println`, `panic`), `std/os/env`, `std/datetime`
+(`Time` over `unixtime_ms`/`date_format`), `std/crypto`
+(SHA-256/AES-GCM/Ed25519), `std/math/{complex,matrix}`, `std/io/streams`
+(buffered `FileStream` — reads load at open, writes flush on `close()`;
+true unbuffered I/O needs the future ffi layer), `std/db` (file-backed
+JSON document store — **real persistence**), `std/net/tcp` (real sockets).
+
+**Honesty fixes.** `sqlite_open(path)` with a non-`:memory:` path used to
+silently ignore the path and hand back an in-memory database — now a loud
+error. The `sqlite_*` builtins are an embedded **in-memory SQL subset**
+(CREATE TABLE / INSERT / SELECT), not SQLite-the-database: no
+persistence, dependency-free by design. (Real SQLite via
+modernc.org/sqlite, BSD-3-Clause, is tracked in PLACEHOLDERS.md — it would
+be the project's first external dependency.) Also fixed: a parser
+**panic** — a parse error inside `pub class` crashed the parser with a nil
+dereference; parse errors are never panics now (regression-tested).
+
 ## Example
 ```ns
 enum Status { Ok, Err }

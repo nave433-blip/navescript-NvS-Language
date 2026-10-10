@@ -393,3 +393,63 @@ nvs test ./stdlib
 nvs run --watch main.nvs
 nvs run examples/quantum_grover.nvs
 ```
+
+## Wave 19 — generics robbery
+
+- [x] **Type parameters** on classes (`class Box<T>`), methods (`fn map<U>`),
+      and functions (`fn identity<T>(x: T) -> T`); `T: Bound` constraints
+      (`Numeric`, `Comparable`, `Printable` builtins); `Vec<int>`/`T[]`/`[T]`/
+      `fn(A)->R` annotations; `f<T>(x)` calls and `::<>` turbofish; full
+      runtime erasure. Tests: `internal/{parser,checker,eval}/wave19_test.go`
+      (60 tests).
+- [x] **`nvs check` learns generics**: 10 rules — scoping, shadowing
+      warnings, no duplicates, bound names, bound checking (explicit and
+      inferred), call-site inference, the interface boundary (no generic
+      interface methods; generic methods don't satisfy interfaces),
+      `any`-escapes, invariance. The old "generics" disclaimer is gone.
+- [x] **19b**: Go 1.27 companion steals — generalized fn-type inference in
+      assignment contexts, contextual typing for fn literals.
+- [x] **19c**: stdlib generics — `std/collections/{vector,set,map}.ns` as
+      pure NvS on real type parameters.
+- [x] **Parser gaps closed** (std dialect): `pub`, `module std.x;`,
+      `import std.x;` (clean future-wave error at runtime), `ffi::call`
+      namespaces, class fields, `x++`/`x--`, braceless bodies, `->` returns.
+- [x] **Docs**: `docs/wave19-generics.md` (design sketch), `docs/book/generics.md`,
+      LANGUAGE.md section. Open design questions recorded in the sketch.
+
+```bash
+nvs run examples/wave19_generics.ns   # if present; else see docs/book/generics.md
+```
+
+## Wave 20 — stdlib revival: sockets, static methods, honest crypto
+
+- [x] **Static methods** (`internal/{ast,object,parser,eval}`): contextual
+      `static` modifier in class bodies (`static fn`, `pub static fn`);
+      callable on the class (`Sha256.hash("abc")`); `this` unbound inside;
+      clean errors otherwise. Tests: `internal/parser/wave20_test.go`,
+      eval coverage in `internal/eval/wave20_test.go`.
+- [x] **New builtins** (Go stdlib only, zero new deps): `tcp_connect`,
+      `tcp_listen`, `tcp_accept`, `tcp_read`, `tcp_write`, `tcp_close`
+      (real sockets, string-handle registry); `env_all()`; `aes_gcm_encrypt`/
+      `decrypt` (16/24/32-byte keys, base64(nonce||ciphertext));
+      `ed25519_generate`/`sign`/`verify`. 15 tests in
+      `internal/eval/wave20_test.go`, incl. a channel-ordered TCP echo test.
+- [x] **Parser panic fix**: parse errors inside `pub class` crashed with a
+      nil dereference (typed-nil `*ast.ClassStatement`); now clean parse
+      errors. Regression-tested — parse errors are never panics.
+- [x] **Stdlib rewritten pure-NvS** (old files were `ffi::call` stubs):
+      `std/core`, `std/os/env`, `std/datetime/time`, `std/crypto`
+      (SHA-256/AES-GCM/Ed25519), `std/math/{complex,matrix}`,
+      `std/io/streams` (buffered `FileStream`), `std/db` (file-backed JSON
+      document store — real persistence), `std/net/tcp` (real sockets).
+- [x] **sqlite honesty**: `sqlite_open(path)` with a non-`:memory:` path was
+      silently in-memory — now a loud error. Documented as an in-memory SQL
+      subset (dependency-free by design); real SQLite via modernc.org/sqlite
+      (BSD-3-Clause) tracked in PLACEHOLDERS.md as Evan's call (first
+      external dependency).
+- [x] **Docs**: LANGUAGE.md Wave 20 section; this STATUS.md section.
+
+```bash
+# from the repo root (imports resolve relative to the importing file):
+printf 'import "./std/crypto/mod.ns";\nprint(Sha256.hash("abc"));\n' > ./w20_demo.ns && nvs ./w20_demo.ns; rm ./w20_demo.ns
+```
