@@ -117,6 +117,9 @@ type Function struct {
 	// annotations naming a type parameter are treated as `any` at
 	// runtime — generics are check-time only (see internal/checker).
 	TypeParams []string
+	// Wave 20: static methods (`static fn` in a class body) are called
+	// on the class object itself; `this` is not bound inside them.
+	Static bool
 }
 
 func (f *Function) Type() ObjectType { return FUNCTION_OBJ }

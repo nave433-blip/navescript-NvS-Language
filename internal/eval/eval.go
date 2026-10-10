@@ -2066,6 +2066,8 @@ func evalClassStatement(node *ast.ClassStatement, env *object.Environment) objec
 			SourceFile: currentSourceFile(env),
 			// Wave 19: erasure.
 			TypeParams: tp,
+			// Wave 20: static methods.
+			Static: m.Static,
 		}
 	}
 	var parent *object.Class
@@ -2189,6 +2191,17 @@ func evalMemberAssignExpression(node *ast.MemberAssignExpression, env *object.En
 }
 
 func evalMethodCall(obj object.Object, name string, args []object.Object, env *object.Environment) object.Object {
+	// Wave 20: static methods are called on the class object itself.
+	if class, ok := obj.(*object.Class); ok {
+		method, found := class.GetMethod(name)
+		if !found {
+			return newError("method not found: %s.%s", class.Name, name)
+		}
+		if !method.Static {
+			return newError("%s.%s is not static; call it on an instance of %s", class.Name, name, class.Name)
+		}
+		return applyStaticMethod(method, args)
+	}
 	inst, ok := obj.(*object.Instance)
 	if !ok {
 		// try builtin-style on other types later
@@ -2201,11 +2214,25 @@ func evalMethodCall(obj object.Object, name string, args []object.Object, env *o
 	return applyMethod(method, inst, args)
 }
 
+// applyStaticMethod calls a static method: identical to applyMethod but
+// `this` is NOT bound, so using `this` inside a static method is a
+// runtime error ("this used outside of method").
+func applyStaticMethod(fn *object.Function, args []object.Object) object.Object {
+	extended := object.NewEnclosedEnvironment(fn.Env)
+	// Wave 19: erasure — type parameters are `any` at runtime.
+	extended.SetTypeParams(fn.TypeParams)
+	return applyMethodBody(fn, args, extended)
+}
+
 func applyMethod(fn *object.Function, inst *object.Instance, args []object.Object) object.Object {
 	extended := object.NewEnclosedEnvironment(fn.Env)
 	extended.Set("this", inst)
 	// Wave 19: erasure — type parameters are `any` at runtime.
 	extended.SetTypeParams(fn.TypeParams)
+	return applyMethodBody(fn, args, extended)
+}
+
+func applyMethodBody(fn *object.Function, args []object.Object, extended *object.Environment) object.Object {
 	// Wave 2: method calls accept `name: value` arguments too
 	// (obj.m(x: 1), new C(x: 1)).
 	positional, named := splitArgs(args)

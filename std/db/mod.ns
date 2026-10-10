@@ -1,40 +1,79 @@
-// Native Navescript Document Database (NvS-DB)
-// A high-performance, key-value and document store with native indexing.
+// NvS document database — pure NvS, file-backed JSON.
+// (Wave 20: rewritten from the ffi::call stub.)
+//
+// Honest design: each Database is one JSON file on disk (collections are
+// top-level keys). Reads load the file at open; every mutation writes it
+// back, so data survives the process. This is a document store, not a
+// relational database — for in-memory SQL tables, see the sqlite_*
+// builtins (in-memory SQL subset, no persistence, documented in
+// LANGUAGE.md).
 module std.db;
 
-import std.core;
-import std.json;
-
 pub class Database {
-    let handle: any;
+    let path: string;
+    let data: any;
 
-    pub fn open(path: string) -> Database {
+    pub static fn open(path: string) -> Database {
         let db = new Database();
-        db.handle = ffi::call("nasi.db.open", [path]);
+        db.path = path;
+        if (exists(path)) {
+            db.data = json_parse(read_file(path));
+        } else {
+            db.data = {};
+        }
         return db;
     }
 
+    fn save() {
+        write_file(this.path, json_stringify(this.data));
+    }
+
     pub fn put(collection: string, key: string, doc: any) {
-        let data = json.marshal(doc);
-        ffi::call("nasi.db.put", [this.handle, collection, key, data]);
+        if (!has(this.data, collection)) {
+            this.data[collection] = {};
+        }
+        this.data[collection][key] = doc;
+        this.save();
     }
 
     pub fn get(collection: string, key: string) -> any {
-        let data = ffi::call("nasi.db.get", [this.handle, collection, key]);
-        if (data == null) return null;
-        return json.unmarshal(data);
+        if (has(this.data, collection) && has(this.data[collection], key)) {
+            return this.data[collection][key];
+        }
+        return null;
     }
 
     pub fn delete(collection: string, key: string) {
-        ffi::call("nasi.db.delete", [this.handle, collection, key]);
+        if (has(this.data, collection)) {
+            delete(this.data[collection], key);
+            this.save();
+        }
     }
 
-    pub fn query(collection: string, filter: Map<string, any>) -> any[] {
-        let results_json = ffi::call("nasi.db.query", [this.handle, collection, json.marshal(filter)]);
-        return json.unmarshal(results_json);
+    fn matches(doc: any, filter) -> bool {
+        for (k in keys(filter)) {
+            if (!has(doc, k) || doc[k] != filter[k]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    pub fn query(collection: string, filter) -> any[] {
+        let out = [];
+        if (!has(this.data, collection)) {
+            return out;
+        }
+        for (k in keys(this.data[collection])) {
+            let doc = this.data[collection][k];
+            if (this.matches(doc, filter)) {
+                out = push(out, doc);
+            }
+        }
+        return out;
     }
 
     pub fn close() {
-        ffi::call("nasi.db.close", [this.handle]);
+        this.save();
     }
 }

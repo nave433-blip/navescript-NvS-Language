@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -263,6 +264,13 @@ func (p *Parser) parsePubStatement() ast.Statement {
 		return nil
 	}
 	if stmt == nil {
+		return nil
+	}
+	// Wave 20: parseClassStatement and friends return concrete pointer
+	// types, so a parse failure arrives as a TYPED nil — and the type
+	// switch below would panic dereferencing it (e.g. `pub class Bad
+	// implements X {}`). A parse error must never be a panic.
+	if rv := reflect.ValueOf(stmt); rv.Kind() == reflect.Ptr && rv.IsNil() {
 		return nil
 	}
 	switch n := stmt.(type) {
@@ -1483,14 +1491,30 @@ func (p *Parser) parseClassStatement() *ast.ClassStatement {
 	p.nextToken()
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		// Wave 19: `pub` visibility on methods and fields (std dialect).
+		// Wave 20: `static` method modifier. `static` is a CONTEXTUAL
+		// keyword — it only acts as a modifier directly before fn/pub/a
+		// method name in a class body, so `static` stays usable as an
+		// identifier everywhere else (and a method can even be NAMED
+		// `static`: `static() {}` has `(` after it, not fn/pub/IDENT).
 		isPub := false
-		if p.curTokenIs(lexer.PUB) {
-			isPub = true
+		isStatic := false
+		for p.curTokenIs(lexer.PUB) ||
+			(p.curTokenIs(lexer.IDENT) && p.curToken.Literal == "static" &&
+				(p.peekTokenIs(lexer.FUNCTION) || p.peekTokenIs(lexer.PUB) || p.peekTokenIs(lexer.IDENT))) {
+			if p.curTokenIs(lexer.PUB) {
+				isPub = true
+			} else {
+				isStatic = true
+			}
 			p.nextToken()
 		}
 		// Wave 19: field declarations — `let x: T;`, `let x: T = v;`
 		// (also `const`). A field was a parse error here before.
 		if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) {
+			if isStatic {
+				p.errors = append(p.errors, "static fields are not supported (wave 20 supports static methods only)")
+				return nil
+			}
 			field := p.parseClassField(isPub)
 			if field == nil {
 				return nil
@@ -1507,7 +1531,7 @@ func (p *Parser) parseClassStatement() *ast.ClassStatement {
 			p.nextToken()
 			continue
 		}
-		method := &ast.ClassMethod{Token: p.curToken, Public: isPub}
+		method := &ast.ClassMethod{Token: p.curToken, Public: isPub, Static: isStatic}
 		method.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 		// Wave 19: method-level type parameters — `fn map<U>(...)`.
 		if p.peekTokenIs(lexer.LT) {

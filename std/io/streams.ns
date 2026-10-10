@@ -1,7 +1,11 @@
-// Native Navescript I/O Streams
+// NvS I/O streams — pure NvS over real builtins.
+// (Wave 20: rewritten from the ffi::call stub.)
+//
+// Honest design: without a native fd layer, FileStream is a buffered
+// stream. Reads load the file at open; writes accumulate in memory and
+// flush on close(). True unbuffered I/O needs the future ffi layer
+// (see PLACEHOLDERS.md).
 module std.io.streams;
-
-import std.core;
 
 pub interface Stream {
     fn read(len: number) -> string;
@@ -9,22 +13,61 @@ pub interface Stream {
     fn close();
 }
 
-pub class FileStream implements Stream {
-    let fd: number;
+pub class FileStream {
+    let path: string;
+    let mode: string;
+    let buffer: string;
+    let readPos: number;
+    let closed: bool;
 
     pub fn init(path: string, mode: string) {
-        this.fd = ffi::call("nasi.fs.open", [path, mode]);
+        this.path = path;
+        this.mode = mode;
+        this.buffer = "";
+        this.readPos = 0;
+        this.closed = false;
+        if (mode == "r" || mode == "rb") {
+            this.buffer = read_file(path);
+        } else if ((mode == "a" || mode == "ab") && exists(path)) {
+            this.buffer = read_file(path);
+        } else if (mode != "w" && mode != "wb" && mode != "a" && mode != "ab") {
+            throw "FileStream: mode must be r, w, or a (got '" + mode + "')";
+        }
     }
 
-    pub fn read(len: number) -> string {
-        return ffi::call("nasi.fs.read", [this.fd, len]);
+    fn ensureOpen() {
+        if (this.closed) {
+            throw "FileStream: operation on closed stream";
+        }
+    }
+
+    pub fn read(n: number) -> string {
+        this.ensureOpen();
+        let chunk = substr(this.buffer, this.readPos, n);
+        this.readPos = this.readPos + len(chunk);
+        return chunk;
+    }
+
+    pub fn read_all() -> string {
+        this.ensureOpen();
+        let rest = substr(this.buffer, this.readPos, len(this.buffer));
+        this.readPos = len(this.buffer);
+        return rest;
     }
 
     pub fn write(data: string) -> number {
-        return ffi::call("nasi.fs.write", [this.fd, data]);
+        this.ensureOpen();
+        if (this.mode == "r" || this.mode == "rb") {
+            throw "FileStream: not open for writing";
+        }
+        this.buffer = this.buffer + data;
+        return len(data);
     }
 
     pub fn close() {
-        ffi::call("nasi.fs.close", [this.fd]);
+        if (!this.closed && this.mode != "r" && this.mode != "rb") {
+            write_file(this.path, this.buffer);
+        }
+        this.closed = true;
     }
 }

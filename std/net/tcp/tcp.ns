@@ -1,42 +1,46 @@
-// Native Navescript TCP Networking
+// NvS TCP networking — pure NvS over the tcp_* builtins.
+// (Wave 20: rewritten from the ffi::call stub. The builtins are backed
+// by Go's net package — real sockets, no native layer needed.)
 module std.net.tcp;
 
-import std.core;
-
 pub class TcpStream {
-    let handle: number;
+    let handle: string;
 
-    pub fn connect(address: string, port: number) -> TcpStream {
+    pub static fn connect(address: string, port: number) -> TcpStream {
         let stream = new TcpStream();
-        stream.handle = ffi::call("nasi.net.tcp_connect", [address, port]);
+        stream.handle = tcp_connect(address, port);
         return stream;
     }
 
     pub fn write(data: string) -> number {
-        return ffi::call("nasi.net.tcp_write", [this.handle, data]);
+        return tcp_write(this.handle, data);
     }
 
-    pub fn read(len: number) -> string {
-        return ffi::call("nasi.net.tcp_read", [this.handle, len]);
+    pub fn read(n: number) -> string {
+        return tcp_read(this.handle, n);
     }
 
     pub fn close() {
-        ffi::call("nasi.net.tcp_close", [this.handle]);
+        tcp_close(this.handle);
     }
 }
 
 pub class TcpListener {
-    let handle: number;
+    let handle: string;
 
-    pub fn bind(address: string, port: number) -> TcpListener {
+    pub static fn bind(port: number) -> TcpListener {
         let listener = new TcpListener();
-        listener.handle = ffi::call("nasi.net.tcp_listen", [address, port]);
+        listener.handle = tcp_listen(port);
         return listener;
     }
 
     pub fn accept() -> TcpStream {
         let stream = new TcpStream();
-        stream.handle = ffi::call("nasi.net.tcp_accept", [this.handle]);
+        stream.handle = tcp_accept(this.handle);
         return stream;
+    }
+
+    pub fn close() {
+        tcp_close(this.handle);
     }
 }

@@ -1,4 +1,5 @@
-// Native Navescript Complex Math
+// NvS complex math — pure NvS.
+// (Wave 20: rewritten from the ffi::call stub.)
 module std.math.complex;
 
 pub class Complex {
@@ -24,8 +25,21 @@ pub class Complex {
         return new Complex(r, i);
     }
 
+    pub fn div(other: Complex) -> Complex {
+        let d = other.real * other.real + other.imag * other.imag;
+        if (d == 0) {
+            throw "Complex division by zero";
+        }
+        let r = (this.real * other.real + this.imag * other.imag) / d;
+        let i = (this.imag * other.real - this.real * other.imag) / d;
+        return new Complex(r, i);
+    }
+
     pub fn abs() -> number {
-        // Calls native Math.sqrt
-        return ffi::call("nasi.math.sqrt", [this.real * this.real + this.imag * this.imag]);
+        return sqrt(this.real * this.real + this.imag * this.imag);
+    }
+
+    pub fn conj() -> Complex {
+        return new Complex(this.real, 0 - this.imag);
     }
 }

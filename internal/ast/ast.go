@@ -645,6 +645,7 @@ type ClassMethod struct {
 	ReturnType *TypeAnnotation   // wave 5: nil = unannotated
 	TypeParams []*TypeParam      // wave 19: fn map<U>(...); nil = not generic
 	Public     bool              // wave 19: `pub fn`
+	Static     bool              // wave 20: `static fn` — callable on the class
 	Body       *BlockStatement
 }
 

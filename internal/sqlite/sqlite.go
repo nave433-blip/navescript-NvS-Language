@@ -8,6 +8,15 @@ import (
 
 // Minimal in-memory table store (not full SQL) to avoid heavy deps.
 // Supports: CREATE TABLE name (cols...), INSERT INTO name VALUES (...), SELECT * FROM name
+//
+// Honest scope (wave 20): this is an embedded IN-MEMORY SQL subset, not
+// SQLite-the-database. There is no persistence: Open accepts only
+// ":memory:" (the default) and rejects file paths loudly rather than
+// silently dropping your data. For persistent storage, use std/db
+// (file-backed JSON document store) or write_file/read_file directly.
+// Swapping in real SQLite (e.g. modernc.org/sqlite, BSD-3-Clause) is
+// tracked in PLACEHOLDERS.md — it would be the project's first external
+// dependency, which needs Evan's call.
 
 type table struct {
 	cols []string
@@ -23,6 +32,11 @@ var (
 func Open(path string) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
+	// Wave 20: refuse file paths loudly. The old code silently ignored
+	// the path and gave you an in-memory database — a data-loss trap.
+	if path != ":memory:" {
+		return "", fmt.Errorf("sqlite_open: only \":memory:\" is supported (in-memory SQL subset, no persistence); got path %q — use std/db for persistent storage", path)
+	}
 	id := fmt.Sprintf("db%d", next)
 	next++
 	dbs[id] = map[string]*table{}

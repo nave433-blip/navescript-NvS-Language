@@ -1,7 +1,8 @@
-// Native Navescript Matrix Math
+// NvS matrix math — pure NvS.
+// (Wave 20: rewritten from the ffi::call stub. The old file claimed a
+// "SIMD/BLAS" native backend that never existed; this is the honest
+// straightforward implementation.)
 module std.math.matrix;
-
-import std.core;
 
 pub class Matrix {
     pub let rows: number;
@@ -11,31 +12,68 @@ pub class Matrix {
     pub fn init(rows: number, cols: number) {
         this.rows = rows;
         this.cols = cols;
-        // Initialize with zeros natively via FFI
-        this.data = ffi::call("nasi.array.create_zeros", [rows * cols]);
+        this.data = [];
+        let n = rows * cols;
+        let i = 0;
+        while (i < n) {
+            this.data = push(this.data, 0);
+            i = i + 1;
+        }
+    }
+
+    fn check(row: number, col: number) {
+        if (row < 0 || row >= this.rows || col < 0 || col >= this.cols) {
+            throw "Matrix index out of bounds";
+        }
     }
 
     pub fn get(row: number, col: number) -> number {
-        if (row < 0 || row >= this.rows || col < 0 || col >= this.cols) {
-            core.panic("Matrix index out of bounds");
-        }
+        this.check(row, col);
         return this.data[row * this.cols + col];
     }
 
     pub fn set(row: number, col: number, val: number) {
-        if (row < 0 || row >= this.rows || col < 0 || col >= this.cols) {
-            core.panic("Matrix index out of bounds");
-        }
+        this.check(row, col);
         this.data[row * this.cols + col] = val;
     }
 
     pub fn add(other: Matrix) -> Matrix {
         if (this.rows != other.rows || this.cols != other.cols) {
-            core.panic("Matrix dimensions mismatch for addition");
+            throw "Matrix dimensions mismatch for addition";
         }
         let result = new Matrix(this.rows, this.cols);
-        // Offload matrix addition to optimized native backend (SIMD/BLAS)
-        ffi::call("nasi.math.matrix_add", [this.data, other.data, result.data, this.rows * this.cols]);
+        let i = 0;
+        while (i < this.rows) {
+            let j = 0;
+            while (j < this.cols) {
+                result.set(i, j, this.get(i, j) + other.get(i, j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    pub fn mul(other: Matrix) -> Matrix {
+        if (this.cols != other.rows) {
+            throw "Matrix dimensions mismatch for multiplication";
+        }
+        let result = new Matrix(this.rows, other.cols);
+        let i = 0;
+        while (i < this.rows) {
+            let j = 0;
+            while (j < other.cols) {
+                let s = 0;
+                let k = 0;
+                while (k < this.cols) {
+                    s = s + this.get(i, k) * other.get(k, j);
+                    k = k + 1;
+                }
+                result.set(i, j, s);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
         return result;
     }
 }
