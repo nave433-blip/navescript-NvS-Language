@@ -150,6 +150,10 @@ func docEntryFor(s ast.Statement, srcLines []string) (DocEntry, bool) {
 				ParamTypes: m.ParamTypes, ReturnType: m.ReturnType,
 			}, m.Token.Line, srcLines)
 			me.Kind = "method"
+			// Wave 20: show the static modifier in the signature.
+			if m.Static {
+				me.Signature = "static " + me.Signature
+			}
 			e.Children = append(e.Children, me)
 		}
 		return e, true
