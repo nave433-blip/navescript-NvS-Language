@@ -1,14 +1,11 @@
-// Native Navescript Core Standard Library
-// This file implements core functionality in native Navescript code
-// which will be compiled by the Nvs CLI.
-
+// NvS core standard library — pure NvS over real builtins.
+// (Wave 20: rewritten from the ffi::call stub; no native layer needed.)
 module std.core;
 
 pub fn println(msg: string) {
-    // Native implementation calling into runtime
-    ffi::call("console.log", [msg]);
+    print(msg);
 }
 
 pub fn panic(msg: string) {
-    ffi::call("runtime.abort", [msg]);
+    throw msg;
 }

@@ -112,3 +112,20 @@ func TestWave20AESArgShapes(t *testing.T) {
 	expectErrorContains(t, `tcp_write("x")`, "want handle, data")
 	expectErrorContains(t, `env_all("x")`, "want 0 arguments")
 }
+
+func TestWave20Ed25519RoundTrip(t *testing.T) {
+	expectInspect(t, `
+let keys = ed25519_generate();
+let sig = ed25519_sign(keys["private_key"], "hello world");
+ed25519_verify(keys["public_key"], "hello world", sig)`, `true`)
+}
+
+func TestWave20Ed25519Tampered(t *testing.T) {
+	expectInspect(t, `
+let keys = ed25519_generate();
+let sig = ed25519_sign(keys["private_key"], "hello");
+ed25519_verify(keys["public_key"], "goodbye", sig)`, `false`)
+	expectErrorContains(t, `ed25519_sign("bogus", "x")`, "invalid private key")
+	expectErrorContains(t, `ed25519_verify("bogus", "x", "y")`, "invalid public key")
+	expectErrorContains(t, `ed25519_generate("x")`, "want 0 arguments")
+}

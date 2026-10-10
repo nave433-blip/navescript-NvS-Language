@@ -1,19 +1,31 @@
-// Native Navescript DateTime Module
+// NvS DateTime module — pure NvS over real builtins.
+// (Wave 20: rewritten from the ffi::call stub.)
+//
+// Note: the builtin sleep(ms) is the sleep API — no wrapper is defined here
+// because a fn named `sleep` would shadow the builtin and recurse forever.
 module std.datetime.time;
 
 pub class Time {
     pub let unixMillis: number;
 
     pub fn init() {
-        this.unixMillis = ffi::call("nasi.time.now", []);
+        this.unixMillis = unixtime_ms();
     }
 
     pub fn fromMillis(ms: number) {
         this.unixMillis = ms;
     }
 
+    fn unixSeconds() -> number {
+        return int(this.unixMillis / 1000);
+    }
+
     pub fn format(pattern: string) -> string {
-        return ffi::call("nasi.time.format", [this.unixMillis, pattern]);
+        return date_format(this.unixSeconds(), pattern);
+    }
+
+    pub fn iso() -> string {
+        return date_format(this.unixSeconds(), "2006-01-02T15:04:05Z07:00");
     }
 
     pub fn add(millis: number) -> Time {
@@ -25,8 +37,4 @@ pub class Time {
     pub fn sub(other: Time) -> number {
         return this.unixMillis - other.unixMillis;
     }
-}
-
-pub fn sleep(millis: number) {
-    ffi::call("nasi.time.sleep", [millis]);
 }

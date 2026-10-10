@@ -13,6 +13,7 @@ package eval
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -310,4 +311,77 @@ func registerWave20Builtins() {
 			return &object.String{Value: string(pt)}
 		},
 	}
+	// ---- Ed25519 signatures ----
+	// Keys and signatures are base64 of the raw bytes — the same wire
+	// format as every other Ed25519 API.
+	builtins["ed25519_generate"] = &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 0 {
+				return newError("ed25519_generate: want 0 arguments")
+			}
+			pub, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				return newError("ed25519_generate: %s", err.Error())
+			}
+			ks := &object.String{Value: "public_key"}
+			vs := &object.String{Value: base64.StdEncoding.EncodeToString(pub)}
+			kp := &object.String{Value: "private_key"}
+			vp := &object.String{Value: base64.StdEncoding.EncodeToString(priv)}
+			pairs := map[object.HashKey]object.HashPair{
+				ks.HashKey(): {Key: ks, Value: vs},
+				kp.HashKey(): {Key: kp, Value: vp},
+			}
+			return &object.Hash{Pairs: pairs}
+		},
+	}
+	builtins["ed25519_sign"] = &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("ed25519_sign: want private_key, data")
+			}
+			privB64, ok := args[0].(*object.String)
+			if !ok {
+				return newError("ed25519_sign: private_key must be string, got %s", args[0].Type())
+			}
+			data, ok := args[1].(*object.String)
+			if !ok {
+				return newError("ed25519_sign: data must be string, got %s", args[1].Type())
+			}
+			raw, err := base64.StdEncoding.DecodeString(privB64.Value)
+			if err != nil || len(raw) != ed25519.PrivateKeySize {
+				return newError("ed25519_sign: invalid private key")
+			}
+			sig := ed25519.Sign(ed25519.PrivateKey(raw), []byte(data.Value))
+			return &object.String{Value: base64.StdEncoding.EncodeToString(sig)}
+		},
+	}
+	builtins["ed25519_verify"] = &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 3 {
+				return newError("ed25519_verify: want public_key, data, signature")
+			}
+			pubB64, ok := args[0].(*object.String)
+			if !ok {
+				return newError("ed25519_verify: public_key must be string, got %s", args[0].Type())
+			}
+			data, ok := args[1].(*object.String)
+			if !ok {
+				return newError("ed25519_verify: data must be string, got %s", args[1].Type())
+			}
+			sigB64, ok := args[2].(*object.String)
+			if !ok {
+				return newError("ed25519_verify: signature must be string, got %s", args[2].Type())
+			}
+			pubRaw, err := base64.StdEncoding.DecodeString(pubB64.Value)
+			if err != nil || len(pubRaw) != ed25519.PublicKeySize {
+				return newError("ed25519_verify: invalid public key")
+			}
+			sigRaw, err := base64.StdEncoding.DecodeString(sigB64.Value)
+			if err != nil || len(sigRaw) != ed25519.SignatureSize {
+				return &object.Boolean{Value: false}
+			}
+			return &object.Boolean{Value: ed25519.Verify(ed25519.PublicKey(pubRaw), []byte(data.Value), sigRaw)}
+		},
+	}
 }
+
