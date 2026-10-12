@@ -4089,7 +4089,7 @@ func initBuiltins() {
 
 		"nvs_version": {
 			Fn: func(args ...object.Object) object.Object {
-				return &object.String{Value: "2.1.0"}
+				return &object.String{Value: nvsRuntimeVersion()}
 			},
 		},
 		"nvs_language": {
@@ -4107,7 +4107,7 @@ func initBuiltins() {
 				}
 				put("name", "NvS")
 				put("full", "Navescript")
-				put("version", "2.1.0")
+				put("version", nvsRuntimeVersion())
 				put("impl", "tree-walker")
 				put("host", "go")
 				return &object.Hash{Pairs: pairs}

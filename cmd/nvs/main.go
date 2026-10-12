@@ -19,8 +19,20 @@ import (
 )
 
 // NvS — Navescript custom language
+//
+// version is stamped at release-build time via:
+//   go build -ldflags "-X main.version=$(git describe --tags --always)"
+// and falls back to the source default for plain `go build`.
+var (
+	// version is stamped at release-build time via:
+	//   go build -ldflags "-X main.version=$(git describe --tags --always)"
+	// Plain `go build` keeps the source default.
+	version      = "2.1.0"
+	language     = "NvS"
+	languageFull = "Navescript"
+)
+
 const (
-	VERSION      = "2.1.0"
 	LANGUAGE     = "NvS"
 	LANGUAGEFull = "Navescript"
 )
@@ -94,7 +106,7 @@ func main() {
 	case "init":
 		initProject(".")
 	case "version", "-v", "--version":
-		fmt.Printf("%s (%s) %s\n", LANGUAGE, LANGUAGEFull, VERSION)
+		fmt.Printf("%s (%s) %s\n", language, languageFull, version)
 	case "info":
 		printLanguageInfo()
 	case "fmt":
@@ -212,7 +224,7 @@ Examples:
   nvs -e 'print 1 + 2 * 3'
   ./hello.nvs             (with #!/usr/bin/env nvs shebang + chmod +x)
   nvs
-`, LANGUAGE, LANGUAGEFull, VERSION)
+`, language, languageFull, version)
 }
 
 func printLanguageInfo() {
@@ -233,7 +245,7 @@ Core features:
   polyglot: python js ruby rust go c cpp java css
   interop: detect_lang, to_nvs, from_nvs, translate
   highlight(), fuzzy_*(), corrections DB
-`, LANGUAGE, LANGUAGEFull, VERSION)
+`, language, languageFull, version)
 }
 
 func initProject(dir string) {
@@ -254,7 +266,7 @@ main()
   "nvs": "%s",
   "main": "main.ns"
 }
-`, LANGUAGE, VERSION),
+`, language, version),
 		"README.md": "# NvS project\n\n```bash\nnvs run main.ns\n```\n",
 	}
 	for name, content := range files {
@@ -599,7 +611,7 @@ func printParserErrors(out io.Writer, errors []string) {
 }
 
 func startREPL() {
-	fmt.Printf("%s (%s) %s\n", LANGUAGE, LANGUAGEFull, VERSION)
+	fmt.Printf("%s (%s) %s\n", language, languageFull, version)
 	fmt.Println("Interactive mode. Type expressions; exit or Ctrl+D to quit.")
 	env := object.NewEnvironment()
 	eval.LoadPrelude(env)

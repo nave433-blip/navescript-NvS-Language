@@ -926,3 +926,19 @@ func wave22modPow(a, d, m uint64) uint64 {
 	}
 	return r
 }
+
+// ---- Wave 22c: build-time version stamping ----
+
+// versionStamp is set at release-build time via:
+//   go build -ldflags "-X github.com/navescript/nvs/internal/eval.versionStamp=$(git describe --tags --always)"
+// Plain `go build` keeps the source default, so every dev build still
+// reports the same version as before — fully backward compatible.
+var versionStamp string
+
+// nvsRuntimeVersion reports the stamped version when present, else the default.
+func nvsRuntimeVersion() string {
+	if versionStamp != "" {
+		return versionStamp
+	}
+	return "2.1.0"
+}
