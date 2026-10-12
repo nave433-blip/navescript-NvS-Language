@@ -6633,6 +6633,9 @@ func initBuiltins() {
 	// Wave 20: stdlib revival — real TCP sockets, env_all, AES-GCM.
 	// Go-standard-library only; no new external dependencies.
 	registerWave20Builtins()
+	// Wave 22: sequence power tools, statistics, math, encoding, string
+	// shaping, resilient scripting. Go-standard-library only.
+	registerWave22Builtins()
 }
 
 func ensureBuiltins() {
