@@ -13,7 +13,7 @@ func TestWave20PubClassParseErrorNoPanic(t *testing.T) {
 			t.Fatalf("parser panicked on pub class parse error: %v", r)
 		}
 	}()
-	expectParseError(t, `pub class Bad implements X { fn m() {} }`, "expected next token to be {")
+	expectParseError(t, `pub class Bad implements X { fn m() {} }`, "expected '{'")
 }
 
 func TestWave20PubFnParseErrorNoPanic(t *testing.T) {
@@ -22,7 +22,7 @@ func TestWave20PubFnParseErrorNoPanic(t *testing.T) {
 			t.Fatalf("parser panicked on pub fn parse error: %v", r)
 		}
 	}()
-	expectParseError(t, `pub fn broken( { }`, "expected next token")
+	expectParseError(t, `pub fn broken( { }`, "expected ')'")
 }
 
 func TestWave20PubClassStillWorks(t *testing.T) {

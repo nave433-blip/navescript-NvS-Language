@@ -2319,13 +2319,49 @@ func (p *Parser) expectPeek(t lexer.TokenType) bool {
 }
 
 func (p *Parser) peekError(t lexer.TokenType) {
-	msg := fmt.Sprintf("expected next token to be %s, got %s instead", t, p.peekToken.Type)
-	p.errors = append(p.errors, msg)
+	// Wave 21: errors carry line:col and read like a human wrote them.
+	tok := p.peekToken
+	found := describeToken(tok.Type, tok.Literal)
+	p.errors = append(p.errors, fmt.Sprintf("line %d:%d: expected %s, found %s",
+		tok.Line, tok.Column, describeToken(t, ""), found))
 }
 
 func (p *Parser) noPrefixParseFnError(t lexer.TokenType) {
-	msg := fmt.Sprintf("no prefix parse function for %s found", t)
-	p.errors = append(p.errors, msg)
+	// Wave 21: point at the offending token, not just its type.
+	tok := p.curToken
+	p.errors = append(p.errors, fmt.Sprintf("line %d:%d: unexpected %s",
+		tok.Line, tok.Column, describeToken(tok.Type, tok.Literal)))
+}
+
+// describeToken renders a token type for error messages: punctuation as
+// 'x', identifiers/numbers/strings with their literal, EOF as end of input.
+func describeToken(t lexer.TokenType, lit string) string {
+	switch t {
+	case lexer.IDENT:
+		if lit != "" {
+			return fmt.Sprintf("identifier %q", lit)
+		}
+		return "identifier"
+	case lexer.INT, lexer.FLOAT:
+		if lit != "" {
+			return fmt.Sprintf("number %q", lit)
+		}
+		return "number"
+	case lexer.STRING:
+		if lit != "" {
+			return fmt.Sprintf("string %q", lit)
+		}
+		return "string"
+	case lexer.EOF:
+		return "end of input"
+	case lexer.ILLEGAL:
+		if lit != "" {
+			return fmt.Sprintf("illegal character %q", lit)
+		}
+		return "illegal character"
+	default:
+		return fmt.Sprintf("'%s'", string(t))
+	}
 }
 
 func (p *Parser) peekPrecedence() int {
