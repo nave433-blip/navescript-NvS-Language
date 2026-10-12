@@ -1,0 +1,50 @@
+// Wave 22 showcase: sequence power tools, statistics, string shaping,
+// and resilient scripting. Run: nvs examples/wave22_seq.ns
+
+// --- sequences (itertools / Ruby / JS) ---
+let nums = [1, 2, 3, 4, 5]
+print scan(nums, fn(a, b) { a + b })          // [1, 3, 6, 10, 15]
+print partition(nums, fn(x) { x % 2 == 0 })   // [[2, 4], [1, 3, 5]]
+print take_while(nums, fn(x) { x < 4 })       // [1, 2, 3]
+print drop_while(nums, fn(x) { x < 4 })       // [4, 5]
+print flat_map([1, 2, 3], fn(x) { [x, -x] }) // [1, -1, 2, -2, 3, -3]
+print windows([1, 2, 3, 4], 3)                // [[1, 2, 3], [2, 3, 4]]
+
+// --- statistics (Python statistics) ---
+let data = [2, 4, 4, 4, 5, 5, 7, 9]
+print median(data)    // 4.5
+print variance(data)  // 4
+print stddev(data)    // 2
+print mode(data)      // 4
+
+// --- math ---
+print is_prime(7919)          // true
+print is_prime(7920)          // false
+print lerp(0, 100, 0.25)      // 25
+
+// --- encoding / compression ---
+let secret = "attack at dawn"
+let packed = gzip_compress(secret)
+print gzip_decompress(packed) == secret  // true
+print hex_encode("NvS")                  // 4e7653
+
+// --- string shaping (Mustache / lodash / Rails) ---
+print render_template("Hello {{name}}, {{n}} new messages", {"name": "Nave", "n": 3})
+print slugify("Hello, World! 2026")   // hello-world-2026
+print snake_case("helloWorld")        // hello_world
+print camel_case("hello_world")       // helloWorld
+print kebab_case("helloWorld")        // hello-world
+print levenshtein("kitten", "sitting") // 3
+print semver_compare("1.2.3", "2.0.0") // -1
+
+// --- data out ---
+print csv_stringify([["name", "score"], ["nave", "99"]])
+
+// --- resilient scripting (tenacity-lite) ---
+let tries = 0
+let flaky = fn() {
+  tries = tries + 1
+  if (tries < 3) { throw "not yet" }
+  return "finally"
+}
+print retry(flaky, 5, 10)  // finally

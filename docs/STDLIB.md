@@ -177,6 +177,18 @@ Pure-NvS adaptation layer over the Go builtins `os_name()`, `os_kernel()`,
 | `os_is_abs(p)` / `os_is_abs_with(sep, p)` | `/x`, `C:\x`, `\\server\x` recognized |
 | `os_path_join(parts)` / `os_path_join_with(sep, parts)` | join an array of parts with native or explicit separator |
 
+### `stdlib/argparse.nvs` — declarative CLI parsing (Wave 22)
+
+Pure-NvS Python-argparse counterpart for script CLIs. Option names take a
+`--` prefix; bare names declare positionals.
+
+| Function | One-liner |
+|---|---|
+| `ap_new(prog, desc)` | create a parser |
+| `ap_add_arg(p, "--name", opts)` / `ap_add_flag(p, "--loud", opts)` | declare options (`short`, `help`, `default`, `required`, `type`, `choices`) |
+| `ap_parse(p, argv)` | parse; `--name v`, `--name=v`, `-n v`, `-n=v`, combined `-ab`, `--` terminator; `__help: true` on `-h/--help`; unknown options throw |
+| `ap_help(p)` | usage text |
+
 ## Testing
 
 Each module has `stdlib/tests/test_<module>.nvs`, runnable from the repo root:
