@@ -14,9 +14,9 @@ What it does:
 2. Tries a prebuilt release tarball from GitHub Releases
    (`releases/download/<tag>/nvs-<os>-<arch>.tar.gz`).
 3. **Falls back to building from source** with your Go toolchain if no
-   prebuilt asset exists — which is the case today, because **no
-   releases have been published yet**. The installer says so out loud
-   instead of failing mysteriously.
+   prebuilt asset exists for your platform — which is the case for the
+   earliest releases. The installer says so out loud instead of failing
+   mysteriously.
 4. Copies the binary to `~/.local/bin` (override with
    `NVS_PREFIX=/somewhere` or `--prefix=/somewhere`).
 
@@ -57,9 +57,10 @@ tar -xzf nvs-linux-amd64.tar.gz
 mv nvs ~/.local/bin/
 ```
 
-> **Honest status:** as of this writing no release assets exist yet, so
-> methods 1 and 2 both build from source. The installer and the asset
-> naming above are the contract future releases will follow.
+> **Honest status:** releases are published on GitHub, but the first
+> prebuilt asset bundles are being attached — until they land, methods 1
+> and 2 both build from source. The installer and the asset naming above
+> are the contract releases follow (`nvs-<os>-<arch>.tar.gz`).
 
 ## Windows notes
 
