@@ -1,0 +1,93 @@
+// Tests for stdlib/argparse.nvs. Run from the repo root:
+//   nvs stdlib/tests/test_argparse.nvs
+import "../argparse.nvs"
+
+let failures = 0
+fn check(name, cond) {
+  if (!cond) {
+    print "FAIL: " + name
+    failures = failures + 1
+  }
+}
+
+fn check_throws(name, argv, want_part) {
+  let threw = false
+  let msg = ""
+  try {
+    ap_parse(p_throw, argv)
+  } catch (e) {
+    threw = true
+    msg = e
+  }
+  check(name, threw and contains(msg, want_part))
+}
+
+// choices + required + unknown-option error paths share a throwing parser
+let p_throw = ap_new("deploy", "deploy")
+ap_add_arg(p_throw, "--env", {"choices": ["dev", "prod"], "required": true})
+
+check_throws("bad choice throws", ["--env", "qa"], "invalid choice")
+check_throws("missing required throws", [], "required option missing")
+check_throws("unknown long throws", ["--nope"], "unknown option")
+check_throws("unknown short throws", ["-z"], "unknown option")
+check_throws("missing value throws", ["--env"], "expects a value")
+
+let v_ok = ap_parse(p_throw, ["--env", "prod"])
+check("choice ok", v_ok["env"] == "prod")
+
+let p = ap_new("greet", "Greet someone")
+ap_add_arg(p, "--name", {"help": "who to greet", "default": "world"})
+ap_add_flag(p, "--loud", {"short": "l", "help": "shout it"})
+ap_add_arg(p, "--count", {"short": "n", "type": "int", "default": 1})
+ap_add_arg(p, "file", {})
+
+let v = ap_parse(p, [])
+check("defaults name", v["name"] == "world")
+check("defaults loud", v["loud"] == false)
+check("defaults count", v["count"] == 1)
+check("no help", v["__help"] == false)
+
+v = ap_parse(p, ["--name", "Nave", "-l", "--count=3", "a.txt"])
+check("long value", v["name"] == "Nave")
+check("short flag", v["loud"] == true)
+check("eq int", v["count"] == 3)
+check("positional", v["file"] == "a.txt")
+check("positionals list", deep_equal(v["__positionals"], ["a.txt"]))
+
+v = ap_parse(p, ["-n5"])
+check("short attached value", v["count"] == 5)
+
+v = ap_parse(p, ["--count", "7"])
+check("long separate value", v["count"] == 7)
+
+v = ap_parse(p, ["--help"])
+check("help flag", v["__help"] == true)
+v = ap_parse(p, ["-h"])
+check("help short", v["__help"] == true)
+
+v = ap_parse(p, ["--", "--name"])
+check("double-dash stops opts", v["file"] == "--name" and v["name"] == "world")
+
+// combined short flags
+let p2 = ap_new("x", "x")
+ap_add_flag(p2, "--alpha", {"short": "a"})
+ap_add_flag(p2, "--beta", {"short": "b"})
+v = ap_parse(p2, ["-ab"])
+check("combined shorts", v["alpha"] == true and v["beta"] == true)
+
+// bool type
+let p4 = ap_new("b", "b")
+ap_add_arg(p4, "--verbose", {"type": "bool"})
+v = ap_parse(p4, ["--verbose", "yes"])
+check("bool yes", v["verbose"] == true)
+v = ap_parse(p4, ["--verbose=false"])
+check("bool false", v["verbose"] == false)
+
+// help text sanity
+let h = ap_help(p)
+check("help has usage", contains(h, "usage: greet"))
+check("help has option", contains(h, "--loud"))
+check("help has short", contains(h, "-l, --loud"))
+
+if (failures == 0) { print "argparse: all tests passed" }
+else { print "argparse: " + failures + " FAILURES" }

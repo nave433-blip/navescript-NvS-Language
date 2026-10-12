@@ -1,0 +1,228 @@
+// NvS standard library: argparse — declarative CLI argument parsing in pure NvS.
+// Python argparse counterpart, shaped for NvS scripts.
+//
+// Import with:   import "stdlib/argparse.nvs"
+//
+// Example:
+//   import "stdlib/argparse.nvs"
+//   let p = ap_new("greet", "Greet someone warmly")
+//   ap_add_arg(p, "--name", {"help": "who to greet", "default": "world"})
+//   ap_add_flag(p, "--loud", {"short": "l", "help": "use ALL CAPS"})
+//   ap_add_arg(p, "--count", {"short": "n", "type": "int", "default": 1})
+//   let v = ap_parse(p, args())
+//   if (v["__help"]) { print ap_help(p); exit(0) }
+//   for (i in range(v["count"])) { print v["loud"] ? upper("hello " + v["name"]) : "hello " + v["name"] }
+// Option names take a "--" prefix; bare names declare positionals.
+
+/// Create a new argument parser.
+fn ap_new(prog, description) {
+  return {
+    "prog": prog,
+    "description": description,
+    "specs": [],
+    "positionals": []
+  }
+}
+
+/// Declare an option. name is the long name without dashes ("output") or a
+/// positional name. opts may carry: short ("o"), help ("..."), default,
+/// required (bool), type ("string"|"int"|"bool"|"flag"), choices ([...]).
+fn ap_add_arg(p, name, opts) {
+  let spec = {
+    "name": name,
+    "short": "",
+    "help": "",
+    "default": null,
+    "required": false,
+    "type": "string",
+    "choices": null,
+    "positional": !starts_with(name, "-") and len(name) > 0 and !contains(name, " ")
+  }
+  // A leading "--" marks an explicit option name.
+  if (starts_with(name, "--")) {
+    spec["name"] = substr(name, 2, len(name) - 2)
+    spec["positional"] = false
+  }
+  for (k in keys(opts)) {
+    spec[k] = opts[k]
+  }
+  if (spec["positional"]) {
+    p["positionals"] = push(p["positionals"], spec)
+  } else {
+    p["specs"] = push(p["specs"], spec)
+  }
+  return p
+}
+
+/// Convenience for boolean flags (type "flag", default false).
+fn ap_add_flag(p, name, opts) {
+  let o = {"type": "flag", "default": false}
+  for (k in keys(opts)) { o[k] = opts[k] }
+  return ap_add_arg(p, name, o)
+}
+
+fn ap__find_long(p, name) {
+  for (s in p["specs"]) {
+    if (s["name"] == name) { return s }
+  }
+  return null
+}
+
+fn ap__find_short(p, ch) {
+  for (s in p["specs"]) {
+    if (s["short"] == ch) { return s }
+  }
+  return null
+}
+
+fn ap__convert(spec, raw) {
+  let t = spec["type"]
+  if (t == "int") {
+    let v = int(raw)
+    if (v == null) { throw "invalid integer for --" + spec["name"] + ": " + raw }
+    return v
+  }
+  if (t == "bool") {
+    let low = lower(raw)
+    if (low == "true" or low == "1" or low == "yes" or low == "y") { return true }
+    if (low == "false" or low == "0" or low == "no" or low == "n") { return false }
+    throw "invalid boolean for --" + spec["name"] + ": " + raw
+  }
+  return raw
+}
+
+fn ap__assign(values, spec, raw) {
+  let v = ap__convert(spec, raw)
+  if (spec["choices"] != null) {
+    let ok = false
+    for (c in spec["choices"]) { if (deep_equal(c, v)) { ok = true } }
+    if (!ok) { throw "invalid choice for --" + spec["name"] + ": " + raw }
+  }
+  values[spec["name"]] = v
+}
+
+/// Parse an argv-style array. Returns a values map. If -h/--help was given,
+/// the map contains __help: true (caller prints ap_help and exits).
+/// Unknown options and missing values throw.
+fn ap_parse(p, argv) {
+  let values = {"__help": false, "__positionals": []}
+  for (s in p["specs"]) { values[s["name"]] = s["default"] }
+  for (s in p["positionals"]) { values[s["name"]] = s["default"] }
+  let pos_idx = 0
+  let i = 0
+  let end_opts = false
+  while (i < len(argv)) {
+    let a = argv[i]
+    if (!end_opts and a == "--") { end_opts = true }
+    else if (!end_opts and starts_with(a, "--")) {
+      if (a == "--help") { values["__help"] = true }
+      else {
+        let eq = index_of(a, "=")
+        let nm = a
+        let val = null
+        if (eq >= 0) {
+          nm = substr(a, 2, eq - 2)
+          val = substr(a, eq + 1, len(a) - eq - 1)
+        } else {
+          nm = substr(a, 2, len(a) - 2)
+        }
+        let spec = ap__find_long(p, nm)
+        if (spec == null) { throw "unknown option: --" + nm }
+        if (spec["type"] == "flag") {
+          values[spec["name"]] = true
+        } else {
+          if (val == null) {
+            i = i + 1
+            if (i >= len(argv)) { throw "option --" + nm + " expects a value" }
+            val = argv[i]
+          }
+          ap__assign(values, spec, val)
+        }
+      }
+    }
+    else if (!end_opts and starts_with(a, "-") and len(a) > 1) {
+      if (a == "-h") { values["__help"] = true }
+      else {
+        let j = 1
+        while (j < len(a)) {
+          let ch = substr(a, j, 1)
+          let spec = ap__find_short(p, ch)
+          if (spec == null) { throw "unknown option: -" + ch }
+          if (spec["type"] == "flag") {
+            values[spec["name"]] = true
+            j = j + 1
+          } else {
+            let val = null
+            if (j + 1 < len(a) and substr(a, j + 1, 1) == "=") {
+              val = substr(a, j + 2, len(a) - j - 2)
+              j = len(a)
+            } else if (j + 1 < len(a)) {
+              val = substr(a, j + 1, len(a) - j - 1)
+              j = len(a)
+            } else {
+              i = i + 1
+              if (i >= len(argv)) { throw "option -" + ch + " expects a value" }
+              val = argv[i]
+              j = j + 1
+            }
+            ap__assign(values, spec, val)
+          }
+        }
+      }
+    }
+    else {
+      if (pos_idx < len(p["positionals"])) {
+        let spec = p["positionals"][pos_idx]
+        ap__assign(values, spec, a)
+        pos_idx = pos_idx + 1
+      }
+      values["__positionals"] = push(values["__positionals"], a)
+    }
+    i = i + 1
+  }
+  for (s in p["specs"]) {
+    if (s["required"] and values[s["name"]] == null and s["type"] != "flag") {
+      throw "required option missing: --" + s["name"]
+    }
+  }
+  let pi = 0
+  for (s in p["positionals"]) {
+    if (s["required"] and pi >= pos_idx) {
+      throw "required positional missing: " + s["name"]
+    }
+    pi = pi + 1
+  }
+  return values
+}
+
+/// Render usage/help text for the parser.
+fn ap_help(p) {
+  let out = "usage: " + p["prog"]
+  if (len(p["specs"]) > 0) { out = out + " [options]" }
+  for (s in p["positionals"]) { out = out + " <" + s["name"] + ">" }
+  out = out + "\n\n" + p["description"] + "\n"
+  if (len(p["positionals"]) > 0) {
+    out = out + "\npositionals:\n"
+    for (s in p["positionals"]) {
+      out = out + "  " + s["name"]
+      if (s["help"] != "") { out = out + "  " + s["help"] }
+      out = out + "\n"
+    }
+  }
+  if (len(p["specs"]) > 0) {
+    out = out + "\noptions:\n"
+    for (s in p["specs"]) {
+      let flags = "  --" + s["name"]
+      if (s["short"] != "") { flags = "  -" + s["short"] + ", --" + s["name"] }
+      if (s["type"] != "flag") { flags = flags + " <" + s["type"] + ">" }
+      out = out + flags
+      if (s["help"] != "") { out = out + "  " + s["help"] }
+      if (s["default"] != null and s["type"] != "flag") {
+        out = out + " (default: " + str(s["default"]) + ")"
+      }
+      out = out + "\n"
+    }
+    out = out + "  -h, --help  show this help\n"
+  }
+  return out
+}
