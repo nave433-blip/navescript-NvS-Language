@@ -486,11 +486,14 @@ func (e *Environment) NearestYieldSink() *[]Object {
 }
 
 func NewEnvironment() *Environment {
+	// Wave 21: constants and declaredTypes are lazily allocated on first
+	// write (SetConst/DeclareType). Every function call creates an
+	// environment, and most frames never declare a const or a type
+	// annotation — this saves two map allocations per call frame.
+	// Reads from nil maps are safe in Go (zero value).
 	return &Environment{
-		store:         make(map[string]Object),
-		constants:     make(map[string]bool),
-		declaredTypes: make(map[string]*ast.TypeAnnotation),
-		outer:         nil,
+		store: make(map[string]Object),
+		outer: nil,
 	}
 }
 
@@ -556,6 +559,9 @@ func (e *Environment) TypeParamInScope(name string) bool {
 func (e *Environment) SetConst(name string, val Object) Object {
 	e.mu.Lock()
 	e.store[name] = val
+	if e.constants == nil {
+		e.constants = make(map[string]bool)
+	}
 	e.constants[name] = true
 	e.mu.Unlock()
 	return val

@@ -57,3 +57,17 @@ func TestWave21BlockErrorStillPropagates(t *testing.T) {
 		t.Fatalf("expected error to propagate, got %v (%T)", res.Inspect(), res)
 	}
 }
+
+func TestWave21ConstStillEnforced(t *testing.T) {
+	// const must work with lazily-allocated constants map.
+	expectInspect(t, `const x = 5; x`, `5`)
+	res := testEval(t, `const y = 1; y = 2;`)
+	if _, ok := res.(*object.Error); !ok {
+		t.Fatalf("expected const-violation error, got %v (%T)", res.Inspect(), res)
+	}
+}
+
+func TestWave21AnnotatedLetStillWorks(t *testing.T) {
+	// declaredTypes map is also lazy now.
+	expectInspect(t, `let z: int = 41 + 1; z`, `42`)
+}
