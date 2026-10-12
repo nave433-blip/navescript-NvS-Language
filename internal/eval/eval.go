@@ -138,7 +138,7 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 
 	// Expressions
 	case *ast.IntegerLiteral:
-		return &object.Integer{Value: node.Value}
+		return newInteger(node.Value)
 	case *ast.FloatLiteral:
 		return &object.Float{Value: node.Value}
 	case *ast.StringLiteral:
@@ -367,9 +367,10 @@ func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) obje
 	for _, statement := range block.Statements {
 		result = Eval(statement, env)
 		if result != nil {
-			rt := result.Type()
-			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ ||
-				rt == object.BREAK_OBJ || rt == object.CONTINUE_OBJ {
+			// Wave 21: type switch on the concrete type is cheaper than a
+			// Type() method call plus string comparisons per statement.
+			switch result.(type) {
+			case *object.ReturnValue, *object.Error, *object.Break, *object.Continue:
 				return result
 			}
 		}
@@ -454,6 +455,25 @@ func nativeBoolToBooleanObject(input bool) *object.Boolean {
 	return FALSE
 }
 
+// Wave 21: small-integer cache. Integer objects are immutable in the
+// evaluator (nothing ever assigns to .Value), so loop counters and common
+// constants in 0..255 share preallocated objects instead of allocating
+// per evaluation. newInteger is the single constructor for hot paths.
+var intCache [256]*object.Integer
+
+func init() {
+	for i := range intCache {
+		intCache[i] = &object.Integer{Value: int64(i)}
+	}
+}
+
+func newInteger(v int64) *object.Integer {
+	if v >= 0 && v < 256 {
+		return intCache[v]
+	}
+	return &object.Integer{Value: v}
+}
+
 func evalPrefixExpression(operator string, right object.Object) object.Object {
 	switch operator {
 	case "!":
@@ -481,7 +501,7 @@ func evalBangOperatorExpression(right object.Object) object.Object {
 func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
 	if right.Type() == object.INTEGER_OBJ {
 		value := right.(*object.Integer).Value
-		return &object.Integer{Value: -value}
+		return newInteger(-value)
 	}
 	if right.Type() == object.FLOAT_OBJ {
 		value := right.(*object.Float).Value
@@ -557,33 +577,33 @@ func evalIntegerInfixExpression(operator string, left, right object.Object) obje
 
 	switch operator {
 	case "+":
-		return &object.Integer{Value: leftVal + rightVal}
+		return newInteger(leftVal + rightVal)
 	case "-":
-		return &object.Integer{Value: leftVal - rightVal}
+		return newInteger(leftVal - rightVal)
 	case "*":
-		return &object.Integer{Value: leftVal * rightVal}
+		return newInteger(leftVal * rightVal)
 	case "**":
-		return &object.Integer{Value: intPow(leftVal, rightVal)}
+		return newInteger(intPow(leftVal, rightVal))
 	case "/":
 		if rightVal == 0 {
 			return newError("division by zero")
 		}
-		return &object.Integer{Value: leftVal / rightVal}
+		return newInteger(leftVal / rightVal)
 	case "%":
 		if rightVal == 0 {
 			return newError("modulo by zero")
 		}
-		return &object.Integer{Value: leftVal % rightVal}
+		return newInteger(leftVal % rightVal)
 	case "&":
-		return &object.Integer{Value: leftVal & rightVal}
+		return newInteger(leftVal & rightVal)
 	case "|":
-		return &object.Integer{Value: leftVal | rightVal}
+		return newInteger(leftVal | rightVal)
 	case "^":
-		return &object.Integer{Value: leftVal ^ rightVal}
+		return newInteger(leftVal ^ rightVal)
 	case "<<":
-		return &object.Integer{Value: leftVal << rightVal}
+		return newInteger(leftVal << rightVal)
 	case ">>":
-		return &object.Integer{Value: leftVal >> rightVal}
+		return newInteger(leftVal >> rightVal)
 	case "==":
 		return nativeBoolToBooleanObject(leftVal == rightVal)
 	case "!=":
@@ -725,7 +745,7 @@ func evalEnumStatement(node *ast.EnumStatement, env *object.Environment) object.
 	pairs := map[object.HashKey]object.HashPair{}
 	for i, m := range node.Members {
 		ks := &object.String{Value: m.Value}
-		vs := &object.Integer{Value: int64(i)}
+		vs := newInteger(int64(i))
 		pairs[ks.HashKey()] = object.HashPair{Key: ks, Value: vs}
 		// also allow Color.Red style via nested hash stored under name
 	}
@@ -1694,11 +1714,11 @@ func evalRangeExpression(node *ast.RangeExpression, env *object.Environment) obj
 	elements := []object.Object{}
 	if node.Inclusive {
 		for i := s.Value; i <= e.Value; i++ {
-			elements = append(elements, &object.Integer{Value: i})
+			elements = append(elements, newInteger(i))
 		}
 	} else {
 		for i := s.Value; i < e.Value; i++ {
-			elements = append(elements, &object.Integer{Value: i})
+			elements = append(elements, newInteger(i))
 		}
 	}
 	return &object.Array{Elements: elements}
@@ -1920,9 +1940,9 @@ func evalPostfixExpression(node *ast.PostfixExpression, env *object.Environment)
 	switch o := old.(type) {
 	case *object.Integer:
 		if node.Operator == "++" {
-			updated = &object.Integer{Value: o.Value + 1}
+			updated = newInteger(o.Value + 1)
 		} else {
-			updated = &object.Integer{Value: o.Value - 1}
+			updated = newInteger(o.Value - 1)
 		}
 	case *object.Float:
 		if node.Operator == "++" {
@@ -2278,7 +2298,7 @@ func interfaceToObject(v interface{}) object.Object {
 		return nativeBoolToBooleanObject(val)
 	case float64:
 		if val == float64(int64(val)) {
-			return &object.Integer{Value: int64(val)}
+			return newInteger(int64(val))
 		}
 		return &object.Float{Value: val}
 	case string:
@@ -2630,7 +2650,7 @@ func matchHashLiteralPattern(hl *ast.HashLiteral, val object.Object, env *object
 		var found bool
 		if e.isInt {
 			if h, ok := val.(*object.Hash); ok {
-				key := &object.Integer{Value: e.ikey}
+				key := newInteger(e.ikey)
 				if pair, ok := h.Pairs[key.HashKey()]; ok {
 					fv, found = pair.Value, true
 				}
@@ -2865,7 +2885,7 @@ func evalTernaryExpression(node *ast.TernaryExpression, env *object.Environment)
 func deepCopy(obj object.Object) object.Object {
 	switch o := obj.(type) {
 	case *object.Integer:
-		return &object.Integer{Value: o.Value}
+		return newInteger(o.Value)
 	case *object.Float:
 		return &object.Float{Value: o.Value}
 	case *object.String:
@@ -2980,7 +3000,7 @@ func deepThawCopy(obj object.Object, seen map[object.Object]object.Object) objec
 		}
 		return cp
 	case *object.Integer:
-		return &object.Integer{Value: o.Value}
+		return newInteger(o.Value)
 	case *object.Float:
 		return &object.Float{Value: o.Value}
 	case *object.String:
@@ -3072,7 +3092,7 @@ func deepGetPath(obj object.Object, segs []string) (val object.Object, found boo
 				continue
 			}
 			if idx, ok := parsePathIndex(seg); ok {
-				ikey := &object.Integer{Value: idx}
+				ikey := newInteger(idx)
 				if pair, ok := c.Pairs[ikey.HashKey()]; ok {
 					cur = pair.Value
 					continue
@@ -3118,7 +3138,7 @@ func deepSetPath(cur object.Object, segs []string, val object.Object) (object.Ob
 				return cur, nil
 			}
 			if idx, ok := parsePathIndex(seg); ok {
-				ikey := &object.Integer{Value: idx}
+				ikey := newInteger(idx)
 				if _, ok := c.Pairs[ikey.HashKey()]; ok {
 					c.Pairs[ikey.HashKey()] = object.HashPair{Key: ikey, Value: val}
 					return cur, nil
@@ -3249,16 +3269,16 @@ func initBuiltins() {
 				}
 				switch arg := args[0].(type) {
 				case *object.String:
-					return &object.Integer{Value: int64(len(arg.Value))}
+					return newInteger(int64(len(arg.Value)))
 				case *object.Array:
-					return &object.Integer{Value: int64(len(arg.Elements))}
+					return newInteger(int64(len(arg.Elements)))
 				case *object.Tuple:
 					// Wave 3: tuples and hashes/sets support len too.
-					return &object.Integer{Value: int64(len(arg.Elements))}
+					return newInteger(int64(len(arg.Elements)))
 				case *object.Hash:
-					return &object.Integer{Value: int64(len(arg.Pairs))}
+					return newInteger(int64(len(arg.Pairs)))
 				case *object.Record:
-					return &object.Integer{Value: int64(len(arg.Def.Fields))}
+					return newInteger(int64(len(arg.Def.Fields)))
 				default:
 					return newError("argument to `len` not supported, got %s", args[0].Type())
 				}
@@ -3407,11 +3427,11 @@ func initBuiltins() {
 				var elements []object.Object
 				if step > 0 {
 					for i := start; i < end; i += step {
-						elements = append(elements, &object.Integer{Value: i})
+						elements = append(elements, newInteger(i))
 					}
 				} else {
 					for i := start; i > end; i += step {
-						elements = append(elements, &object.Integer{Value: i})
+						elements = append(elements, newInteger(i))
 					}
 				}
 				return &object.Array{Elements: elements}
@@ -4418,7 +4438,7 @@ func initBuiltins() {
 				if !ok {
 					return newError("set_len: argument must be set")
 				}
-				return &object.Integer{Value: int64(len(h.Pairs))}
+				return newInteger(int64(len(h.Pairs)))
 			},
 		},
 		"set_to_array": {
@@ -4585,7 +4605,7 @@ func initBuiltins() {
 					}
 				}
 				metricCounters[name] += by
-				return &object.Integer{Value: metricCounters[name]}
+				return newInteger(metricCounters[name])
 			},
 		},
 		"metric_get": {
@@ -4597,7 +4617,7 @@ func initBuiltins() {
 				if s, ok := args[0].(*object.String); ok {
 					name = s.Value
 				}
-				return &object.Integer{Value: metricCounters[name]}
+				return newInteger(metricCounters[name])
 			},
 		},
 		"metric_gauge": {
@@ -4933,7 +4953,7 @@ func initBuiltins() {
 				case *object.Integer:
 					return n
 				case *object.Float:
-					return &object.Integer{Value: int64(math.Floor(n.Value))}
+					return newInteger(int64(math.Floor(n.Value)))
 				default:
 					return newError("floor: want number")
 				}
@@ -4948,7 +4968,7 @@ func initBuiltins() {
 				case *object.Integer:
 					return n
 				case *object.Float:
-					return &object.Integer{Value: int64(math.Ceil(n.Value))}
+					return newInteger(int64(math.Ceil(n.Value)))
 				default:
 					return newError("ceil: want number")
 				}
@@ -5134,7 +5154,7 @@ func initBuiltins() {
 		},
 		"now": {
 			Fn: func(args ...object.Object) object.Object {
-				return &object.Integer{Value: time.Now().Unix()}
+				return newInteger(time.Now().Unix())
 			},
 		},
 		"env": {
@@ -5215,16 +5235,16 @@ func initBuiltins() {
 				case *object.Integer:
 					return v
 				case *object.Float:
-					return &object.Integer{Value: int64(v.Value)}
+					return newInteger(int64(v.Value))
 				case *object.String:
 					var n int64
 					fmt.Sscan(v.Value, &n)
-					return &object.Integer{Value: n}
+					return newInteger(n)
 				case *object.Boolean:
 					if v.Value {
-						return &object.Integer{Value: 1}
+						return newInteger(1)
 					}
-					return &object.Integer{Value: 0}
+					return newInteger(0)
 				default:
 					return newError("int: cannot convert %s", args[0].Type())
 				}
@@ -5421,14 +5441,14 @@ func initBuiltins() {
 							n++
 						}
 					}
-					return &object.Integer{Value: int64(n)}
+					return newInteger(int64(n))
 				}
 				if s, ok := args[0].(*object.String); ok {
 					sub, ok := args[1].(*object.String)
 					if !ok {
 						return newError("count: substring must be string")
 					}
-					return &object.Integer{Value: int64(strings.Count(s.Value, sub.Value))}
+					return newInteger(int64(strings.Count(s.Value, sub.Value)))
 				}
 				return newError("count: want array or string")
 			},
@@ -5460,7 +5480,7 @@ func initBuiltins() {
 				if useFloat {
 					return &object.Float{Value: ftotal}
 				}
-				return &object.Integer{Value: total}
+				return newInteger(total)
 			},
 		},
 		"avg": {
@@ -5686,17 +5706,17 @@ func initBuiltins() {
 				if arr, ok := args[0].(*object.Array); ok {
 					for i, el := range arr.Elements {
 						if el.Inspect() == args[1].Inspect() && el.Type() == args[1].Type() {
-							return &object.Integer{Value: int64(i)}
+							return newInteger(int64(i))
 						}
 					}
-					return &object.Integer{Value: -1}
+					return newInteger(-1)
 				}
 				if s, ok := args[0].(*object.String); ok {
 					sub, ok := args[1].(*object.String)
 					if !ok {
 						return newError("index_of: substring must be string")
 					}
-					return &object.Integer{Value: int64(strings.Index(s.Value, sub.Value))}
+					return newInteger(int64(strings.Index(s.Value, sub.Value)))
 				}
 				return newError("index_of: want array or string")
 			},
@@ -5945,7 +5965,7 @@ func initBuiltins() {
 				out := make([]object.Object, len(arr.Elements))
 				for i, el := range arr.Elements {
 					out[i] = &object.Array{Elements: []object.Object{
-						&object.Integer{Value: int64(i)},
+						newInteger(int64(i)),
 						el,
 					}}
 				}
@@ -6165,7 +6185,7 @@ func initBuiltins() {
 					}
 				}
 				elapsed := time.Since(start).Milliseconds()
-				return &object.Integer{Value: elapsed}
+				return newInteger(elapsed)
 			},
 		},
 		"any": {
@@ -6222,7 +6242,7 @@ func initBuiltins() {
 					if n <= 0 {
 						return newError("rand_int: n must be > 0")
 					}
-					return &object.Integer{Value: int64(rand.Intn(n))}
+					return newInteger(int64(rand.Intn(n)))
 				}
 				if len(args) == 2 {
 					lo := int(args[0].(*object.Integer).Value)
@@ -6230,7 +6250,7 @@ func initBuiltins() {
 					if hi <= lo {
 						return newError("rand_int: hi must be > lo")
 					}
-					return &object.Integer{Value: int64(lo + rand.Intn(hi-lo))}
+					return newInteger(int64(lo + rand.Intn(hi-lo)))
 				}
 				return newError("rand_int: want max or lo, hi")
 			},
@@ -6276,7 +6296,7 @@ func initBuiltins() {
 				if v > hi {
 					v = hi
 				}
-				return &object.Integer{Value: v}
+				return newInteger(v)
 			},
 		},
 		"unique": {
@@ -6466,7 +6486,7 @@ func initBuiltins() {
 				switch v := args[0].(type) {
 				case *object.Integer:
 					if v.Value < 0 {
-						return &object.Integer{Value: -v.Value}
+						return newInteger(-v.Value)
 					}
 					return v
 				case *object.Float:
@@ -6511,7 +6531,7 @@ func initBuiltins() {
 				if err != nil {
 					return newError("sqlite_exec: %s", err.Error())
 				}
-				return &object.Integer{Value: n}
+				return newInteger(n)
 			},
 		},
 		"sqlite_query": {

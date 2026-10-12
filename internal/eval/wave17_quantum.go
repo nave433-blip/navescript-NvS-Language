@@ -135,8 +135,8 @@ func wave17Sample(sim *localSimulator, rng *rand.Rand) int {
 func wave17Hist(hist map[int]int) *object.Hash {
 	h := &object.Hash{Pairs: map[object.HashKey]object.HashPair{}}
 	for outcome, count := range hist {
-		k := &object.Integer{Value: int64(outcome)}
-		h.Pairs[k.HashKey()] = object.HashPair{Key: k, Value: &object.Integer{Value: int64(count)}}
+		k := newInteger(int64(outcome))
+		h.Pairs[k.HashKey()] = object.HashPair{Key: k, Value: newInteger(int64(count))}
 	}
 	return h
 }
@@ -302,7 +302,7 @@ func wave17NewCircuit(n int64) (object.Object, object.Object) {
 		}
 		out := wave17SeededCollapse(c.sim, q, wave17MeasRand)
 		c.ops = append(c.ops, quantum.Op{Name: "MEASURE", Qubits: []int{q}})
-		return &object.Integer{Value: int64(out)}
+		return newInteger(int64(out))
 	}})
 
 	add("measure_all", &object.Builtin{Fn: func(args ...object.Object) object.Object {
@@ -311,7 +311,7 @@ func wave17NewCircuit(n int64) (object.Object, object.Object) {
 		}
 		els := make([]object.Object, c.n)
 		for i := 0; i < c.n; i++ {
-			els[i] = &object.Integer{Value: int64(wave17SeededCollapse(c.sim, i, wave17MeasRand))}
+			els[i] = newInteger(int64(wave17SeededCollapse(c.sim, i, wave17MeasRand)))
 		}
 		c.ops = append(c.ops, quantum.Op{Name: "MEASURE", Qubits: []int{0}})
 		return &object.Array{Elements: els}
@@ -464,7 +464,7 @@ func registerWave17QuantumBuiltins() {
 			}
 			wave17MeasRand = rand.New(rand.NewSource(seed.Value))
 			quantum.Seeded(seed.Value)
-			return &object.Integer{Value: seed.Value}
+			return newInteger(seed.Value)
 		},
 	}
 

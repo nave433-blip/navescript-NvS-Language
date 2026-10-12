@@ -92,7 +92,7 @@ func registerPort29Builtins() {
 			k1 := &object.String{Value: "outcome"}
 			k2 := &object.String{Value: "state"}
 			return &object.Hash{Pairs: map[object.HashKey]object.HashPair{
-				k1.HashKey(): {Key: k1, Value: &object.Integer{Value: int64(out)}},
+				k1.HashKey(): {Key: k1, Value: newInteger(int64(out))},
 				k2.HashKey(): {Key: k2, Value: port29StateToArray(ns)},
 			}}
 		},

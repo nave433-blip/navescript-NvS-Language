@@ -68,7 +68,7 @@ func registerWave7Builtins() {
 			if len(args) != 0 {
 				return newError("unixtime_ms: want 0 arguments")
 			}
-			return &object.Integer{Value: time.Now().UnixMilli()}
+			return newInteger(time.Now().UnixMilli())
 		},
 	}
 	builtins["date_format"] = &object.Builtin{
@@ -100,7 +100,7 @@ func registerWave7Builtins() {
 			if err != nil {
 				return newError("parse_date: %s", err.Error())
 			}
-			return &object.Integer{Value: t.Unix()}
+			return newInteger(t.Unix())
 		},
 	}
 	builtins["date_add"] = &object.Builtin{
@@ -124,7 +124,7 @@ func registerWave7Builtins() {
 			if !ok {
 				return newError("date_add: unknown unit %q (want s/m/h/d/w or the long name)", unit.Value)
 			}
-			return &object.Integer{Value: ts.Value + amt.Value*mult}
+			return newInteger(ts.Value + amt.Value*mult)
 		},
 	}
 
@@ -233,7 +233,7 @@ func registerWave7Builtins() {
 				hpairs[hk.HashKey()] = object.HashPair{Key: hk, Value: &object.Array{Elements: els}}
 			}
 			pairs := map[object.HashKey]object.HashPair{}
-			wave7SetStrKey(pairs, "status", &object.Integer{Value: int64(resp.StatusCode)})
+			wave7SetStrKey(pairs, "status", newInteger(int64(resp.StatusCode)))
 			wave7SetStrKey(pairs, "headers", &object.Hash{Pairs: hpairs})
 			wave7SetStrKey(pairs, "body", &object.String{Value: string(data)})
 			return &object.Hash{Pairs: pairs}
@@ -460,7 +460,7 @@ func wave7RunProcess(cmd *exec.Cmd) object.Object {
 		}
 	}
 	pairs := map[object.HashKey]object.HashPair{}
-	wave7SetStrKey(pairs, "code", &object.Integer{Value: int64(code)})
+	wave7SetStrKey(pairs, "code", newInteger(int64(code)))
 	wave7SetStrKey(pairs, "stdout", &object.String{Value: stdout.String()})
 	wave7SetStrKey(pairs, "stderr", &object.String{Value: stderr.String()})
 	return &object.Hash{Pairs: pairs}
@@ -891,7 +891,7 @@ func tomlParseNumber(s string) (object.Object, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bad number %q", tok)
 	}
-	return &object.Integer{Value: n}, nil
+	return newInteger(n), nil
 }
 
 // tomlParseArray parses a single-line [...] array (nested arrays allowed).

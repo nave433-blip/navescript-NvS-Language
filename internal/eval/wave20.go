@@ -167,7 +167,7 @@ func registerWave20Builtins() {
 			if err != nil {
 				return newError("tcp_write: %s", err.Error())
 			}
-			return &object.Integer{Value: int64(n)}
+			return newInteger(int64(n))
 		},
 	}
 	builtins["tcp_read"] = &object.Builtin{

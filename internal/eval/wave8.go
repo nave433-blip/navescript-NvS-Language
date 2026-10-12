@@ -638,7 +638,7 @@ func registerWave8Builtins() {
 			if err != nil {
 				return newError("%s", err.Error())
 			}
-			return &object.Integer{Value: int64(b)}
+			return newInteger(int64(b))
 		},
 	}
 	builtins["q_measure_all"] = &object.Builtin{
@@ -657,7 +657,7 @@ func registerWave8Builtins() {
 			// Array of bits in qubit order: element 0 is qubit 0.
 			els := make([]object.Object, len(bits))
 			for i, b := range bits {
-				els[i] = &object.Integer{Value: int64(b)}
+				els[i] = newInteger(int64(b))
 			}
 			return &object.Array{Elements: els}
 		},
@@ -711,7 +711,7 @@ func registerWave8Builtins() {
 			if errObj != nil {
 				return errObj
 			}
-			return &object.Integer{Value: int64(q.backend.NumQubits())}
+			return newInteger(int64(q.backend.NumQubits()))
 		},
 	}
 
